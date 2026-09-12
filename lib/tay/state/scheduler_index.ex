@@ -5,6 +5,13 @@ defmodule Tay.State.SchedulerIndex do
   def put(table, job), do: :ets.insert(table, {key(job), job.revision})
   def delete(table, job), do: :ets.delete(table, key(job))
 
+  def earliest(table) do
+    case :ets.first(table) do
+      {due, _} -> due
+      :"$end_of_table" -> nil
+    end
+  end
+
   def due(table, now, limit) when is_integer(limit) and limit > 0,
     do: take(table, :ets.first(table), now, limit, [])
 

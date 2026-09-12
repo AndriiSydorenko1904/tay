@@ -1,5 +1,6 @@
 defmodule Mix.Tasks.Compile.TayNative do
   use Mix.Task.Compiler
+  import Bitwise
   @impl true
   def run(_args) do
     cc =
@@ -7,6 +8,16 @@ defmodule Mix.Tasks.Compile.TayNative do
 
     dir = Path.join(Mix.Project.app_path(), "priv")
     File.mkdir_p!(dir)
+
+    # A reused build directory must not leak the generated fault-enabled helper
+    # into a production artifact. This exact output is recreated by test builds.
+    if Mix.env() != :test do
+      case File.rm(Path.join(dir, "tay_storage_helper_test")) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, _} -> Mix.raise("Cannot remove stale generated test helper from build output")
+      end
+    end
 
     builds =
       if Mix.env() == :test,
@@ -25,8 +36,15 @@ defmodule Mix.Tasks.Compile.TayNative do
           defines ++ ["c_src/tay_storage_helper.c", "-o", Path.join(dir, name)]
 
       case System.cmd(cc, args, stderr_to_stdout: true) do
-        {_, 0} -> :ok
-        {output, code} -> Mix.raise("Native helper compilation failed (#{code}):\n#{output}")
+        {_, 0} ->
+          artifact = Path.join(dir, name)
+          stat = File.stat!(artifact)
+
+          unless stat.type == :regular and (stat.mode &&& 0o111) != 0,
+            do: Mix.raise("Native compiler did not produce an executable regular helper")
+
+        {output, code} ->
+          Mix.raise("Native helper compilation failed (#{code}):\n#{output}")
       end
     end)
 
@@ -41,6 +59,10 @@ defmodule Tay.MixProject do
     [
       app: :tay,
       version: "0.1.0-dev",
+      description:
+        "Embedded Elixir job engine with an authoritative append-only log and fail-closed recovery",
+      source_url: "https://github.com/AndriiSydorenko1904/tay",
+      package: package(),
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       compilers: [:tay_native] ++ Mix.compilers(),
@@ -59,4 +81,26 @@ defmodule Tay.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_env), do: ["lib"]
+
+  defp package do
+    [
+      # Native code is compiled for the consuming build host. Never distribute
+      # this checkout's priv binaries, test providers, local configuration or data.
+      files: [
+        "lib",
+        "c_src/tay_storage_helper.c",
+        "c_src/README.md",
+        "scripts/tay_cold_copy.py",
+        "mix.exs",
+        ".formatter.exs",
+        "README.md",
+        "docs/*.md"
+      ],
+      build_tools: ["mix"],
+      links: %{"Source" => "https://github.com/AndriiSydorenko1904/tay"},
+      # No license decision has been approved. Local private qualification is
+      # permitted; publishing requires an explicit license and release decision.
+      licenses: []
+    ]
+  end
 end

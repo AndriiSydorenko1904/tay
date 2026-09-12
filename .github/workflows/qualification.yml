@@ -1,0 +1,79 @@
+name: Tay qualification (not publication)
+
+# Expensive qualification is intentional and explicit, not repeated on every edit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      ERL_FLAGS: "+S 4:4 +A 4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 security backports
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1, node24
+        with:
+          otp-version: "29.0.2"
+          elixir-version: "1.20.2"
+          version-type: strict
+          install-rebar: false
+      - name: Install locked test dependency
+        run: mix deps.get --check-locked
+      - name: Create disposable Linux local Btrfs qualification filesystem
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes btrfs-progs
+          qualification_dir=$(mktemp -d "$RUNNER_TEMP/tay-btrfs.XXXXXX")
+          test -d "$qualification_dir"
+          image_path="$qualification_dir/qualification.img"
+          mount_path="$qualification_dir/data"
+          test ! -e "$image_path"
+          mkdir "$mount_path"
+          truncate -s 8G "$image_path"
+          mkfs.btrfs "$image_path"
+          sudo mount -o loop "$image_path" "$mount_path"
+          sudo chown "$(id -u):$(id -g)" "$mount_path"
+          test "$(stat -f -c %T "$mount_path")" = btrfs
+          printf 'TAY_TEST_DATA_ROOT=%s\nTAY_TEST_SYNC=1\n' "$mount_path" >> "$GITHUB_ENV"
+          findmnt -T "$mount_path"
+      - name: Versions and ordinary verification
+        run: |
+          elixir --version
+          cc --version
+          mix format --check-formatted
+          mix compile --warnings-as-errors
+          mix test --warnings-as-errors
+          MIX_ENV=prod mix compile --warnings-as-errors
+      - name: Sanitized native and ordinary matrix
+        env:
+          TAY_NATIVE_SANITIZE: "1"
+          MIX_BUILD_PATH: _build/sanitized-qualification
+        run: mix test --warnings-as-errors
+      - name: Full retained-history scale qualification
+        env:
+          TAY_LARGE_SEGMENT_TEST: "1"
+          TAY_LARGE_RECOVERY_TEST: "1"
+        run: >-
+          mix test test/tay/storage/segment_large_test.exs
+          test/tay/storage/recovery_large_test.exs
+          test/tay/engine/large_recovery_test.exs --warnings-as-errors
+      - name: Detached consuming application and production release
+        env:
+          TAY_PACKAGE_TEST: "1"
+        run: mix test test/tay/system/package_test.exs --warnings-as-errors
+
+# These disposable hosted-runner tests are software evidence, not hardware
+# power-loss certification or release approval. No publish credentials/actions.

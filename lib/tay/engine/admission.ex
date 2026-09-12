@@ -39,31 +39,46 @@ defmodule Tay.Engine.Admission do
     ArgumentError -> {:error, :unavailable}
   end
 
-  def request(name, meta, payload, bytes, operation, id, timeout) do
+  def request(name, meta, payload, bytes, operation, id, timeout, expected_revision \\ nil) do
     with true <- bytes <= meta.slot_bytes || {:error, :client_bytes},
          {:ok, permit} <- claim(name, meta, timeout) do
       try do
         case GenServer.call(meta.guardian, {:reserve, meta.generation, permit}, timeout) do
-          :ok -> submit(meta, permit, payload, operation, id, timeout)
-          {:error, reason} -> {:error, Error.new(:unavailable, reason, id, operation)}
+          :ok ->
+            submit(meta, permit, payload, operation, id, timeout, expected_revision)
+
+          {:error, reason} ->
+            {:error, Error.new(:unavailable, reason, id, operation, expected_revision)}
         end
       catch
-        :exit, _ -> {:error, Error.new(:unavailable, :reservation_lost, id, operation)}
+        :exit, _ ->
+          {:error, Error.new(:unavailable, :reservation_lost, id, operation, expected_revision)}
       after
         send(meta.guardian, {:cancel_reservation, self(), permit})
       end
     else
-      {:error, reason} -> {:error, Error.new(:capacity, reason, id, operation)}
+      {:error, reason} -> {:error, Error.new(:capacity, reason, id, operation, expected_revision)}
     end
   end
 
-  defp submit(meta, permit, payload, operation, id, timeout) do
+  defp submit(meta, permit, payload, operation, id, timeout, expected_revision) do
     try do
-      GenServer.call(meta.guardian, {:submit, meta.generation, permit, payload}, timeout)
+      case GenServer.call(meta.guardian, {:submit, meta.generation, permit, payload}, timeout) do
+        {:error, %Error{} = error} when operation in [:cancel, :retry] ->
+          {:error,
+           %{error | job_id: id, operation: operation, expected_revision: expected_revision}}
+
+        result ->
+          result
+      end
     catch
       :exit, _ ->
-        kind = if operation == :insert, do: :unknown_outcome, else: :unavailable
-        {:error, Error.new(kind, :submitted_request_lost, id, operation)}
+        kind =
+          if operation in [:insert, :cancel, :retry, :pause_queue, :resume_queue, :drain],
+            do: :unknown_outcome,
+            else: :unavailable
+
+        {:error, Error.new(kind, :submitted_request_lost, id, operation, expected_revision)}
     end
   end
 

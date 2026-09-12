@@ -19,7 +19,10 @@ defmodule Tay.Test.EngineHelpers do
         workers: %{"worker.v1" => EngineWorker},
         durability: mode,
         validated_filesystem: mode == :sync,
-        test_helper: true
+        test_helper: true,
+        # Isolate the accepted Phase 4 command/commit assertions. Production
+        # rejects this option; Phase 5 tests explicitly enable execution.
+        test_execution: false
       ],
       extra
     )

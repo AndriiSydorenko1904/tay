@@ -48,6 +48,19 @@ defmodule Tay.State.Projection do
 
   def scheduled?(job), do: job.state in [:scheduled, :retryable]
 
+  # A task fence is independent of the durable job state and queue credit.
+  # Only the owner changes it; a retry must not overlap its terminating task.
+  def hold(p, job) do
+    if available?(p, job), do: QueueIndex.delete(p.queue, job)
+    %{p | held: MapSet.put(p.held, job.id)}
+  end
+
+  def release(p, job) do
+    p = %{p | held: MapSet.delete(p.held, job.id)}
+    if available?(p, job), do: QueueIndex.put(p.queue, job)
+    p
+  end
+
   def valid?(p) do
     {queue, schedule} =
       JobIndex.fold(

@@ -1,5 +1,15 @@
 # Tay — Authoritative Step-by-Step Development Plan
 
+> Approved roadmap reconciliation: [production-roadmap-rfc.md](docs/production-roadmap-rfc.md)
+> replaces the original granular Phase 4–10 implementation sequence below with
+> Phase 4 Durable Job Core → Phase 5 Complete Execution Lifecycle → Phase 6
+> Production Qualification and Operations. R1–R4 and the exact
+> [Event v1 appendix](docs/event-v1-contract-appendix.md) are approved; R5 remains
+> the measured production-release gate. Original Phase 11/12 work stays deferred.
+> This numbering reconciliation does not change frozen Phase 1–3 byte/durability
+> contracts or G1–G6. The old granular sections are retained as historical input,
+> not permission to implement a second event model, repair, snapshots or compaction.
+
 > This document is the authoritative architecture, implementation roadmap, engineering contract, and Codex working specification for **Tay**.
 >
 > Tay is an open-source durable background job processing engine for Elixir.

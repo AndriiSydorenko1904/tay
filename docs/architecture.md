@@ -1,4 +1,4 @@
-# Implemented architecture: Phases 0–4
+# Implemented architecture: Phases 0–6
 
 [TAY_PLAN.md](../TAY_PLAN.md) is the authoritative project specification. The
 approved Phase 0 scope is a reusable Mix library with configuration, application
@@ -10,22 +10,31 @@ physical segmented I/O under the approved
 resolved implementation gates. Phase 3 adds the approved non-destructive recovery
 and activation boundary. Phase 4 implements production Event v1, pure lifecycle
 transitions, bounded reconstruction, private indexes and Engine insertion/read
-APIs under the approved roadmap/appendix. Execution remains absent.
+APIs under the approved roadmap/appendix. Phase 5 adds complete execution;
+Phase 6 adds operations and qualification. The accelerated roadmap's Phases 4–6
+supersede the original granular Phase 4–10 numbering; frozen Phase 1–3 and Event
+contracts remain authoritative. Release/profile approval is distinct from code
+implementation; consult the Phase 6 report before claiming production readiness.
 
 ## Current modules
 
 | Module | Responsibility |
 | --- | --- |
-| `Tay` | Explicit Engine supervision, insert/get/status APIs |
+| `Tay` | Explicit Engine supervision, insert/get/status, cancel/retry and volatile lifecycle APIs |
 | `Tay.Application` | Validates configuration, then starts an empty named supervisor |
 | `Tay.Supervisor` | Implements the empty OTP root supervisor and its child specification |
 | `Tay.Config` | Reads runtime application configuration, validates and normalizes it |
 | `Tay.Job`, `Tay.JobID`, `Tay.Error` | Immutable definition builder, stable public IDs, disposable views and bounded errors |
-| `Tay.Worker` | Defines `perform/1` and optional explicit-key builder macro; no execution |
+| `Tay.Worker` | Defines `perform/1` and optional explicit-key builder macro |
 | `Tay.Event`, `.Value`, `.V1` | Exact canonical value bytes, six immutable schemas, production EventDecoder |
 | `Tay.State.Transition` | Sole pure prepare/apply model and bounded map candidate/accounting |
 | `Tay.State.Projection`, `JobIndex`, `QueueIndex`, `SchedulerIndex` | Private unnamed disposable ETS; bounded passive selection |
 | `Tay.Engine`, `.Supervisor`, `.Lifecycle`, `.Admission`, `.Config` | Semantic owner, whole-generation revocation, bounded pre-message permits and explicit configuration |
+| `Tay.Engine.Operations` | Independent single control permit; explicit group retirement and fresh restart under the original host root |
+| `Tay.Execution.Supervisor`, `.Executor`, `.Relay` | Supervised waiting callbacks, exact post-commit release, bounded outcomes and separate task-death proof |
+| `Tay.Execution.LocalFence` | VM-local STORE_ID/generation task ledger; no replacement before proven old task death |
+| `Tay.Execution.Queue`, `.Scheduler`, `.Clock`, `.Retry`, `.Outcome`, `.Registry` | Bounded indexed demand, eligibility/time, approved retry/diagnostic producers and trusted mappings |
+| `Tay.Diagnostics`, storage Mix tasks | Existing-only full offline diagnosis and explicit initialize-only wrapper; no activation ticket |
 | `Tay.Storage` | Explicit initialize-only administrative operation |
 | `Tay.Storage.Record` | Encodes/decodes one opaque v1 physical frame with exact integrity and limit checks |
 | `Tay.Storage.CRC32C` | Internal bit-by-bit Castagnoli reference checksum, with explicit raw incremental state |
@@ -40,8 +49,8 @@ APIs under the approved roadmap/appendix. Execution remains absent.
 
 `Tay.Supervisor` is a dedicated module using the standard OTP `Supervisor`
 behaviour and is registered under its module name. Its current `:one_for_one`
-strategy establishes only the Phase 0 root. Restart dependencies for future
-state and execution components are not decided here. A caller may explicitly
+strategy establishes the storage-free application root. The VM-local execution
+fence is added lazily only by explicit Engine startup. A caller may explicitly
 supervise the internal Writer as a temporary child; it never automatically
 restarts an uncertain operation. The native helper exclusively holds flock,
 read/directory descriptors, and at most one writable descriptor.
@@ -57,7 +66,9 @@ The explicit host child is an OTP Engine supervisor (`:one_for_all`, zero
 automatic restarts). Its guardian starts first; its Engine child is temporary.
 Guardian death terminates the runtime group. Engine or Writer failure closes
 the gate and leaves only bounded failed-generation diagnostics until the host
-stops/restarts the entire group. No Writer is restarted under surviving ETS.
+stops/restarts the entire group. Explicit Phase 6 lifecycle coordination may retain
+the host-owned root and guardian, but replaces every Engine/runtime/Writer, private
+projection and generation reference. No Writer is restarted under surviving ETS.
 
 Engine starts the existing recovered Writer with production EventDecoder and a
 pure bounded map reducer. Full preflight/replay/revalidation/activation retain
@@ -98,11 +109,40 @@ platform-independent peak-RSS assertion. Decoded text/IDs are detached from
 backing frames. Secondary indexes never duplicate args. Blocked jobs are counted
 and omitted from ready selection without scanning unbounded blocked heads.
 
-All Event schemas/state transitions exist, but the only live event producer is
-insertion. Recovered executing state stays inert in Phase 4. No outcome producer,
-execution relay, cancellation/retry API, scheduler timer, snapshot, manifest,
-retention, batching or repair has been added. Frozen native and physical codecs,
-Phase 3 traversal/accumulator semantics and G1–G6 remain unchanged.
+## Execution and operations ownership
+
+All six Event types have producers through the same commit/transition path.
+Before a start, Engine reserves a queue credit and finish headroom, and registers
+a supervised waiting task in the local fence. Only a verified durable start
+receipt permits release; the task checks generation/eligibility again before
+calling trusted worker code. Relay sends a bounded chosen outcome separately
+from proven local task death. Engine commits finish/cancel before best-effort
+termination and frees the held job/queue credit only after both settlement and
+death. Duplicate or stale token outcomes cannot mutate later state.
+
+Queue and scheduler controls maintain bounded outstanding demand; indexes select
+eligible jobs without history/job scans. Engine owns credits across control
+restarts. Infrastructure loss revokes the whole generation, and fresh startup
+settles recorded executing jobs as interrupted before dispatch readiness. Attempt
+ordinals survive infrastructure interruption; actual failure/timeout consumes one.
+
+Pause/drain serialize at Engine. Drain rejects new inserts/claims but permits
+settlements, and succeeds only after accepted outcomes are projected and registered
+tasks are dead. Timeout does not resume. A separate single metadata-only stop/restart
+permit remains available under client saturation. Shutdown closes admission before
+retiring Engine/runtime/Writer and the local task lease; restart requires fresh
+full recovery and all-new capabilities/indexes under the original host root.
+
+Canonical byte/segment/definition counters update from validated receipts; active
+outcome reservations cannot be consumed by new admission. Operational caps do not
+change byte validity or evict retained IDs. Offline diagnosis never activates;
+external cold copy/restore syncs every copied file, directories and ancestors and
+requires fresh semantic verification. Neither catalogs nor a prior inspection
+serve as storage recovery anchors or writable tickets.
+
+No snapshot, manifest, retention, compaction, group commit or automatic repair has
+been added. Frozen native/physical codecs, Phase 3 traversal/accumulator semantics
+and G1–G6 remain unchanged. Measured profile and release approval remain R5 gates.
 
 ## Configuration scope
 
@@ -120,7 +160,8 @@ capabilities through the native helper. Strict sync additionally requires an
 operator assertion about the actual Linux filesystem/mount/device.
 
 Queues are configuration entries only: ordered, unique atom names with positive
-integer limits. `[]` is allowed. No queue processes exist. Invalid and unknown
+integer limits. `[]` is allowed. Engine derives stable keys and bounded runtime
+queue demand from them after activation. Invalid and unknown
 configuration is reported explicitly, without converting strings into atoms.
 
 ## Invariants and phase boundary

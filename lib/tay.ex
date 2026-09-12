@@ -13,6 +13,15 @@ defmodule Tay do
   same-ID reconciliation using Phase 3 fail-closed recovery. Application startup
   remains storage-free. No worker execution or scheduling occurs in Phase 4.
 
+  Phase 5 adds supervised execution, scheduling, retries and revision-checked
+  cancellation/manual retry. Starts and outcomes pass through the same durable
+  Event commit path. Callbacks may repeat after infrastructure interruption;
+  external effects are not exactly-once. Cancellation fences future outcomes
+  before best-effort task termination and does not reverse external effects.
+
+  Phase 6 adds volatile pause/drain and explicit fresh-generation lifecycle
+  controls. Administrative calls never replay an RPC after an unknown outcome.
+
   Initialize storage explicitly with `Tay.Storage.initialize/1`, then supervise
   `Tay.child_spec/1`. Engine options are not `:tay` application environment keys.
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
@@ -73,11 +82,171 @@ defmodule Tay do
     end
   end
 
+  @doc """
+  Durably cancels an eligible job. Options are `:name`, `:timeout`, and
+  `:expected_revision` (the opaque token from a job view). If the revision option
+  is omitted, lookup captures it once. A timeout after submission is an unknown
+  outcome carrying that exact token; reconcile explicitly before a new command.
+  """
+  def cancel(id, options \\ []), do: mutation(:cancel, id, options)
+
+  @doc """
+  Expedites retryable work or starts a new cycle for discarded work, retaining
+  its immutable definition. Uses the same options and one-capture revision
+  semantics as `cancel/2`. Completed/cancelled/available/executing jobs conflict.
+  """
+  def retry(id, options \\ []), do: mutation(:retry, id, options)
+
+  @doc "Stops new claims for a configured queue after the accepted barrier. Volatile."
+  def pause_queue(queue, options \\ []), do: queue_control(:pause_queue, queue, options)
+
+  @doc "Resumes a configured queue; it does not undo an Engine drain."
+  def resume_queue(queue, options \\ []), do: queue_control(:resume_queue, queue, options)
+
+  @doc """
+  Rejects new inserts/claims and waits for durable settlement and local task death.
+  Queued jobs need not execute. Timeout leaves the Engine draining. A submitted
+  transport timeout is an unknown control outcome, never implicit resumption.
+  """
+  def drain(options \\ []) do
+    with {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      timeout = timeout || meta.timeout
+      deadline = System.monotonic_time(:millisecond) + timeout
+      Admission.request(name, meta, {:drain, deadline}, 256, :drain, nil, timeout)
+    else
+      {:error, reason} -> public_error(reason, :drain, nil)
+    end
+  end
+
+  @doc """
+  Drains then stops the execution generation, retaining its host-supervised
+  lifecycle coordinator. `force: true` explicitly skips drain and revokes active
+  execution; it is not a successful drain. Options: name, timeout, force.
+  """
+  def stop(options \\ []), do: lifecycle_control(:stop, options)
+
+  @doc """
+  Explicitly replaces the execution generation using fresh full recovery and the
+  original validated startup configuration. Never replays a pending client RPC.
+  Options: name, timeout, force. Change configuration via host-child replacement.
+  """
+  def restart(options \\ []), do: lifecycle_control(:restart, options)
+
+  defp lifecycle_control(operation, options) do
+    with true <- Config.keyword?(options, [:name, :timeout, :force]) || {:error, :invalid_options},
+         force = Keyword.get(options, :force, false),
+         true <- is_boolean(force) || {:error, :invalid_options},
+         {:ok, name, timeout} <- request_options(Keyword.delete(options, :force)) do
+      Tay.Engine.Operations.call(name, operation, force, timeout)
+    else
+      {:error, reason} -> public_error(reason, operation, nil)
+    end
+  end
+
+  defp queue_control(operation, queue, options) do
+    key = if is_atom(queue), do: Atom.to_string(queue), else: queue
+
+    with true <- V1.key?(key) || {:error, :invalid_queue},
+         {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      Admission.request(
+        name,
+        meta,
+        {operation, key},
+        256,
+        operation,
+        nil,
+        timeout || meta.timeout
+      )
+    else
+      {:error, reason} -> public_error(reason, operation, nil)
+    end
+  end
+
   def status(options \\ []) do
     with {:ok, name, _} <- request_options(options),
          {:ok, status} <- Admission.status(name),
          do: status,
          else: (_ -> %{state: :unavailable, freshness: :bounded_snapshot})
+  end
+
+  defp mutation(operation, id, options) do
+    with {:ok, raw} <- JobID.decode(id),
+         {:ok, name, timeout, revision_option} <- mutation_options(options),
+         {:ok, revision} <- mutation_revision(id, name, timeout, revision_option) do
+      with {:ok, meta} <- ready(name) do
+        Admission.request(
+          name,
+          meta,
+          {operation, raw, revision},
+          256,
+          operation,
+          id,
+          timeout || meta.timeout,
+          revision
+        )
+      else
+        {:error, reason} -> mutation_error(reason, operation, id, revision)
+      end
+    else
+      {:error, reason} -> mutation_error(reason, operation, safe_id(id), nil)
+    end
+  end
+
+  defp mutation_options(options) do
+    with true <- Config.keyword?(options, [:name, :timeout, :expected_revision]),
+         {:ok, name, timeout} <- request_options(Keyword.delete(options, :expected_revision)) do
+      case Keyword.fetch(options, :expected_revision) do
+        :error ->
+          {:ok, name, timeout, :capture}
+
+        {:ok, revision} ->
+          if revision_context?(revision),
+            do: {:ok, name, timeout, {:supplied, revision}},
+            else: {:error, :invalid_revision}
+      end
+    else
+      _ -> {:error, :invalid_options}
+    end
+  end
+
+  defp mutation_revision(_, _, _, {:supplied, revision}), do: {:ok, revision}
+
+  defp mutation_revision(id, name, timeout, :capture) do
+    options = if timeout, do: [name: name, timeout: timeout], else: [name: name]
+
+    case get_job(id, options) do
+      {:ok, %Job{revision: revision}} ->
+        if revision_context?(revision),
+          do: {:ok, revision},
+          else: {:error, :unavailable}
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error, :unavailable}
+    end
+  end
+
+  # This bounds transport shape only. Engine validates the exact current STORE,
+  # job, generation, and revision; the facade never repairs or refreshes a token.
+  defp revision_context?({:tay_revision, store, id, generation, sequence}),
+    do:
+      is_binary(store) and byte_size(store) == 16 and is_binary(id) and byte_size(id) == 16 and
+        is_reference(generation) and V1.sequence?(sequence)
+
+  defp revision_context?(_), do: false
+
+  defp mutation_error(%Error{} = error, operation, id, revision),
+    do: {:error, %{error | operation: operation, job_id: id, expected_revision: revision}}
+
+  defp mutation_error(:not_found, _, _, _), do: {:error, :not_found}
+
+  defp mutation_error(reason, operation, id, revision) do
+    {:error, error} = public_error(reason, operation, id)
+    {:error, %{error | expected_revision: revision}}
   end
 
   defp request_options(options) do
@@ -96,8 +265,11 @@ defmodule Tay do
 
   defp ready(name) do
     case Admission.metadata(name) do
-      {:ok, %{status: %{state: :ready}} = meta} -> {:ok, meta}
-      _ -> {:error, :unavailable}
+      {:ok, %{status: %{state: state}} = meta} when state in [:ready, :draining, :drained] ->
+        {:ok, meta}
+
+      _ ->
+        {:error, :unavailable}
     end
   end
 

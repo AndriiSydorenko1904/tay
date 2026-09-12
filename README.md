@@ -1,15 +1,21 @@
 # Tay
 
 Tay is an Elixir library under development for embedded durable background jobs,
-using a segmented append-only log and reconstructable ETS indexes. The planned
+using a segmented append-only log and reconstructable ETS indexes. The
 engine has at-least-once execution semantics and no external database or broker.
 
-**Phases 0–4** provide the foundation, frozen physical storage/recovery contracts,
-the approved production Event v1 codec, pure lifecycle model, private indexes,
-durable insertion, lookup and same-ID reconciliation. **No workers run yet**:
-scheduling/execution is Phase 5; production qualification is Phase 6. Tay is not
-ready to process production jobs. Starting the application starts an empty supervisor;
-it does not establish storage readiness or a durability guarantee.
+**Phases 0–5** provide frozen physical storage/recovery and Event v1 contracts,
+durable insertion/reconciliation, private indexes, supervised execution,
+scheduling, automatic retries and revision-checked cancellation/manual retry.
+Phase 6 adds operational controls, cold restore, package and production-profile
+qualification. See the implementation reports and measured release gates before
+claiming production readiness; R5 approval and publication remain explicit.
+Starting the application starts an empty supervisor; it does not establish storage
+readiness or a durability guarantee.
+
+Operational references: [operations](docs/operations.md),
+[production limits](docs/production-limits.md), [cold restore](docs/restore.md),
+[compatibility](docs/compatibility.md), and [packaging](docs/packaging.md).
 
 ## Development
 
@@ -79,15 +85,18 @@ defmodule ExampleWorker do
 end
 ```
 
-`perform/1` can return `:ok`, `{:ok, result}`, or `{:error, reason}`. These are
-callback return values; no executor or result persistence exists yet.
+`perform/1` can return `:ok`, `{:ok, result}`, or `{:error, reason}`. Arbitrary return
+values/reasons are not persisted. Outcomes use fixed bounded diagnostics; successful
+results are discarded. Callbacks may repeat after infrastructure interruption:
+make external effects idempotent or reconcile them explicitly.
 
 Direct `%Tay.Job{}` construction is non-persistent. `Tay.Job.new/3` and the
 `use Tay.Worker` builder validate a separate immutable definition and allocate a
 stable ID before submission. Runtime structs, module names and arbitrary terms
-are never serialized. Tay does not dispatch the callback in this phase.
+are never serialized. Only explicitly configured stable keys map to trusted runtime
+worker modules; persisted strings never create atoms or load module names.
 
-## Durable job core (Phase 4)
+## Durable jobs and execution
 
 Example for **development only** (`:write` does not promise power-loss durability):
 
@@ -95,7 +104,7 @@ Example for **development only** (`:write` does not promise power-loss durabilit
 defmodule MailWorker do
   use Tay.Worker, key: "mail.send.v1", queue: :default, max_attempts: 10
   @impl true
-  def perform(%Tay.Job{}), do: :ok # not invoked in Phase 4
+  def perform(%Tay.Job{}), do: :ok
 end
 
 dir = Path.expand("local-development/tay")
@@ -105,13 +114,16 @@ dir = Path.expand("local-development/tay")
 # Normally add Tay.child_spec(options) to your host supervisor instead.
 {:ok, engine_supervisor} = Tay.start_link(
   data_dir: dir, durability: :write,
-  workers: %{"mail.send.v1" => MailWorker}, queues: [default: 10]
+  workers: %{"mail.send.v1" => MailWorker}, queues: [default: 10], start_paused: true
 )
 {:ok, intent} = MailWorker.new(%{"recipient" => "example.invalid"})
 {:ok, job} = Tay.insert(intent)
 {:ok, same_job} = Tay.insert(intent) # same ID + definition, no second append
 {:ok, current} = Tay.get_job(job.id)
 %{state: :ready} = Tay.status()
+:ok = Tay.resume_queue(:default)
+:ok = Tay.drain(timeout: 30_000) # queued jobs may remain; active tasks must settle/die
+:ok = Tay.stop()
 Supervisor.stop(engine_supervisor)
 ```
 
@@ -125,7 +137,8 @@ Production builds reject `:write`. `:sync` requires Linux, explicit
 `validated_filesystem: true`, a genuinely validated supported local filesystem,
 and explicit production path configuration. There is no automatic mode downgrade.
 `Tay.status().durability` reports the actual mode; a write-mode reply is never
-relabeled sync-durable. Production release readiness still requires Phases 5–6.
+relabeled sync-durable. Production release readiness requires the measured Phase 6
+qualification and explicit R5 approval.
 
 Use engine-specific options on `child_spec/start_link`, not in the foundation's
 `:tay` application environment. `:name` is a trusted atom (default `Tay.Engine`);
@@ -165,10 +178,22 @@ occupied after caller timeout/death until processing finishes or the generation
 is revoked. There is no unbounded waiting queue. This bounds the cooperative
 protocol, not hostile messages or all allocations/exit reasons inside a shared VM.
 
-All six Event types replay, including executing/cancelled/discarded histories,
-but only insertion is produced live. Removed worker/queue mappings retain jobs
+All six Event types replay and have approved live producers. Removed worker/queue mappings retain jobs
 as blocked state; they never create atoms, load persisted module names, or invoke
-workers during replay. SchedulerIndex is passive; there are no job timers.
+workers during replay. Scheduling/claims run only after successful recovery,
+activation, private-index construction and interrupted-execution reconciliation.
+
+`Tay.cancel/2` and `Tay.retry/2` use an opaque expected revision (captured once if
+omitted), never an automatic refreshed retry after an unknown outcome. Cancellation
+fences execution durably before best-effort termination; it cannot undo effects.
+Infrastructure interruption reuses the logical attempt with a new physical token;
+actual worker failure/timeout consumes the attempt. See the frozen Event contract.
+
+`Tay.pause_queue/2`, `resume_queue/2`, `drain/1`, `stop/1` and `restart/1` are volatile
+runtime controls, not new Events. A drain timeout stays draining. Forced stop is
+explicit and distinct from a successful drain. Restart uses fresh full recovery,
+never surviving ETS or a replayed RPC. Operational history/segment ceilings and
+active-outcome reserves preserve capacity without deleting retained jobs.
 
 ## Physical record codec
 
@@ -260,7 +285,7 @@ TAY_LARGE_RECOVERY_TEST=1 mix test test/tay/storage/recovery_large_test.exs --wa
 ## Architecture and review input
 
 - [Authoritative development plan](TAY_PLAN.md)
-- [Implemented Phase 0–4 architecture and scope](docs/architecture.md)
+- [Implemented Phase 0–6 architecture and scope](docs/architecture.md)
 - [Accepted adversarial review input for the future Phase 1 RFC](docs/phase-1-review-input.md)
 - [User-supplied record and segment candidates for future RFC review](docs/storage-rfc-input.md)
 - [Approved Phase 1 storage format RFC](docs/phase-1-storage-format-rfc.md)
@@ -269,6 +294,8 @@ TAY_LARGE_RECOVERY_TEST=1 mix test test/tay/storage/recovery_large_test.exs --wa
 - [Approved production roadmap](docs/production-roadmap-rfc.md)
 - [Approved Event v1 contract and literals](docs/event-v1-contract-appendix.md)
 - [Phase 4 implementation report](docs/phase-4-implementation-report.md)
+- [Phase 5 implementation report](docs/phase-5-implementation-report.md)
+- [Phase 6 qualification report and release gates](docs/phase-6-implementation-report.md)
 
 The accepted review input supplements the plan, including the requirement to
 start fixed compatibility fixtures in Phase 1. The supplied record/segment
@@ -277,4 +304,6 @@ supersedes their record proposal and establishes the v1 physical compatibility
 contract. The Phase 2 RFC and its approved implementation gates supersede the
 segment candidate. The Phase 3 RFC resolves recovery gates G1–G6 without changing
 either byte format. Phase 4 adds Event semantics and disposable projection without
-changing those contracts. Phase 5 execution and Phase 6 release gates remain future work.
+changing those contracts. Phase 5 execution and Phase 6 operational implementation
+retain the same contracts; measured R5 approval and publication remain explicit
+release gates, not an automatic consequence of a green development build.
