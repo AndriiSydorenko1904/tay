@@ -1,0 +1,8 @@
+/_build/
+/deps/
+/cover/
+/doc/
+/tmp/
+/var/tay/
+/erl_crash.dump
+*.ez
