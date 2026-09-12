@@ -13,14 +13,23 @@ defmodule Tay.Config do
 
   This module has no default storage path. This repository supplies provisional
   dev/test paths in `config/config.exs`; these are not production storage-location
-  semantics. An unconfigured path is accepted by the storage-free Phase 0
-  application. Production requirements will be settled before Phase 2.
+  semantics. An unconfigured path is accepted by development/test application
+  startup only. Production startup requires an explicitly configured path.
 
   Unknown and duplicate options are rejected. Queue strings are not converted
   to atoms. Durability and storage-format options are not defined in Phase 0.
   """
 
   defstruct data_dir: nil, queues: [default: 10]
+  @environment Mix.env()
+
+  @doc "Enforces the production storage-location requirement without filesystem I/O."
+  def validate_startup(config, environment \\ @environment)
+
+  def validate_startup(%__MODULE__{data_dir: nil}, :prod),
+    do: invalid(:data_dir, "must be explicitly configured in production")
+
+  def validate_startup(%__MODULE__{}, _environment), do: :ok
 
   @type t :: %__MODULE__{
           data_dir: String.t() | nil,

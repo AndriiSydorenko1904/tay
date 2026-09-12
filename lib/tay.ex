@@ -9,7 +9,9 @@ defmodule Tay do
   Phase 1 adds the pure `Tay.Storage.Record` framing/integrity codec with opaque
   payloads. Physical decoding is not semantic acceptance or applied replay.
 
-  Persistent storage I/O, insertion, scheduling, and execution are not implemented.
+  Phase 2 adds physical segmented storage through an explicitly supervised
+  internal Writer and its native filesystem Port. Semantic recovery, insertion,
+  scheduling, and execution are not implemented.
   Application startup does not indicate storage readiness or durability.
   """
 end
