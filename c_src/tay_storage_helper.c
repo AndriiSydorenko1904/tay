@@ -28,7 +28,7 @@
 enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   CLOSE_READ=6, CREATE_STAGE=7, OPEN_ACTIVE=8, WRITE_AT=9, SYNC_FILE=10,
   CLOSE_WRITE=11, PUBLISH=12, SYNC_DIR=13, CHECK=14, INFO=15,
-  SYNC_READ=16, SHUTDOWN=17, FAULT=240 };
+  SYNC_READ=16, SHUTDOWN=17, ACQUIRE_EXISTING=18, ENABLE_MUTATIONS=19, FAULT=240 };
 static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
 static int write_scope, write_kind, read_scope, poisoned, acquired;
 static char root_path[PATH_MAX], write_name[256], read_name[256];
@@ -36,10 +36,37 @@ static struct stat read_identity, write_identity;
 static int strict_mode, validated_fs, root_created;
 static uint64_t filesystem_type, known_written;
 static uint32_t ancestor_syncs;
+static int inspection_only;
+static uint32_t directory_limit=UINT32_MAX;
 static const unsigned char *input;
 static size_t input_n, pos;
 static unsigned char output[PACKET_MAX];
 static size_t output_n;
+
+#ifdef TAY_TEST_FAULTS
+static int fault_op, fault_n, fault_action, fault_errno;
+static uint64_t fault_short;
+static int fault_now;
+#endif
+
+/* Targets 241..244 exist only as test fault sites, never request opcodes. */
+static int promotion_sync(int fd, unsigned target) {
+#ifdef TAY_TEST_FAULTS
+  int hit=fault_op==(int)target && fault_n>0 && --fault_n==0;
+  if (hit) {
+    fault_now=1;
+    if (fault_action==5) _exit(95);
+    if (fault_action==1 || fault_action==8) { errno=fault_errno?fault_errno:EIO; return -1; }
+  }
+#else
+  (void)target;
+#endif
+  int result=fsync(fd);
+#ifdef TAY_TEST_FAULTS
+  if (hit && fault_action==3) _exit(93);
+#endif
+  return result;
+}
 
 static int need(size_t n) { return n <= input_n-pos; }
 static uint64_t number(size_t n) {
@@ -130,7 +157,7 @@ static int walk_root(int create, int *result, int *created) {
     char *next=strtok_r(NULL,"/",&save);
     if (!basename_ok(part)) { close(fd); return EINVAL; }
     int child=openat(fd,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if (child<0 && errno==ENOENT && create) {
+    if (child<0 && errno==ENOENT && create==1) {
       int e=filesystem(fd);
       if (e) { close(fd); return e; }
       if (mkdirat(fd,part,0700)<0) { e=errno; close(fd); return e; }
@@ -140,7 +167,8 @@ static int walk_root(int create, int *result, int *created) {
     if (child<0) { int e=errno; close(fd); return e; }
     /* Existing entries can belong to an interrupted earlier mkdir/fsync. */
     if (create) {
-      if (fsync(fd)<0) { int e=errno; close(child); close(fd); return e; }
+      int synced=create==2?promotion_sync(fd,241):fsync(fd);
+      if (synced<0) { int e=errno; close(child); close(fd); return e; }
       ancestor_syncs++;
     }
     if (close(fd)<0) { int e=errno; close(child); return e; }
@@ -202,10 +230,15 @@ static int stage_kind(int scope,const char *name) {
   }
   return 0;
 }
-static int acquire(void) {
+static int acquire(int existing) {
   if (acquired || !need(2)) return EPROTO;
   strict_mode=(int)number(1); validated_fs=(int)number(1);
   if (strict_mode>1 || validated_fs>1) return EINVAL;
+  if (existing) {
+    if (!need(4)) return EPROTO;
+    directory_limit=(uint32_t)number(4);
+    if (!directory_limit) return EINVAL;
+  }
 #ifndef __linux__
   if (strict_mode) return ENOTSUP;
 #endif
@@ -214,25 +247,54 @@ static int acquire(void) {
   if (e || pos!=input_n) return e?e:EPROTO;
   if (strict_mode && (!strncmp(root_path,"/tmp/",5) || !strcmp(root_path,"/tmp") ||
       !strncmp(root_path,"/var/tmp/",9) || !strncmp(root_path,"/dev/shm/",9))) return ENOTSUP;
-  e=walk_root(1,&root_fd,&root_created);
+  e=walk_root(existing?0:1,&root_fd,&root_created);
   if (e) return e;
   e=filesystem(root_fd); if (e) return e;
   int created=0;
-  lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
-  if (lock_fd>=0) created=1;
-  else if (errno==EEXIST) lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+  if (existing) {
+    lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+  } else {
+    lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    if (lock_fd>=0) created=1;
+    else if (errno==EEXIST) lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+  }
   if (lock_fd<0) return errno;
   struct stat s;
   e=checked_regular(lock_fd,root_fd,".tay-owner.lock",&s); if (e) return e;
   if (flock(lock_fd,LOCK_EX|LOCK_NB)<0) return errno;
   acquired=1;
-  e=rename_capability(); if (e) return e;
-  if (fsync(root_fd)<0) return errno;
-  if (created && fsync(lock_fd)<0) return errno;
-  if (created && fsync(root_fd)<0) return errno;
+  inspection_only=existing;
+  if (!existing) {
+    e=rename_capability(); if (e) return e;
+    if (fsync(root_fd)<0) return errno;
+    if (created && fsync(lock_fd)<0) return errno;
+    if (created && fsync(root_fd)<0) return errno;
+  }
   e=open_segments(); if (e && e!=ENOENT) return e;
   put(root_created,1); put(filesystem_type,8); put((uint64_t)getpid(),8);
   return check_paths();
+}
+/* Promotion keeps every ownership FD. Mode 2 walks/syncs existing ancestors
+ * without granting mkdir permission, even if an external path disappears. */
+static int enable_mutations(void) {
+  if (!inspection_only || read_fd>=0 || write_fd>=0) return EBUSY;
+  int e=check_paths(); if (e) return e;
+  e=filesystem(root_fd); if (e) return e;
+  if (segments_fd<0) return ENOENT;
+  e=filesystem(segments_fd); if (e) return e;
+  e=rename_capability(); if (e) return e;
+  int current=-1, created=0;
+  e=walk_root(2,&current,&created); if (e) return e;
+  struct stat pinned, now;
+  if (fstat(root_fd,&pinned)<0 || fstat(current,&now)<0) e=errno;
+  else if (!same(&pinned,&now)) e=ESTALE;
+  if (close(current)<0 && !e) e=errno;
+  if (e) return e;
+  if (promotion_sync(lock_fd,242)<0 || promotion_sync(root_fd,243)<0 ||
+      promotion_sync(segments_fd,244)<0) return errno;
+  e=check_paths(); if (e) return e;
+  inspection_only=0;
+  return 0;
 }
 static int list_directory(void) {
   if (!need(1)) return EPROTO;
@@ -246,6 +308,7 @@ static int list_directory(void) {
   errno=0;
   while ((ent=readdir(dir))) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
+    if (count>=directory_limit) { e=EFBIG; break; }
     size_t n=strlen(ent->d_name); struct stat s;
     if (output_n+n+39>PACKET_MAX-23) { e=EFBIG; break; }
     if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
@@ -280,6 +343,9 @@ static int read_at(void) {
   uint64_t off=number(8), n=number(4);
   if (off>SEGMENT_MAX || n>16777244u || off+n>SEGMENT_MAX) return EFBIG;
   int e=validate_read(); if (e) return e;
+#ifdef TAY_TEST_FAULTS
+  if (fault_now && fault_action==2 && n) n=fault_short<n?fault_short:n-1;
+#endif
   ssize_t got=pread(read_fd,output,(size_t)n,(off_t)off);
   if (got<0) return errno;
   output_n=(size_t)got; return validate_read();
@@ -312,12 +378,6 @@ static int open_active(void) {
   if (e) { close(write_fd); write_fd=-1; return e; }
   stat_out(&write_identity); return 0;
 }
-
-#ifdef TAY_TEST_FAULTS
-static int fault_op, fault_n, fault_action, fault_errno;
-static uint64_t fault_short;
-static int fault_now;
-#endif
 
 static int write_at(void) {
   if (write_fd<0 || !need(8)) return EBADF;
@@ -376,7 +436,10 @@ static int publish(void) {
 }
 static int dispatch(unsigned op) {
   int e=0, fd;
-  if (op==ACQUIRE) return acquire();
+  if (op==ACQUIRE || op==ACQUIRE_EXISTING) {
+    if (poisoned || root_fd>=0) return ECANCELED;
+    return acquire(op==ACQUIRE_EXISTING);
+  }
   if (op==SHUTDOWN) {
     int descriptors[]={write_fd,read_fd,segments_fd,root_fd,lock_fd};
     for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
@@ -394,6 +457,9 @@ static int dispatch(unsigned op) {
 #endif
   if (poisoned) return ECANCELED;
   e=check_paths(); if (e) return e;
+  if (op==ENABLE_MUTATIONS) return enable_mutations();
+  if (inspection_only && op!=LIST && op!=OPEN_READ && op!=READ_AT &&
+      op!=CLOSE_READ && op!=CHECK && op!=INFO) return EPERM;
   switch (op) {
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
@@ -430,9 +496,9 @@ static int dispatch(unsigned op) {
 static int validate_request(unsigned op) {
   char name[PATH_MAX]; int e=0;
   switch (op) {
-    case ACQUIRE:
-      if (!need(2)) return EPROTO;
-      pos+=2; e=string(name,sizeof(name)); break;
+    case ACQUIRE: case ACQUIRE_EXISTING:
+      if (!need(op==ACQUIRE_EXISTING?6:2)) return EPROTO;
+      pos+=op==ACQUIRE_EXISTING?6:2; e=string(name,sizeof(name)); break;
     case LIST: case SYNC_DIR:
       if (!need(1)) return EPROTO;
       pos++; break;
@@ -456,7 +522,7 @@ static int validate_request(unsigned op) {
       if (!need(16)) return EPROTO;
       pos+=16; break;
     case MKDIR_SEGMENTS: case CLOSE_READ: case SYNC_FILE: case CLOSE_WRITE:
-    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: break;
+    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS: break;
 #ifdef TAY_TEST_FAULTS
     case FAULT:
       if (!need(18)) return EPROTO;

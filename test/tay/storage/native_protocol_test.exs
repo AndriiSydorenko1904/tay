@@ -50,4 +50,130 @@ defmodule Tay.Storage.NativeProtocolTest do
       Port.close(port)
     end
   end
+
+  test "existing-only acquisition has no creation fallback or deferred sync", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    assert {:error, %{reason: "enoent"}} = R.open(path)
+    refute File.exists?(path)
+    R.store(path)
+    before = R.snapshot(path)
+    {:ok, native} = R.open(path)
+    assert Native.inspection?(native)
+    assert {:ok, %{ancestor_syncs: 0, readable: false, writable: 0}} = Native.info(native)
+    assert R.snapshot(path) == before
+    assert :ok = Native.enable_mutations(native)
+    refute Native.inspection?(native)
+    assert {:ok, %{ancestor_syncs: count, writable: 0}} = Native.info(native)
+    assert count > 0
+    assert R.snapshot(path) == before
+    Native.shutdown(native)
+  end
+
+  test "every mutating opcode is denied by an inspection-only helper", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    R.store(path)
+    before = R.snapshot(path)
+
+    for operation <- [
+          fn n -> Native.mkdir_segments(n) end,
+          fn n -> Native.create_stage(n, :segments, stage()) end,
+          fn n ->
+            Native.create_stage(n, :root, ".tay-store-" <> String.duplicate("0", 32) <> ".tmp")
+          end,
+          fn n -> Native.open_active(n, canonical(1), %{size: 44, device: 1, inode: 1}) end,
+          fn n -> Native.write(n, 44, <<1>>) end,
+          fn n -> Native.sync(n) end,
+          fn n -> Native.sync_read(n) end,
+          fn n -> Native.sync_dir(n, :root) end,
+          fn n -> Native.sync_dir(n, :segments) end,
+          fn n -> Native.close_write(n) end,
+          fn n -> Native.publish(n, :segments, stage(), canonical(2), %{device: 1, inode: 1}) end
+        ] do
+      {:ok, native} = R.open(path)
+      assert {:error, %{reason: "eperm"}} = operation.(native)
+      Native.shutdown(native)
+      assert R.snapshot(path) == before
+    end
+  end
+
+  test "inspection rejects a second acquisition and promotion with an open read FD", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    R.store(path)
+    before = R.snapshot(path)
+    {:ok, native} = R.open(path)
+    {:ok, _} = Native.open_read(native, :segments, canonical(1))
+    assert {:error, %{reason: "ebusy"}} = Native.enable_mutations(native)
+    assert {:error, %{kind: :uncertain}} = Native.info(native)
+    {:ok, native} = R.after_release(fn -> R.open(path) end)
+    port = native.port
+    target = path <> "-must-not-exist"
+    Port.command(port, <<1, 1, 456::64, 0, 0, byte_size(target)::16, target::binary>>)
+    assert_receive {^port, {:data, <<1, 1, 456::64, 1, _::32, 0::64, "poisoned">>}}, 5_000
+    refute File.exists?(target)
+    Native.shutdown(native)
+    assert R.snapshot(path) == before
+  end
+
+  test "malformed inspection/promotion packets cannot mutate namespace", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    R.store(path)
+    before = R.snapshot(path)
+
+    for body <- [
+          <<>>,
+          <<0, 0, 100_000::32>>,
+          <<0, 0, 0::32, byte_size(path)::16, path::binary>>,
+          <<0, 0, 100_000::32, byte_size(path)::16, path::binary, 99>>
+        ] do
+      port =
+        Port.open(
+          {:spawn_executable,
+           String.to_charlist(Application.app_dir(:tay, "priv/tay_storage_helper"))},
+          [:binary, :exit_status, :use_stdio, {:packet, 4}]
+        )
+
+      Port.command(port, <<1, 18, 999::64, body::binary>>)
+      assert_receive {^port, {:data, <<1, 18, 999::64, 1, _::32, 0::64, _::binary>>}}, 5_000
+      Port.close(port)
+      assert R.snapshot(path) == before
+    end
+
+    {:ok, native} = R.open(path)
+    port = native.port
+    Port.command(port, <<1, 19, 999::64, 1>>)
+
+    assert_receive {^port, {:data, <<1, 19, 999::64, 1, _::32, 0::64, "invalid_protocol">>}},
+                   5_000
+
+    Native.shutdown(native)
+    assert R.snapshot(path) == before
+  end
+
+  test "native listing entry cap returns no partial inventory", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    R.store(path)
+    {:ok, native} = R.open(path, max_directory_entries: 2)
+    assert {:error, %{reason: "resource_limit"}} = Native.list(native, :root)
+    Native.shutdown(native)
+    {:ok, native} = R.open(path, max_directory_entries: 3)
+    assert {:ok, entries} = Native.list(native, :root)
+    assert length(entries) == 3
+    Native.shutdown(native)
+  end
+
+  test "old-helper opcode rejection never falls back to creating acquisition", %{path: path} do
+    # Simulate an old helper's exact EPROTO response to opcode 18 before any
+    # acquisition. Fault-control installation itself performs no filesystem I/O.
+    errno = if :os.type() == {:unix, :darwin}, do: 100, else: 71
+    hook = fn native -> Native.fault(native, :acquire_existing, 1, :error, errno) end
+
+    assert {:error, %{operation: :acquire_existing, reason: "invalid_protocol"}} =
+             Native.open_existing(path,
+               durability: :write,
+               test_helper: true,
+               test_before_acquire: hook
+             )
+
+    refute File.exists?(path)
+  end
 end

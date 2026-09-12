@@ -54,13 +54,44 @@ Type is regular=1, directory=2, symlink=3, other=4.
 | 15 diagnostics | empty | helper_pid:u64, write_kind:u8, read_open:u8, filesystem_type:u64, ancestor_syncs:u32 |
 | 16 sync read-only file | empty | empty |
 | 17 shutdown | empty | empty, after all FDs close and lock releases; then exit |
+| 18 acquire existing | strict:u8, operator_validated:u8, max_directory_entries:u32, absolute_path:str | root_created:u8=0, filesystem_type:u64, helper_pid:u64; inspection-only session |
+| 19 enable mutations | empty | empty, after deferred barriers; same helper and lock |
 | 240 test fault | opcode:u8, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
 
-Fault actions are before-call error=1, short pwrite=2, crash after=3, drop reply=4,
+Fault actions are before-call error=1, short pwrite/pread=2, crash after=3, drop reply=4,
 crash before=5, lose lock FD=6, mismatched reply ID=7, pwrite returning error=8.
 They are compiled out of the production executable and Elixir API. Malformed
 control packets are rejected before filesystem operations. Poisoned helpers
 permit only cleanup shutdown; a transport failure closes the connection.
+
+Test-only fault targets 241–244 select promotion's ancestor, lock, root and
+segments-directory fsync sites respectively. They are not request opcodes or
+persisted fields; the occurrence counter can select a particular ancestor.
+The test-only Elixir `test_before_acquire` hook installs acquisition faults
+before any filesystem operation. Neither hook nor fault API is enabled in a
+production build.
+
+## Phase 3 inspection and promotion
+
+Opcode 18 opens only existing, no-follow directories and the existing lock;
+it never bootstraps, creates or syncs anything. A missing existing lock is an
+operational ownership failure. Enumeration has the caller's nonzero uint32
+entry budget as well as the unchanged packet cap; overflow returns no partial
+inventory. Inspection permits list/read-only open/pread/close/check/info/shutdown
+only. Mutating opcodes and reacquisition are refused, not routed through opcode 1.
+
+The same Writer owns the same Port and lock through physical preflight,
+semantic replay, private reduction and revalidation. Only then does it send
+opcode 19. Promotion requires no open read/write FD, rechecks capabilities and
+identities, resyncs existing ancestor entries without mkdir permission, then
+syncs the lock/root/segments directory. It neither bootstraps nor creates a
+successor; approved Phase 2 publication remains an explicit subsequent Writer
+operation. Failure/uncertainty poisons the owner; no promotion retry is legal.
+
+The native helper enforces capabilities, not Event semantics. The trusted Writer
+must establish semantic authorization before promotion. There is no Port transfer,
+lock release/reacquire handoff or durable recovery ticket. All Record, STORE and
+segment bytes, existing opcode encodings and physical CRC ownership are unchanged.
 
 ## Filesystem assumptions and exact syscall boundary
 

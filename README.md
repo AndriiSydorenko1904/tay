@@ -4,9 +4,10 @@ Tay is an Elixir library under development for embedded durable background jobs,
 using a segmented append-only log and reconstructable ETS indexes. The planned
 engine has at-least-once execution semantics and no external database or broker.
 
-**Phases 0–2** are implemented: the project foundation, physical record codec,
-and segmented filesystem storage. There is no semantic recovery, insertion API,
-scheduler, or queue execution yet. Tay is not ready
+**Phases 0–3** provide the project foundation, physical record codec, segmented
+filesystem storage, and non-destructive recovery with an explicit EventDecoder
+boundary. Only test semantic providers exist; production Event semantics,
+insertion APIs, scheduling and queue execution remain unimplemented. Tay is not ready
 to process production jobs. Starting the application starts an empty supervisor;
 it does not establish storage readiness or a durability guarantee.
 
@@ -134,18 +135,60 @@ The explicit, slower 1 GiB bounded-parser test is opt-in:
 TAY_LARGE_SEGMENT_TEST=1 mix test test/tay/storage/segment_large_test.exs --warnings-as-errors
 ```
 
+## Recovery boundary
+
+`Tay.Storage.Recovery.inspect/2` performs physical inspection only.
+`replay/5` requires an explicitly configured `EventDecoder` and pure reducer;
+it validates the entire physical history before any semantic callback. Unknown
+types/schemas, invalid payloads and callback errors stop replay without skipping
+events or returning a partial candidate. Every complete contiguous understood
+event participates, even if the previous caller acknowledgement is unknown.
+No exactly-once guarantee follows.
+
+`Tay.Storage.Writer.start_recovered_link/2` retains its private candidate under
+the same Writer → native helper/Port → existing lock session. Its status initially
+reports `:awaiting_activation`. `activate_recovered/2` requires that live session
+reference, revalidates the store and completes Phase 2 barriers before returning
+the candidate and a distinct mutation-admission reference. Recovered append,
+seal and rotate calls require that admission reference. Offline inspection
+results, old references and release/reacquire handoffs cannot activate a writer.
+
+Recovery inspects **existing initialized storage only**. It never creates a
+missing root, lock, STORE or segments directory. Bootstrap remains separate.
+An incomplete Record/footer/canonical suffix preserves all evidence, publishes
+no partial recovered state, never reuses occupied/ambiguous sequence space and
+refuses writable activation. There is no automatic repair or writable restart
+from a torn tail, and no journal, watermark or acknowledgement sidecar.
+
+Recovery budgets are operational, not format limits. Budget refusals preserve
+storage and can be retried with adequate resources in a fresh attempt. An I/O
+timeout after activation begins has the existing uncertain-outcome semantics;
+it is not permission to retry a mutation. Callbacks are trusted, bounded and
+pure; callback/kernel stalls are not preempted by cooperative deadlines alone.
+
+See the [approved Phase 3 RFC](docs/phase-3-recovery-rfc.md) and
+[implementation report](docs/phase-3-implementation-report.md). The opt-in recovery
+tests exercise a real 1 GiB store and many small segments:
+
+```sh
+TAY_LARGE_RECOVERY_TEST=1 mix test test/tay/storage/recovery_large_test.exs --warnings-as-errors
+```
+
 ## Architecture and review input
 
 - [Authoritative development plan](TAY_PLAN.md)
-- [Implemented Phase 0–2 architecture and scope](docs/architecture.md)
+- [Implemented Phase 0–3 architecture and scope](docs/architecture.md)
 - [Accepted adversarial review input for the future Phase 1 RFC](docs/phase-1-review-input.md)
 - [User-supplied record and segment candidates for future RFC review](docs/storage-rfc-input.md)
 - [Approved Phase 1 storage format RFC](docs/phase-1-storage-format-rfc.md)
 - [Approved Phase 2 segment/rotation RFC](docs/phase-2-segment-format-rotation-rfc.md)
+- [Approved Phase 3 recovery RFC](docs/phase-3-recovery-rfc.md)
 
 The accepted review input supplements the plan, including the requirement to
 start fixed compatibility fixtures in Phase 1. The supplied record/segment
 candidates are preserved as historical design input. The approved Phase 1 RFC
 supersedes their record proposal and establishes the v1 physical compatibility
 contract. The Phase 2 RFC and its approved implementation gates supersede the
-segment candidate. Phase 3 recovery design and implementation remain deferred.
+segment candidate. The Phase 3 RFC resolves recovery gates G1–G6 without changing
+either byte format. Production Event semantics and Phase 4 projection remain
+separate future work.

@@ -9,7 +9,8 @@ defmodule Tay.Storage.Writer do
   not Event validation, job insertion, or semantic recovery readiness.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
+  alias Tay.Storage.{CRC32C, Native, Reader, Record, Recovery, Segment}
+  alias Tay.Storage.Recovery.Error
   @test Mix.env() == :test
 
   def start_link(options) do
@@ -17,6 +18,49 @@ defmodule Tay.Storage.Writer do
       do: GenServer.start_link(__MODULE__, options, Keyword.take(options, [:name])),
       else: {:error, :invalid_writer_options}
   end
+
+  @doc "Replays an existing store, retaining its owner/Port/lock and private candidate."
+  def start_recovered_link(storage_options, replay_spec) do
+    with {:ok, storage} <- options(storage_options),
+         true <-
+           not storage.bootstrap ||
+             {:error, Error.new(:argument, :recovery_cannot_bootstrap, :validation)},
+         true <-
+           (is_map(replay_spec) and
+              Enum.sort(Map.keys(replay_spec)) == [:codec, :initial_acc, :options, :reducer]) ||
+             {:error, Error.new(:argument, :invalid_replay_spec, :validation)},
+         {:ok, budgets} <- Recovery.options(replay_spec.options),
+         {:ok, _} <- Recovery.provider(replay_spec.codec, replay_spec.reducer) do
+      deadline = System.monotonic_time(:millisecond) + budgets.deadline_ms
+
+      GenServer.start_link(
+        __MODULE__,
+        {:recovered, storage, replay_spec, budgets, deadline, self()},
+        Keyword.take(storage_options, [:name]) ++
+          [timeout: budgets.deadline_ms + budgets.io_timeout_ms + 1_000]
+      )
+    else
+      {:error, reason} -> {:error, Error.wrap(reason, :validation)}
+    end
+  end
+
+  @doc "Activates once, in the same live ownership session; returns state input only after success."
+  def activate_recovered(writer, session_ref),
+    do: GenServer.call(writer, {:activate_recovered, session_ref}, :infinity)
+
+  def append(writer, admission_ref, type, schema, payload),
+    do:
+      GenServer.call(
+        writer,
+        {:admitted, admission_ref, {:append, type, schema, payload}},
+        :infinity
+      )
+
+  def seal(writer, admission_ref),
+    do: GenServer.call(writer, {:admitted, admission_ref, :seal}, :infinity)
+
+  def rotate(writer, admission_ref),
+    do: GenServer.call(writer, {:admitted, admission_ref, :rotate}, :infinity)
 
   def status(writer), do: GenServer.call(writer, :status, :infinity)
   @doc "Appends opaque physical bytes supplied by an upstream semantic validator."
@@ -35,6 +79,86 @@ defmodule Tay.Storage.Writer do
   end
 
   @impl true
+  def init({:recovered, options, spec, budgets, deadline, caller}) do
+    Process.flag(:trap_exit, true)
+
+    native_options = [
+      durability: options.durability,
+      validated_filesystem: options.validated_filesystem,
+      test_helper: options.test_helper,
+      timeout: budgets.io_timeout_ms,
+      max_directory_entries: budgets.max_directory_entries,
+      deadline: deadline
+    ]
+
+    case Native.open_existing(options.data_dir, native_options) do
+      {:ok, native} ->
+        state = %{
+          native: native,
+          options: options,
+          segment: nil,
+          store_id: nil,
+          next_sequence: 1,
+          poisoned: nil,
+          recovery: nil
+        }
+
+        with :ok <- hook(state, :recovery_acquired),
+             {:ok, result, candidate, view, identity} <-
+               Recovery.prepare(native, spec.codec, spec.initial_acc, spec.reducer, spec.options),
+             true <-
+               Process.alive?(caller) ||
+                 {:error, Error.new(:ownership_unavailable, :caller_lost, :replay)},
+             :ok <- hook(state, :recovery_replayed) do
+          reference = make_ref()
+
+          recovery = %{
+            status: :awaiting_activation,
+            result: result,
+            candidate: candidate,
+            view: view,
+            provider: identity,
+            session_ref: reference,
+            admission_ref: nil,
+            caller: caller,
+            monitor: Process.monitor(caller),
+            options: budgets,
+            expires_at: System.monotonic_time(:millisecond) + budgets.activation_window_ms
+          }
+
+          schedule_expiry(recovery)
+
+          {:ok,
+           %{
+             state
+             | segment: view.store.highest,
+               store_id: view.store.store_id,
+               next_sequence: view.store.next_sequence,
+               recovery: recovery
+           }}
+        else
+          {:error, reason} ->
+            Native.shutdown(native)
+            {:stop, Error.wrap(reason, :replay)}
+        end
+
+      {:error, reason} ->
+        error = Error.wrap(reason, :ownership)
+
+        error =
+          if match?(%{reason: "enoent"}, reason),
+            do: %{error | kind: :ownership_unavailable, reason: :existing_root_or_lock_missing},
+            else: error
+
+        error =
+          if match?(%{reason: "invalid_protocol"}, reason),
+            do: %{error | kind: :ownership_unavailable, reason: :incompatible_native_helper},
+            else: error
+
+        {:stop, error}
+    end
+  end
+
   def init(options) do
     Process.flag(:trap_exit, true)
 
@@ -68,7 +192,73 @@ defmodule Tay.Storage.Writer do
   def handle_call(_request, _from, %{poisoned: reason} = state) when not is_nil(reason),
     do: {:reply, {:error, {:poisoned, reason}}, state}
 
-  def handle_call({:append, type, schema, payload}, _from, state) do
+  def handle_call({:activate_recovered, reference}, {caller, _}, %{recovery: recovery} = state)
+      when is_map(recovery) do
+    cond do
+      recovery.status != :awaiting_activation ->
+        {:reply, {:error, Error.new(:ownership_unavailable, :already_activated, :activation)},
+         state}
+
+      reference != recovery.session_ref ->
+        {:reply, {:error, Error.new(:ownership_unavailable, :stale_session, :activation)}, state}
+
+      System.monotonic_time(:millisecond) >= recovery.expires_at ->
+        recovery_failure(
+          state,
+          Error.new(:resource_limit, :activation_window_expired, :revalidation)
+        )
+
+      true ->
+        activate(state, caller)
+    end
+  end
+
+  def handle_call({:activate_recovered, _}, _, state),
+    do:
+      {:reply, {:error, Error.new(:ownership_unavailable, :not_recovered_session, :activation)},
+       state}
+
+  def handle_call({:admitted, reference, request}, from, %{recovery: recovery} = state)
+      when is_map(recovery) do
+    if recovery.status == :ready and is_reference(reference) and
+         reference == recovery.admission_ref,
+       do: mutate(request, from, state),
+       else: {:reply, {:error, :mutation_not_admitted}, state}
+  end
+
+  def handle_call({:admitted, _, _}, _, state),
+    do: {:reply, {:error, :not_recovered_session}, state}
+
+  def handle_call({:append, _, _, _}, _, %{recovery: recovery} = state) when is_map(recovery),
+    do: {:reply, {:error, :admission_reference_required}, state}
+
+  def handle_call(request, _, %{recovery: recovery} = state)
+      when is_map(recovery) and request in [:seal, :rotate],
+      do: {:reply, {:error, :admission_reference_required}, state}
+
+  def handle_call({:reduce, _, _}, _, %{recovery: %{status: status}} = state)
+      when status != :ready, do: {:reply, {:error, :not_activated}, state}
+
+  def handle_call({:append, _, _, _} = request, from, state), do: mutate(request, from, state)
+
+  def handle_call(request, from, state) when request in [:seal, :rotate],
+    do: mutate(request, from, state)
+
+  def handle_call({:reduce, accumulator, reducer}, _from, state) do
+    case Reader.reduce(state.native, accumulator, reducer) do
+      {:ok, _} = result -> {:reply, result, state}
+      {:error, reason} = result -> {:reply, result, poison(state, reason)}
+    end
+  end
+
+  if @test do
+    def handle_call({:fault, operation, occurrence, action, errno, count}, _from, state) do
+      result = Native.fault(state.native, operation, occurrence, action, errno, count)
+      {:reply, result, state}
+    end
+  end
+
+  defp mutate({:append, type, schema, payload}, _from, state) do
     case encode_candidate(state, type, schema, payload) do
       {:ok, bytes} ->
         case append_with_capacity(state, bytes, type, schema, payload) do
@@ -82,14 +272,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:reduce, accumulator, reducer}, _from, state) do
-    case Reader.reduce(state.native, accumulator, reducer) do
-      {:ok, _} = result -> {:reply, result, state}
-      {:error, reason} = result -> {:reply, result, poison(state, reason)}
-    end
-  end
-
-  def handle_call(:seal, _from, state) do
+  defp mutate(:seal, _from, state) do
     cond do
       state.segment.state == :sealed ->
         {:reply, {:error, :already_sealed}, state}
@@ -105,7 +288,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call(:rotate, _from, state) do
+  defp mutate(:rotate, _from, state) do
     case rotate_segment(state) do
       {:ok, next} -> {:reply, {:ok, next.segment}, next}
       {:reject, reason} -> {:reply, {:error, reason}, state}
@@ -113,14 +296,42 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  if @test do
-    def handle_call({:fault, operation, occurrence, action, errno, count}, _from, state) do
-      result = Native.fault(state.native, operation, occurrence, action, errno, count)
-      {:reply, result, state}
+  @impl true
+  def handle_info(
+        {:recovery_expired, reference},
+        %{recovery: %{session_ref: reference, status: :awaiting_activation} = recovery} = state
+      ) do
+    if System.monotonic_time(:millisecond) >= recovery.expires_at do
+      {:stop, :normal,
+       poison(state, Error.new(:resource_limit, :activation_window_expired, :revalidation))}
+    else
+      schedule_expiry(recovery)
+      {:noreply, state}
     end
   end
 
-  @impl true
+  def handle_info({:recovery_expired, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, _, _},
+        %{recovery: %{monitor: monitor, status: :awaiting_activation}} = state
+      ),
+      do:
+        {:stop, :normal,
+         poison(state, Error.new(:ownership_unavailable, :caller_lost, :revalidation))}
+
+  def handle_info(
+        {port, {:exit_status, _}},
+        %{native: %{port: port}, recovery: %{status: :terminal}} = state
+      ),
+      do: {:noreply, state}
+
+  def handle_info(
+        {:EXIT, port, _},
+        %{native: %{port: port}, recovery: %{status: :terminal}} = state
+      ),
+      do: {:noreply, state}
+
   def handle_info({port, {:exit_status, code}}, %{native: %{port: port}} = state),
     do: {:noreply, poison(state, {:helper_exit, code})}
 
@@ -130,8 +341,133 @@ defmodule Tay.Storage.Writer do
   def handle_info({port, {:data, _}}, %{native: %{port: port}} = state),
     do: {:noreply, poison(state, :unsolicited_native_reply)}
 
+  def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
+
   @impl true
   def terminate(_reason, state), do: Native.shutdown(state.native)
+
+  defp schedule_expiry(recovery) do
+    delay = max(recovery.expires_at - System.monotonic_time(:millisecond), 0)
+
+    Process.send_after(
+      self(),
+      {:recovery_expired, recovery.session_ref},
+      min(delay, 4_294_967_295)
+    )
+  end
+
+  defp activate(state, caller) do
+    recovery = state.recovery
+
+    native = %{
+      state.native
+      | deadline: System.monotonic_time(:millisecond) + recovery.options.activation_deadline_ms
+    }
+
+    state = %{state | native: native}
+
+    with :ok <- hook(state, :recovery_revalidating),
+         :ok <- Recovery.revalidate(native, recovery.view, recovery.provider, recovery.options),
+         true <-
+           (Process.alive?(caller) and Process.alive?(recovery.caller)) ||
+             {:error, Error.new(:ownership_unavailable, :caller_lost, :revalidation)} do
+      activate_validated(state, caller)
+    else
+      {:error, reason} -> recovery_failure(state, Error.wrap(reason, :revalidation))
+    end
+  end
+
+  defp activate_validated(state, caller) do
+    recovery = state.recovery
+
+    with :ok <- Native.enable_mutations(state.native),
+         :ok <- hook(state, :recovery_promoted),
+         {:ok, next} <- open_recovered(state, recovery.view.store),
+         :ok <- Recovery.check_deadline(state.native),
+         true <-
+           (Process.alive?(caller) and Process.alive?(recovery.caller)) || {:error, :caller_lost} do
+      terminal = recovery.view.store.exhausted
+      reference = if terminal, do: nil, else: make_ref()
+
+      summary =
+        recovery.result
+        |> Map.drop([:segments])
+        |> Map.merge(%{
+          scope: :activated,
+          state: if(terminal, do: :terminal, else: :ready),
+          highest: next.segment,
+          admission_ref: reference
+        })
+
+      candidate = recovery.candidate
+      Process.demonitor(recovery.monitor, [:flush])
+
+      updated = %{
+        recovery
+        | status: summary.state,
+          candidate: nil,
+          view: nil,
+          session_ref: nil,
+          admission_ref: reference,
+          result: Map.drop(summary, [:admission_ref])
+      }
+
+      native = %{next.native | deadline: nil, timeout: next.options.timeout}
+      if terminal, do: Native.shutdown(native)
+      {:reply, {:ok, summary, candidate}, %{next | native: native, recovery: updated}}
+    else
+      {:error, reason} ->
+        error = Error.wrap(reason, :activation)
+
+        recovery_failure(state, %{
+          error
+          | stage: :activation,
+            kind: :uncertain_activation,
+            mutation: :activation_uncertain
+        })
+    end
+  end
+
+  defp open_recovered(state, %{exhausted: true}) do
+    with :ok <- sync_existing(state, :root, "STORE"),
+         :ok <- Native.sync_dir(state.native, :root),
+         :ok <- Native.sync_dir(state.native, :segments),
+         :ok <- sync_existing(state, :segments, canonical(state.segment.id)),
+         :ok <- Native.check(state.native),
+         do: {:ok, state}
+  end
+
+  defp open_recovered(state, store), do: open_ready(state, store)
+
+  defp recovery_failure(state, error), do: {:reply, {:error, error}, poison(state, error)}
+
+  defp inspect_for_writer(%{recovery: %{status: :awaiting_activation, options: opts}} = state) do
+    with {:ok, view} <- Reader.preflight(state.native, Map.to_list(opts)) do
+      old = state.recovery.view
+
+      normalize_root = fn entries ->
+        Enum.map(entries, fn entry ->
+          if entry.name == "segments" and entry.type == :directory,
+            # APFS counts regular children in directory st_nlink. Publication
+            # may change size/links, but never inode/mode or the exact inventory.
+            do: Map.drop(entry, [:size, :links]),
+            else: entry
+        end)
+      end
+
+      old_entries =
+        Enum.reject(view.segment_entries, &(&1.name == canonical(state.segment.id + 1)))
+
+      if Enum.drop(view.store.segments, -1) == old.store.segments and
+           view.marker == old.marker and view.marker_identity == old.marker_identity and
+           old_entries == old.segment_entries and
+           normalize_root.(view.root_entries) == normalize_root.(old.root_entries),
+         do: {:ok, view.store},
+         else: {:error, :unexpected_post_activation_history}
+    end
+  end
+
+  defp inspect_for_writer(state), do: Reader.inspect_store(state.native)
 
   defp options(options) do
     allowed =
@@ -270,7 +606,7 @@ defmodule Tay.Storage.Writer do
              Native.publish(native, :segments, source, canonical(id), identity)
            end),
          :ok <- Native.sync_dir(native, :segments),
-         {:ok, store} <- Reader.inspect_store(native),
+         {:ok, store} <- inspect_for_writer(state),
          true <-
            (store.highest.id == id and store.highest.state == :active and
               store.highest.count == 0 and store.next_sequence == state.next_sequence) ||
@@ -516,6 +852,22 @@ defmodule Tay.Storage.Writer do
     do:
       ".tay-new-" <> String.replace_suffix(canonical(id), ".tay", "") <> "-" <> nonce() <> ".tmp"
 
+  defp public_status(%{recovery: recovery} = state) when is_map(recovery) do
+    %{
+      state: if(state.poisoned, do: :poisoned, else: recovery.status),
+      reason: state.poisoned,
+      session_ref: recovery.session_ref,
+      summary: Map.drop(recovery.result, [:segments]),
+      next_sequence:
+        if(recovery.status == :terminal or state.next_sequence > Segment.max_id(),
+          do: :exhausted,
+          else: state.next_sequence
+        ),
+      durability: state.options.durability,
+      os_pid: state.native.facts.os_pid
+    }
+  end
+
   defp public_status(state),
     do: %{
       state: if(state.poisoned, do: :poisoned, else: :ready),
@@ -529,6 +881,25 @@ defmodule Tay.Storage.Writer do
   defp poison(%{poisoned: nil} = state, reason) do
     Native.shutdown(state.native)
     _ = hook(state, {:poisoned, reason})
+
+    state =
+      case Map.get(state, :recovery) do
+        recovery when is_map(recovery) ->
+          %{
+            state
+            | recovery: %{
+                recovery
+                | candidate: nil,
+                  view: nil,
+                  session_ref: nil,
+                  admission_ref: nil
+              }
+          }
+
+        _ ->
+          state
+      end
+
     %{state | poisoned: reason}
   end
 

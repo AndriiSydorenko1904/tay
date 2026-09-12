@@ -35,6 +35,10 @@ defmodule Tay.Storage.Segment do
   @spec max_count() :: 38_347_918
   def max_count, do: @max_count
 
+  @doc "Halt-aware physical traversal; errors never return a successful prefix accumulator."
+  def reduce_while(read, size, accumulator, visitor, options \\ []),
+    do: Tay.Storage.Segment.Parser.reduce_while(read, size, accumulator, visitor, options)
+
   @spec parse(binary()) ::
           {:error,
            %{

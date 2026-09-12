@@ -437,6 +437,11 @@ The storage engine should be able to detect:
 
 Recovery is a core feature, not an afterthought.
 
+The general startup roadmap below spans recovery and later projection/snapshot
+phases. It does not authorize Phase 3 repair or later-phase implementation. The
+approved [Phase 3 recovery RFC](docs/phase-3-recovery-rfc.md) defines the binding
+Phase 3 scope and fail-closed tail policy.
+
 On startup:
 
 1. discover valid segments;
@@ -445,7 +450,7 @@ On startup:
 4. reconstruct state by replaying required records;
 5. inspect the active segment;
 6. detect incomplete/corrupt tail data safely;
-7. truncate only when recovery rules prove that truncation is safe;
+7. preserve incomplete tails and refuse writable activation in Phase 3; any future automatic repair requires a separately reviewed recovery/repair protocol;
 8. rebuild ETS indexes;
 9. resume processing.
 
@@ -464,13 +469,18 @@ Recovery must distinguish:
 
 Do **NOT** silently ignore arbitrary corruption.
 
-Tail truncation after an interrupted append is acceptable if implemented deliberately and tested.
+Phase 3 never truncates, pads, deletes, renames aside or repairs an incomplete
+Record, footer or canonical suffix. It preserves all bytes, publishes no partial
+recovered state, never reuses occupied/ambiguous sequence space and refuses
+writable activation. Automatic torn-tail repair and automatic writable restart
+from such a tail are not Phase 3 guarantees. No acknowledgement metadata,
+repair journals, watermarks or format changes are introduced for this phase.
 
 Middle-of-log corruption should cause an explicit recovery error unless a future recovery policy says otherwise.
 
 A key safety principle:
 
-> Only data proven to be an incomplete tail write may be discarded automatically.
+> An incomplete parse result alone never authorizes discarding data. Any future automatic repair requires independent, explicitly approved repair authorization.
 
 ---
 
@@ -1417,6 +1427,10 @@ Tasks:
 
 # Phase 3 — Recovery
 
+Design: [approved Phase 3 recovery RFC](docs/phase-3-recovery-rfc.md), with G1–G6
+resolved. Implementation requires a separate user authorization; this roadmap
+reconciliation does not authorize source changes.
+
 Implement:
 
 ```text
@@ -1425,15 +1439,37 @@ Tay.Storage.Recovery
 
 Responsibilities:
 
-- discover segments;
-- validate ordering;
-- replay records;
-- detect safe incomplete tail;
-- distinguish corruption;
-- optionally truncate safe torn tail;
-- produce replay stream/state input.
+- inspect existing initialized stores under existing-only ownership acquisition;
+- discover segments and validate complete physical history and sequence ordering;
+- replay every complete, physically valid, contiguous and semantically understood event, even when its prior caller acknowledgement is unknown;
+- diagnose incomplete Record/footer/canonical suffix precisely and preserve all evidence;
+- distinguish corruption, unsupported semantics, operational failures and resource limits;
+- produce all-or-error private replay state input, never partial recovered state;
+- retain the same Writer owner, native helper/Port and lock through physical preflight, semantic replay, private candidate, revalidation and mutation-capability activation;
+- require a distinct post-activation admission reference for recovered-session mutations.
 
 Recovery must never equate arbitrary parsing failure with "just truncate it".
+No automatic truncation, padding, deletion, rename-aside, sequence reuse or suffix
+repair is permitted. An incomplete canonical tail refuses writable activation;
+automatic repair is deferred to a future separately reviewed recovery/repair
+protocol, without acknowledgement metadata, repair journals, watermarks or
+Phase 1/2 byte-format changes in Phase 3.
+
+Inspection/replay must not create the root, lock, STORE, segments directory,
+segment, stage or successor. A missing existing lock is an operational ownership
+failure, not permission to bootstrap. No lock release/reacquire or offline
+recovery ticket may authorize writer activation.
+
+Implement only the explicit EventDecoder behaviour and test-only providers.
+Production Event type/schema numbers and payload serialization, including ETF,
+remain a separate future RFC/dependency. No raw-bytes production fallback is
+permitted. Complete uncertain events occupy their sequences and participate in
+replay; this neither proves prior caller success nor supplies exactly-once
+semantics.
+
+The RFC's recovery budgets/defaults are operational only, never persisted format
+limits or physical-validity rules. Resource-limit failures leave storage
+untouched and are retryable with a larger budget.
 
 ### Recovery cases
 
@@ -1449,17 +1485,35 @@ Explicitly test:
 ```
 
 The first is clean.
-The next three may represent recoverable torn tails.
+The next three must be detected safely, preserve every byte, publish no partial
+recovered state and refuse writable activation. They are not automatically
+repairable or evidence that sequence space is reusable. Apply the same policy
+to incomplete footers and other incomplete canonical suffixes.
 The last two are corruption, not ordinary interrupted append.
 
 ### Phase 3 exit criteria
 
-- valid logs replay;
-- incomplete active tail recovers safely;
+- fully valid initialized histories recover automatically through the explicit semantic provider and activation gates;
+- every complete, physically valid, contiguous and semantically understood event replays regardless of unknown prior caller acknowledgement;
+- incomplete active tail recovers safely, with exactly the non-destructive meaning defined below;
+- incomplete Record/footer/canonical suffix is diagnosed precisely, all bytes are preserved and writable activation is refused;
+- unsupported semantics stop replay without skipping or publishing partial recovered state;
 - sealed corruption fails clearly;
 - middle corruption fails clearly;
 - recovery is deterministic;
+- ownership remains continuously held through revalidation and activation;
+- resource-limit failures leave storage untouched and can be retried with a larger budget;
+- Phase 1 Record v1 and Phase 2 Segment/STORE v1 byte contracts remain unchanged;
 - torture tests pass.
+
+“Incomplete active tail recovers safely” means:
+
+> an incomplete active tail is detected safely, preserves all evidence, never publishes partial recovered state, never reuses occupied/ambiguous sequence space, and refuses writable activation.
+
+It does **not** mean automatic destructive repair or automatic writable restart.
+Automatic torn-tail repair is deferred to a future separately reviewed protocol,
+not an incomplete Phase 3 deliverable. Production job-event recovery is likewise
+not claimed by the EventDecoder behaviour and test-only providers.
 
 ---
 

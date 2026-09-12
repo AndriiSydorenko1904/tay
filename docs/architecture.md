@@ -1,4 +1,4 @@
-# Implemented architecture: Phases 0–2
+# Implemented architecture: Phases 0–3
 
 [TAY_PLAN.md](../TAY_PLAN.md) is the authoritative project specification. The
 approved Phase 0 scope is a reusable Mix library with configuration, application
@@ -7,7 +7,9 @@ tests. Phase 1 adds the pure physical record codec according to the separately
 approved [storage format RFC](phase-1-storage-format-rfc.md). Phase 2 implements
 physical segmented I/O under the approved
 [segment/rotation RFC](phase-2-segment-format-rotation-rfc.md) and the user's
-resolved implementation gates. Semantic recovery and execution remain absent.
+resolved implementation gates. Phase 3 adds the approved non-destructive recovery
+and activation boundary, with EventDecoder behaviour and test-only providers.
+Production Event semantics, projection and execution remain absent.
 
 ## Current modules
 
@@ -26,6 +28,9 @@ resolved implementation gates. Semantic recovery and execution remain absent.
 | `Tay.Storage.Reader` | Safe discovery, store identity and complete multi-segment topology validation |
 | `Tay.Storage.Native` | Owner-only versioned Port protocol; strict reply matching and uncertainty reporting |
 | `Tay.Storage.Writer` | Serialized bootstrap, append, seal and R0–R7 rotation; linked Port supervision and poison state |
+| `Tay.Storage.Recovery` | Complete physical preflight, ordered semantic gates, private reduction and same-session revalidation |
+| `Tay.Storage.Recovery.EventDecoder` | Explicit trusted semantic capability/consumption behaviour; no production implementation |
+| `Tay.Storage.Recovery.Error` | Bounded, payload-free diagnostics; preserve-and-stop action, no repair authority |
 
 `Tay.Supervisor` is a dedicated module using the standard OTP `Supervisor`
 behaviour and is registered under its module name. Its current `:one_for_one`
@@ -66,10 +71,13 @@ configuration is reported explicitly, without converting strings into atoms.
   incomplete, never a different complete record; this does not prove crash durability.
 - Invariant I: framing, integrity, unsupported physical interpretation, and
   resource-limit failures retain their distinct classifications.
+- Invariants A/C/F/H/I/J at recovery: preserve all evidence, replay complete
+  understood events regardless of unknown ACK status, require deterministic
+  private reduction, stop on unknown semantics and keep framing registry-free.
 - Physical append receipts follow the selected write/sync contract; they are not
   job-insertion receipts. No component dispatches jobs.
 - The remaining storage, replay, indexing, and execution invariants require
-  their corresponding future components and are not proven by codec tests.
+  their corresponding future components and are not proven by codec tests alone.
 
 The Phase 0 root remains empty, with production path validation added. Phase 1 implements only the approved physical record
 format and CRC32C, with no durability mode, segment lifecycle, recovery policy,
@@ -110,10 +118,58 @@ provide development write mode; strict sync and F_FULLFSYNC remain unsupported.
 Reader reductions return the final accumulator only after complete physical
 validation; reducers must be pure, since callback side effects cannot be rolled
 back. Neither reductions nor physical Writer startup grant semantic recovery
-readiness. Phase 3/Event integration must validate known types, schemas and
+readiness. The Phase 3 EventDecoder boundary validates known types, schemas and
 payloads before any normal-recovery mutation or projection. Unknown semantics
 must stop recovery with storage unchanged. No Event encoding, truncation, tail
 repair, snapshot, manifest, compaction or deletion is implemented.
+
+## Phase 3 recovery and activation boundary
+
+The [approved recovery RFC](phase-3-recovery-rfc.md) is normative. Recovery runs
+synchronously inside the existing Writer owner, not a second GenServer. The
+sequence is existing-only acquisition → full physical preflight → semantic
+replay → private candidate → full physical revalidation → mutation activation.
+The same native helper and lock remain held throughout; no offline ticket or
+reacquisition authorizes mutation. The raw Phase 2 Writer remains physical
+tooling, never a fallback for failed semantic recovery.
+
+`Native.open_existing/2` sends opcode 18 and permits only inspection operations.
+No mkdir, lock creation, sync, stage, marker, canonical write or successor is
+allowed during inspection/replay. After successful revalidation, opcode 19
+discharges the deferred existing-ancestor/lock/directory barriers. Highest-sealed
+successor publication then follows the unchanged R3–R7 protocol. Terminal
+coordinate exhaustion activates read-only, without a successor or admission
+reference. Live recovered writes require a newly issued admission reference;
+the pre-activation session reference cannot be reused for mutation.
+
+Reader's additive `preflight/2` and `reduce_while/5` use the shared physical parser.
+The old physical reductions keep arbitrary-accumulator semantics. The new visitor
+must return `{:cont, acc}` or `{:error, reason}`; no successful early prefix is
+accepted. Read-file scopes close after callback failures and retain primary
+diagnoses when cleanup also fails. Failed close/uncertain helper operation ends
+the session. Partial recovered state is never returned or published.
+
+The Event provider must be configured explicitly, including for an empty store.
+It declares known types/schemas, decodes the entire payload and reports exact
+consumption. It must enforce depth/node/binary budgets while decoding, without
+worker loading, atom creation or external effects. The reducer is pure and owns
+its candidate-state memory budget. Provider code/configuration and dependencies
+must remain fixed for the attempt; the coordinator also checks the provider's
+module fingerprint. No production Event numbers, serialization or raw-byte
+fallback are selected. Tests use artificial providers only in `test/support/`.
+
+Record, footer or canonical incompleteness always preserves bytes and refuses
+writable activation. A complete contiguous understood event still participates
+despite an unknown prior ACK. These rules do not prove previous caller success,
+repair missing bytes or supply exactly-once semantics. Automatic repair needs a
+future separately reviewed protocol; Phase 3 adds no persisted recovery state.
+
+Operational defaults are those in RFC §15. Event limits use the map keys `:depth`,
+`:output_nodes` and `:binary_bytes`. Limits never change v1 physical validity.
+Successor/publication capacity is checked before enabling mutations. Deadlines
+are cooperative between operations/events; a hanging trusted callback or stalled
+kernel call still requires owner supervision. After promotion starts, timeout is
+activation uncertainty, not an untouched resource refusal or retry permission.
 
 ## Phase 1 codec boundary
 
@@ -164,7 +220,8 @@ claims for other toolchains are made without verification.
 The [accepted review input](phase-1-review-input.md) and
 [user-supplied record/segment candidates](storage-rfc-input.md) are retained for
 future RFCs. Both physical-format RFCs are now approved and implemented; recording
-their design input does not authorize Phase 3.
+their design input does not authorize later phases. Phase 3 was separately
+authorized against its approved RFC; no Phase 4 implementation is included.
 
 The [Phase 1 storage format RFC](phase-1-storage-format-rfc.md) is the permanent
 physical compatibility contract. Later Event/recovery integration tests listed

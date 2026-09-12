@@ -7,6 +7,249 @@ defmodule Tay.Storage.Reader do
   support. Unknown semantic types remain visible to the future Event layer.
   """
   alias Tay.Storage.{Native, Segment}
+  alias Tay.Storage.Recovery
+  alias Tay.Storage.Recovery.Error
+
+  @doc "Resource-bounded complete physical validation, with a session-local frozen view."
+  def preflight(native, options \\ []) do
+    with {:ok, opts} <- Recovery.options(options) do
+      native = Recovery.bounded_native(native, opts)
+
+      with :ok <- Native.check(native),
+           {:ok, root_entries, segment_entries, root, files} <- inventory(native, opts),
+           :ok <- total_budget(files, opts),
+           {:ok, marker} <- existing_marker(root),
+           {:ok, {store_id, marker_bytes}} <-
+             recovery_file(native, :root, marker, fn identity ->
+               with {:ok, bytes} <- Native.read(native, 0, min(identity.size, 29)) do
+                 case Segment.decode_store(bytes) do
+                   {:ok, id} -> {:ok, {id, bytes}}
+                   reason -> {:error, %{kind: :corrupt_store, reason: reason, offset: 0}}
+                 end
+               end
+             end),
+           {:ok, segments} <- preflight_segments(native, files.canonical, store_id, opts),
+           {:ok, store} <- validate_topology(segments),
+           :ok <- unchanged_inventory(native, opts, root_entries, segment_entries),
+           :ok <- Native.check(native) do
+        {:ok,
+         %{
+           generation: native.generation,
+           store: Map.put(store, :state, :ready),
+           marker: marker_bytes,
+           marker_identity: marker,
+           root_entries: root_entries,
+           segment_entries: segment_entries,
+           staging_count: length(root.staging) + length(files.staging),
+           ignored_count: length(root.unrelated) + length(files.unrelated)
+         }}
+      end
+    end
+  end
+
+  @doc "Stops on visitor error; success requires the entire same-session physical view."
+  def reduce_while(native, view, accumulator, visitor, options \\ []) do
+    with {:ok, opts} <- Recovery.options(options),
+         true <-
+           is_function(visitor, 3) || {:error, Error.new(:argument, :invalid_visitor, :replay)},
+         true <- view.generation == native.generation || changed(:foreign_view) do
+      native = Recovery.bounded_native(native, opts)
+
+      result =
+        Enum.reduce_while(view.store.segments, {:ok, accumulator}, fn segment, {:ok, acc} ->
+          entry = Map.put(segment.identity, :name, elem(Segment.filename(segment.id), 1))
+          options = scan_options(segment.id, view.store.store_id, view.store.highest.id, opts)
+
+          consume = fn record, offset, {state, expected_sequence} ->
+            position = %{
+              store_id: view.store.store_id,
+              segment_id: segment.id,
+              record_offset: offset,
+              next_offset: offset + 28 + byte_size(record.payload),
+              sequence: record.sequence
+            }
+
+            with true <- record.sequence == expected_sequence || changed(:replay_sequence),
+                 :ok <- Recovery.check_deadline(native) do
+              case visitor.(record, position, state) do
+                {:cont, next} -> {:cont, {next, expected_sequence + 1}}
+                {:error, _} = error -> error
+                _ -> {:error, Error.new(:callback, :invalid_visitor_result, :replay)}
+              end
+            end
+          end
+
+          case recovery_file(native, :segments, entry, fn identity ->
+                 case Segment.reduce_while(
+                        &Native.read(native, &1, &2),
+                        identity.size,
+                        {acc, segment.first_sequence},
+                        consume,
+                        options
+                      ) do
+                   {:ok, actual, {final, _}} ->
+                     if %{actual | identity: identity} == segment,
+                       do: {:ok, final},
+                       else: changed(:segment_content)
+
+                   error ->
+                     error
+                 end
+               end) do
+            {:ok, next} -> {:cont, {:ok, next}}
+            error -> {:halt, error}
+          end
+        end)
+
+      with {:ok, final} <- result,
+           :ok <- unchanged_inventory(native, opts, view.root_entries, view.segment_entries),
+           {:ok, marker} <-
+             recovery_file(native, :root, view.marker_identity, fn identity ->
+               Native.read(native, 0, identity.size)
+             end),
+           true <- marker == view.marker || changed(:store_marker),
+           :ok <- Native.check(native),
+           do: {:ok, final}
+    end
+  end
+
+  defp inventory(native, opts) do
+    with {:ok, root_entries} <- Native.list(native, :root),
+         {:ok, root_entries} <- bounded_entries(root_entries, native, opts),
+         {:ok, root} <- classify_entries(root_entries, :root),
+         {:ok, segment_entries} <- segment_entries(native),
+         {:ok, segment_entries} <- bounded_entries(segment_entries, native, opts),
+         {:ok, files} <- classify_entries(segment_entries, :segments) do
+      {:ok, root_entries, segment_entries, root, files}
+    end
+  end
+
+  defp bounded_entries(entries, native, opts) do
+    if length(entries) > opts.max_directory_entries do
+      {:error, Error.new(:resource_limit, :max_directory_entries, :preflight)}
+    else
+      # Native enumeration is bounded by the reply timeout and packet/entry caps.
+      # Check the cooperative deadline while processing the returned entries too.
+      Enum.reduce_while(entries, :ok, fn _, :ok ->
+        case Recovery.check_deadline(native) do
+          :ok -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      end)
+      |> case do
+        :ok -> {:ok, Enum.sort_by(entries, & &1.name)}
+        error -> error
+      end
+    end
+  end
+
+  defp total_budget(files, opts) do
+    total = Enum.reduce(files.canonical, 0, fn {_, entry}, sum -> sum + entry.size end)
+    Recovery.budget(total, opts.max_total_segment_bytes, :max_total_segment_bytes, :preflight)
+  end
+
+  defp existing_marker(root) do
+    case Map.get(root.entries, "STORE") do
+      nil -> {:error, Error.new(:initialization_required, :missing_store_marker, :preflight)}
+      marker -> {:ok, marker}
+    end
+  end
+
+  defp preflight_segments(native, canonical, store_id, opts) do
+    highest =
+      case List.last(canonical) do
+        {id, _} -> id
+        nil -> nil
+      end
+
+    Enum.reduce_while(canonical, {:ok, [], 0}, fn {id, entry}, {:ok, summaries, count} ->
+      visitor = fn _, _, count ->
+        with :ok <- Recovery.check_deadline(native),
+             :ok <-
+               Recovery.budget(
+                 count + 1,
+                 opts.max_replay_records,
+                 :max_replay_records,
+                 :preflight
+               ),
+             do: {:cont, count + 1}
+      end
+
+      result =
+        recovery_file(native, :segments, entry, fn identity ->
+          case Segment.reduce_while(
+                 &Native.read(native, &1, &2),
+                 identity.size,
+                 count,
+                 visitor,
+                 scan_options(id, store_id, highest, opts)
+               ) do
+            {:ok, segment, count} -> {:ok, %{segment | identity: identity}, count}
+            error -> error
+          end
+        end)
+
+      case result do
+        {:ok, segment, count} -> {:cont, {:ok, [segment | summaries], count}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, summaries, _} -> {:ok, Enum.reverse(summaries)}
+      error -> error
+    end
+  end
+
+  defp scan_options(id, store_id, highest, opts),
+    do: [
+      id: id,
+      store_id: store_id,
+      highest: id == highest,
+      max_decode_payload_bytes: opts.max_decode_payload_bytes
+    ]
+
+  defp unchanged_inventory(native, opts, root, segments) do
+    with {:ok, actual_root, actual_segments, _, _} <- inventory(native, opts) do
+      if actual_root == root and actual_segments == segments, do: :ok, else: changed(:inventory)
+    end
+  end
+
+  # Catch all catchable callback failures inside the FD scope, then close on
+  # every path. Untrappable owner death closes the linked helper and all its FDs.
+  defp recovery_file(native, scope, expected, fun) do
+    with {:ok, identity} <- Native.open_read(native, scope, expected.name) do
+      result =
+        try do
+          if Map.take(identity, [:device, :inode, :size, :links, :type]) ==
+               Map.take(expected, [:device, :inode, :size, :links, :type]),
+             do: fun.(identity),
+             else: changed(:file_identity)
+        catch
+          kind, _ -> {:error, Error.new(:callback, {:callback_failed, kind}, :replay)}
+        end
+
+      case Native.close_read(%{native | deadline: nil}) do
+        :ok ->
+          result
+
+        {:error, cleanup} ->
+          # A failed close does not establish descriptor release. End the helper
+          # session instead of retrying a close with an unknown outcome.
+          Native.close(native)
+
+          case result do
+            {:error, primary} ->
+              error = Error.wrap(primary, :replay)
+              {:error, %{error | cleanup_error: Error.bounded(cleanup)}}
+
+            _ ->
+              {:error, cleanup}
+          end
+      end
+    end
+  end
+
+  defp changed(reason), do: {:error, Error.new(:changed_view, reason, :revalidation)}
 
   @doc "Discovers and validates all physical history under the existing Port lock."
   def inspect_store(native) do

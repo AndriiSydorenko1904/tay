@@ -23,9 +23,54 @@ defmodule Tay.Storage.Native do
     info: 15,
     sync_read: 16,
     shutdown: 17,
+    acquire_existing: 18,
+    enable_mutations: 19,
     fault: 240
   }
-  defstruct [:port, :owner, :facts, timeout: 10_000]
+  defstruct [:port, :owner, :facts, :generation, :deadline, timeout: 10_000]
+  @type t :: %__MODULE__{}
+
+  @doc "Acquires only existing ownership objects; no creation or sync is allowed."
+  def open_existing(path, options \\ []) do
+    allowed =
+      [
+        :durability,
+        :validated_filesystem,
+        :test_helper,
+        :timeout,
+        :max_directory_entries,
+        :deadline
+      ] ++ if(@test, do: [:test_before_acquire], else: [])
+
+    if valid_open_options?(path, options) and Path.expand(path) != "/" and
+         length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
+         Enum.all?(Keyword.keys(options), &(&1 in allowed)) and
+         is_integer(Keyword.get(options, :max_directory_entries, 100_000)) and
+         Keyword.get(options, :max_directory_entries, 100_000) in 1..4_294_967_295 and
+         (is_nil(Keyword.get(options, :deadline)) or is_integer(Keyword.get(options, :deadline))) do
+      do_open(path, options, :acquire_existing)
+    else
+      {:error, %{kind: :native_argument, reason: :invalid_existing_options}}
+    end
+  end
+
+  @doc false
+  def inspection?(native) do
+    native.owner == self() and Process.get({__MODULE__, native.port, :capability}) == :inspection
+  end
+
+  @doc "Promotes this continuously held inspection session; never reacquires ownership."
+  def enable_mutations(native) do
+    case empty(native, :enable_mutations) do
+      :ok ->
+        Process.put({__MODULE__, native.port, :capability}, :mutation)
+        :ok
+
+      error ->
+        close(native)
+        error
+    end
+  end
 
   def open(path, options \\ []) do
     if valid_open_options?(path, options) do
@@ -45,7 +90,7 @@ defmodule Tay.Storage.Native do
       Keyword.get(options, :timeout, 10_000) > 0
   end
 
-  defp do_open(path, options) do
+  defp do_open(path, options, operation \\ :acquire) do
     test = @test and Keyword.get(options, :test_helper, false)
 
     executable =
@@ -66,14 +111,32 @@ defmodule Tay.Storage.Native do
     native = %__MODULE__{
       port: port,
       owner: self(),
+      generation: make_ref(),
+      deadline: Keyword.get(options, :deadline),
       timeout: Keyword.get(options, :timeout, 10_000)
     }
 
     mode = if Keyword.get(options, :durability, :sync) == :sync, do: 1, else: 0
     validated = if Keyword.get(options, :validated_filesystem, false), do: 1, else: 0
 
-    case request(native, :acquire, <<mode, validated, string(path)::binary>>) do
-      {:ok, <<created, filesystem::64, pid::64>>, 0} ->
+    budget =
+      if operation == :acquire_existing,
+        do: <<Keyword.get(options, :max_directory_entries, 100_000)::32>>,
+        else: <<>>
+
+    result =
+      with :ok <- before_acquire(native, options),
+           do:
+             request(native, operation, <<mode, validated, budget::binary, string(path)::binary>>)
+
+    case result do
+      {:ok, <<created, filesystem::64, pid::64>>, 0}
+      when operation == :acquire or (created == 0 and pid > 0) ->
+        Process.put(
+          {__MODULE__, port, :capability},
+          if(operation == :acquire_existing, do: :inspection, else: :mutation)
+        )
+
         {:ok, %{native | facts: %{created: created == 1, filesystem: filesystem, os_pid: pid}}}
 
       {:error, _} = error ->
@@ -87,9 +150,24 @@ defmodule Tay.Storage.Native do
     error -> {:error, %{kind: :native_start, reason: Exception.message(error)}}
   end
 
+  if @test do
+    defp before_acquire(native, options) do
+      case Keyword.get(options, :test_before_acquire) do
+        nil -> :ok
+        fun when is_function(fun, 1) -> fun.(native)
+        _ -> {:error, %{kind: :native_argument, reason: :invalid_acquire_hook}}
+      end
+    catch
+      _, _ -> {:error, %{kind: :native_argument, reason: :failed_acquire_hook}}
+    end
+  else
+    defp before_acquire(_, _), do: :ok
+  end
+
   def close(%__MODULE__{port: port, owner: owner}) when owner == self() do
     if Port.info(port) != nil, do: Port.close(port)
     Process.put({__MODULE__, port}, :closed)
+    Process.delete({__MODULE__, port, :capability})
     :ok
   rescue
     ArgumentError -> :ok
@@ -100,7 +178,7 @@ defmodule Tay.Storage.Native do
   def shutdown(native) do
     if self() == native.owner and Process.get({__MODULE__, native.port}) == nil and
          Port.info(native.port) != nil do
-      result = empty(native, :shutdown)
+      result = empty(%{native | deadline: nil}, :shutdown)
       close(native)
       result
     else
@@ -203,6 +281,17 @@ defmodule Tay.Storage.Native do
 
   if @test do
     def fault(native, operation, occurrence, action, errno \\ 5, count \\ 0) do
+      target =
+        Map.get(
+          %{
+            promotion_ancestor: 241,
+            promotion_lock: 242,
+            promotion_root: 243,
+            promotion_segments: 244
+          },
+          operation
+        ) || Map.fetch!(@ops, operation)
+
       code =
         %{
           error: 1,
@@ -220,7 +309,7 @@ defmodule Tay.Storage.Native do
       empty(
         native,
         :fault,
-        <<Map.fetch!(@ops, operation), occurrence::32, code, errno::32, count::64>>
+        <<target, occurrence::32, code, errno::32, count::64>>
       )
     end
   end
@@ -288,10 +377,19 @@ defmodule Tay.Storage.Native do
       byte_size(body) > 16_777_244 + 4096 ->
         {:error, %{kind: :native_argument, reason: :packet_too_large}}
 
+      is_integer(native.deadline) and System.monotonic_time(:millisecond) >= native.deadline ->
+        {:error, %{kind: :resource_limit, reason: :deadline}}
+
       true ->
         op = Map.fetch!(@ops, operation)
         id = System.unique_integer([:positive, :monotonic])
         port = native.port
+
+        timeout =
+          if is_integer(native.deadline),
+            do:
+              min(native.timeout, max(native.deadline - System.monotonic_time(:millisecond), 1)),
+            else: native.timeout
 
         try do
           true = Port.command(port, <<1, op, id::64, body::binary>>)
@@ -320,7 +418,7 @@ defmodule Tay.Storage.Native do
             {:EXIT, ^port, reason} ->
               uncertain(native, {:port_exit, reason})
           after
-            native.timeout -> uncertain(native, {:timeout, operation})
+            timeout -> uncertain(native, {:timeout, operation})
           end
         rescue
           ArgumentError -> uncertain(native, :connection_lost)

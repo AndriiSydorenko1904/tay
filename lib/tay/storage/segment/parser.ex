@@ -95,6 +95,15 @@ defmodule Tay.Storage.Segment.Parser do
                store_id: <<_::128>>
              }, any()}
   def reduce(read, size, accumulator, reducer, options) do
+    run(read, size, accumulator, reducer, options, :accumulator)
+  end
+
+  @doc false
+  def reduce_while(read, size, accumulator, visitor, options) do
+    run(read, size, accumulator, visitor, options, :visitor)
+  end
+
+  defp run(read, size, accumulator, reducer, options, mode) do
     if is_function(read, 2) and is_integer(size) and size >= 0 and
          is_function(reducer, 3) and valid_options?(options) do
       context = %{
@@ -102,6 +111,7 @@ defmodule Tay.Storage.Segment.Parser do
         size: size,
         options: options,
         reducer: reducer,
+        mode: mode,
         id: Keyword.get(options, :id),
         highest: Keyword.get(options, :highest, true)
       }
@@ -230,22 +240,37 @@ defmodule Tay.Storage.Segment.Parser do
         fail(ctx, :record_or_sequence_error, segment.bytes, :record_count_exceeds_format)
 
       true ->
-        accumulator = ctx.reducer.(record, segment.bytes, accumulator)
+        case visit(ctx, record, segment.bytes, accumulator) do
+          {:cont, accumulator} ->
+            updated = %{
+              segment
+              | last_sequence: record.sequence,
+                count: segment.count + 1,
+                bytes: segment.bytes + byte_size(bytes),
+                crc_state: CRC32C.update(segment.crc_state, bytes)
+            }
 
-        updated = %{
-          segment
-          | last_sequence: record.sequence,
-            count: segment.count + 1,
-            bytes: segment.bytes + byte_size(bytes),
-            crc_state: CRC32C.update(segment.crc_state, bytes)
-        }
+            next(ctx, updated, accumulator)
 
-        next(ctx, updated, accumulator)
+          {:error, reason} ->
+            fail(ctx, :visitor_error, segment.bytes, reason)
+        end
     end
   end
 
   defp accept_record(ctx, segment, _acc, bytes, result),
     do: record_failure(ctx, segment.bytes, byte_size(bytes), result)
+
+  defp visit(%{mode: :accumulator} = ctx, record, offset, acc),
+    do: {:cont, ctx.reducer.(record, offset, acc)}
+
+  defp visit(ctx, record, offset, acc) do
+    case ctx.reducer.(record, offset, acc) do
+      {:cont, _} = result -> result
+      {:error, _} = result -> result
+      _ -> {:error, :invalid_visitor_result}
+    end
+  end
 
   defp record_failure(ctx, offset, available, {:incomplete, :header} = result),
     do: incomplete(ctx, :incomplete_record, offset, available, 24, result)
