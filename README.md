@@ -4,11 +4,11 @@ Tay is an Elixir library under development for embedded durable background jobs,
 using a segmented append-only log and reconstructable ETS indexes. The planned
 engine has at-least-once execution semantics and no external database or broker.
 
-**Phases 0–3** provide the project foundation, physical record codec, segmented
-filesystem storage, and non-destructive recovery with an explicit EventDecoder
-boundary. Only test semantic providers exist; production Event semantics,
-insertion APIs, scheduling and queue execution remain unimplemented. Tay is not ready
-to process production jobs. Starting the application starts an empty supervisor;
+**Phases 0–4** provide the foundation, frozen physical storage/recovery contracts,
+the approved production Event v1 codec, pure lifecycle model, private indexes,
+durable insertion, lookup and same-ID reconciliation. **No workers run yet**:
+scheduling/execution is Phase 5; production qualification is Phase 6. Tay is not
+ready to process production jobs. Starting the application starts an empty supervisor;
 it does not establish storage readiness or a durability guarantee.
 
 ## Development
@@ -82,10 +82,93 @@ end
 `perform/1` can return `:ok`, `{:ok, result}`, or `{:error, reason}`. These are
 callback return values; no executor or result persistence exists yet.
 
-`%Tay.Job{}` is an in-memory description with no generated ID, lifecycle state,
-or timestamps. Its layout does not define a persisted schema. The example above
-defines a callback only; Tay does not dispatch it. `use Tay.Worker`, worker
-`new/1` helpers, and `Tay.insert/1` are future API work.
+Direct `%Tay.Job{}` construction is non-persistent. `Tay.Job.new/3` and the
+`use Tay.Worker` builder validate a separate immutable definition and allocate a
+stable ID before submission. Runtime structs, module names and arbitrary terms
+are never serialized. Tay does not dispatch the callback in this phase.
+
+## Durable job core (Phase 4)
+
+Example for **development only** (`:write` does not promise power-loss durability):
+
+```elixir
+defmodule MailWorker do
+  use Tay.Worker, key: "mail.send.v1", queue: :default, max_attempts: 10
+  @impl true
+  def perform(%Tay.Job{}), do: :ok # not invoked in Phase 4
+end
+
+dir = Path.expand("local-development/tay")
+# Explicit administrative operation; refuses already initialized storage.
+{:ok, _} = Tay.Storage.initialize(data_dir: dir, durability: :write)
+
+# Normally add Tay.child_spec(options) to your host supervisor instead.
+{:ok, engine_supervisor} = Tay.start_link(
+  data_dir: dir, durability: :write,
+  workers: %{"mail.send.v1" => MailWorker}, queues: [default: 10]
+)
+{:ok, intent} = MailWorker.new(%{"recipient" => "example.invalid"})
+{:ok, job} = Tay.insert(intent)
+{:ok, same_job} = Tay.insert(intent) # same ID + definition, no second append
+{:ok, current} = Tay.get_job(job.id)
+%{state: :ready} = Tay.status()
+Supervisor.stop(engine_supervisor)
+```
+
+Do not treat initialization as an idempotent ensure operation. A pre-existing
+empty root requires `bootstrap: true`; existing history is never overwritten.
+Normal Engine startup is existing-only and never calls initialization. Native
+closure/flock release can finish asynchronously: an immediate explicit new
+startup may report `ownership_busy`; there is no automatic retry or lock deletion.
+
+Production builds reject `:write`. `:sync` requires Linux, explicit
+`validated_filesystem: true`, a genuinely validated supported local filesystem,
+and explicit production path configuration. There is no automatic mode downgrade.
+`Tay.status().durability` reports the actual mode; a write-mode reply is never
+relabeled sync-durable. Production release readiness still requires Phases 5–6.
+
+Use engine-specific options on `child_spec/start_link`, not in the foundation's
+`:tay` application environment. `:name` is a trusted atom (default `Tay.Engine`);
+pass the same name to `insert/get_job/status`. Call options accept a finite
+`:timeout` in milliseconds. `Tay.insert/2` also accepts the builder's `{:ok, job}`
+or `{:error, error}` result. Invalid/incomplete direct structs are rejected.
+
+The authoritative immutable intent is `job.definition`, not editable presentation
+fields. Store the original ID/definition to reconcile an unknown outcome.
+Different canonical definitions under the same ID produce `:id_conflict`; integer
+zero and both floating zero encodings remain distinct. Same-ID reconciliation
+precedes new-insertion limits, even after a registry/default/limit change or in a
+terminal state. Transport/replay/state budgets still apply independently.
+
+`%Tay.Error{kind: :unknown_outcome, job_id: id, operation: :insert}` after a submitted
+timeout/exit means the record may exist. No internal automatic retry occurs. Use a
+fresh ready generation's lookup or explicitly resubmit the original intent.
+Other kinds distinguish `:invalid`, pre-I/O `:capacity`, and `:unavailable`.
+Only an authoritative ready-generation lookup returns `{:error, :not_found}`.
+Status is a bounded, explicitly stale-capable snapshot served independently of
+Writer; it contains no job args, ETS IDs, Port or storage admission capability.
+
+New-insertion defaults are `max_insert_payload_bytes: 1_048_576`,
+`max_insert_args_bytes: 262_144`, `insert_value_depth: 32`,
+`insert_value_nodes: 10_000`. The exact domains/cross-budget rules are in the
+[approved Event appendix](docs/event-v1-contract-appendix.md#f-resource-limits-versus-insertion-limits).
+`:recovery` accepts the unchanged Phase 3 option keyword list. Candidate defaults
+are `max_jobs: 100_000`, `max_state_bytes: 268_435_456`, `max_state_nodes: 2_000_000`;
+these are operational accounting budgets, not persisted limits or exact RSS.
+Startup accounts for up to three charged candidate/index views.
+
+Client defaults: `client_slots: 64`, `client_bytes: 67_108_864`,
+`caller_timeout: 5_000`. Each slot has `floor(client_bytes / client_slots)` bytes
+of request quota; a definition request is charged its canonical bytes plus 256.
+Capacity is reserved before payload-bearing messages. Submitted slots remain
+occupied after caller timeout/death until processing finishes or the generation
+is revoked. There is no unbounded waiting queue. This bounds the cooperative
+protocol, not hostile messages or all allocations/exit reasons inside a shared VM.
+
+All six Event types replay, including executing/cancelled/discarded histories,
+but only insertion is produced live. Removed worker/queue mappings retain jobs
+as blocked state; they never create atoms, load persisted module names, or invoke
+workers during replay. SchedulerIndex is passive; there are no job timers.
 
 ## Physical record codec
 
@@ -93,13 +176,13 @@ defines a callback only; Tay does not dispatch it. `use Tay.Worker`, worker
 24-byte Tay v1 header with 28-byte fixed overhead, big-endian integers, header
 and record CRC32C, and a 16 MiB hard payload maximum. Payloads are opaque binary
 bytes. All types `1..254` and schemas `1..255` are structurally valid, including
-pairs the future Event layer will not understand. No event registry is consulted.
+pairs the Event layer does not understand. No event registry is consulted.
 
 `decode/2` accepts only `max_decode_payload_bytes`, an independent resource
 budget defaulting to the hard maximum. Success returns exactly one record plus
 the untouched remainder. Errors and incomplete results consume no bytes, skip
 nothing, and never authorize truncation. A physical cursor is not an applied
-replay checkpoint: future continuity, Event validation, and projection layers
+replay checkpoint: continuity, Event validation, and projection layers
 must still validate every event; unknown semantics must stop recovery without
 changing storage.
 
@@ -115,7 +198,7 @@ serialization or recovery policy is implemented or approved by the Record codec.
 `Tay.Storage.Reader` validates all canonical history and cross-segment continuity.
 `Tay.Storage.Writer` is an **internal**, explicitly supervised temporary child for
 bootstrap, one-record append, sealing, and R0–R7 rotation. The root application
-does not start it automatically. It accepts opaque bytes from a future semantic
+does not start it automatically. It accepts opaque bytes from the separate semantic
 validator; physical readiness is not permission to replay jobs.
 
 Only the native Port holds the OS lock and writable file descriptors. An uncertain
@@ -177,12 +260,15 @@ TAY_LARGE_RECOVERY_TEST=1 mix test test/tay/storage/recovery_large_test.exs --wa
 ## Architecture and review input
 
 - [Authoritative development plan](TAY_PLAN.md)
-- [Implemented Phase 0–3 architecture and scope](docs/architecture.md)
+- [Implemented Phase 0–4 architecture and scope](docs/architecture.md)
 - [Accepted adversarial review input for the future Phase 1 RFC](docs/phase-1-review-input.md)
 - [User-supplied record and segment candidates for future RFC review](docs/storage-rfc-input.md)
 - [Approved Phase 1 storage format RFC](docs/phase-1-storage-format-rfc.md)
 - [Approved Phase 2 segment/rotation RFC](docs/phase-2-segment-format-rotation-rfc.md)
 - [Approved Phase 3 recovery RFC](docs/phase-3-recovery-rfc.md)
+- [Approved production roadmap](docs/production-roadmap-rfc.md)
+- [Approved Event v1 contract and literals](docs/event-v1-contract-appendix.md)
+- [Phase 4 implementation report](docs/phase-4-implementation-report.md)
 
 The accepted review input supplements the plan, including the requirement to
 start fixed compatibility fixtures in Phase 1. The supplied record/segment
@@ -190,5 +276,5 @@ candidates are preserved as historical design input. The approved Phase 1 RFC
 supersedes their record proposal and establishes the v1 physical compatibility
 contract. The Phase 2 RFC and its approved implementation gates supersede the
 segment candidate. The Phase 3 RFC resolves recovery gates G1–G6 without changing
-either byte format. Production Event semantics and Phase 4 projection remain
-separate future work.
+either byte format. Phase 4 adds Event semantics and disposable projection without
+changing those contracts. Phase 5 execution and Phase 6 release gates remain future work.

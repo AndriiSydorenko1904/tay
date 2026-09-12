@@ -19,6 +19,14 @@ defmodule Tay.Storage.Writer do
       else: {:error, :invalid_writer_options}
   end
 
+  @doc "Initialize only using the approved bootstrap/genesis protocol; never open existing history."
+  def initialize(options) do
+    case GenServer.start_link(__MODULE__, {:initialize_only, options}) do
+      {:ok, writer} -> GenServer.call(writer, :finish_initialization, :infinity)
+      error -> error
+    end
+  end
+
   @doc "Replays an existing store, retaining its owner/Port/lock and private candidate."
   def start_recovered_link(storage_options, replay_spec) do
     with {:ok, storage} <- options(storage_options),
@@ -159,7 +167,10 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def init(options) do
+  def init({:initialize_only, options}), do: init_physical(options, true)
+  def init(options), do: init_physical(options, false)
+
+  defp init_physical(options, initialize_only) do
     Process.flag(:trap_exit, true)
 
     with {:ok, options} <- options(options),
@@ -170,7 +181,8 @@ defmodule Tay.Storage.Writer do
         segment: nil,
         store_id: nil,
         next_sequence: 1,
-        poisoned: nil
+        poisoned: nil,
+        initialize_only: initialize_only
       }
 
       case prepare(state) do
@@ -188,6 +200,27 @@ defmodule Tay.Storage.Writer do
 
   @impl true
   def handle_call(:status, _from, state), do: {:reply, public_status(state), state}
+
+  def handle_call(:finish_initialization, _, %{initialize_only: true} = state) do
+    result =
+      case Native.shutdown(state.native) do
+        :ok ->
+          {:ok,
+           %{
+             store_id: state.store_id,
+             segment_id: state.segment.id,
+             durability: state.options.durability
+           }}
+
+        _ ->
+          {:error, :uncertain_initialization}
+      end
+
+    {:stop, :normal, result, state}
+  end
+
+  def handle_call(_, _, %{initialize_only: true} = state),
+    do: {:reply, {:error, :initialize_only}, state}
 
   def handle_call(_request, _from, %{poisoned: reason} = state) when not is_nil(reason),
     do: {:reply, {:error, {:poisoned, reason}}, state}
@@ -344,7 +377,18 @@ defmodule Tay.Storage.Writer do
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, state), do: Native.shutdown(state.native)
+  def terminate(_reason, state) do
+    notify_lifecycle(state, :closed)
+    Native.shutdown(state.native)
+  end
+
+  @impl true
+  def format_status(status),
+    do:
+      status
+      |> Map.put(:state, :private_storage_session)
+      |> Map.put(:message, :redacted)
+      |> Map.put(:reason, :storage_session_failed)
 
   defp schedule_expiry(recovery) do
     delay = max(recovery.expires_at - System.monotonic_time(:millisecond), 0)
@@ -478,6 +522,7 @@ defmodule Tay.Storage.Writer do
         :validated_filesystem,
         :rotation_target_bytes,
         :bootstrap,
+        :lifecycle_observer,
         :timeout
       ] ++ if(@test, do: [:test_helper, :on_transition], else: [])
 
@@ -498,11 +543,15 @@ defmodule Tay.Storage.Writer do
           bootstrap: false,
           timeout: 10_000,
           test_helper: false,
+          lifecycle_observer: nil,
           on_transition: nil
         })
         |> Map.put(:data_dir, config.data_dir)
 
       cond do
+        opts.lifecycle_observer != nil and not is_pid(opts.lifecycle_observer) ->
+          {:error, :invalid_lifecycle_observer}
+
         opts.durability not in [:write, :sync] ->
           {:error, :invalid_durability}
 
@@ -529,9 +578,16 @@ defmodule Tay.Storage.Writer do
   defp prepare(state) do
     with {:ok, store} <- Reader.inspect_store(state.native) do
       case store.state do
-        :uninitialized -> bootstrap(state, store)
-        :genesis -> complete_genesis(%{state | store_id: store.store_id})
-        :ready -> open_ready(state, store)
+        :uninitialized ->
+          bootstrap(state, store)
+
+        :genesis ->
+          complete_genesis(%{state | store_id: store.store_id})
+
+        :ready ->
+          if Map.get(state, :initialize_only, false),
+            do: {:error, :already_initialized},
+            else: open_ready(state, store)
       end
     end
   end
@@ -879,6 +935,9 @@ defmodule Tay.Storage.Writer do
     }
 
   defp poison(%{poisoned: nil} = state, reason) do
+    # Revoke the embedding generation before potentially slow native cleanup.
+    # Never forward payloads, the Port or the recovered admission capability.
+    notify_lifecycle(state, :poisoned)
     Native.shutdown(state.native)
     _ = hook(state, {:poisoned, reason})
 
@@ -904,4 +963,11 @@ defmodule Tay.Storage.Writer do
   end
 
   defp poison(state, _), do: state
+
+  defp notify_lifecycle(state, event) do
+    if pid = state.options.lifecycle_observer,
+      do: send(pid, {__MODULE__, self(), event})
+
+    :ok
+  end
 end

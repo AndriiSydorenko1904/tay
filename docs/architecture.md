@@ -1,4 +1,4 @@
-# Implemented architecture: Phases 0–3
+# Implemented architecture: Phases 0–4
 
 [TAY_PLAN.md](../TAY_PLAN.md) is the authoritative project specification. The
 approved Phase 0 scope is a reusable Mix library with configuration, application
@@ -8,19 +8,25 @@ approved [storage format RFC](phase-1-storage-format-rfc.md). Phase 2 implements
 physical segmented I/O under the approved
 [segment/rotation RFC](phase-2-segment-format-rotation-rfc.md) and the user's
 resolved implementation gates. Phase 3 adds the approved non-destructive recovery
-and activation boundary, with EventDecoder behaviour and test-only providers.
-Production Event semantics, projection and execution remain absent.
+and activation boundary. Phase 4 implements production Event v1, pure lifecycle
+transitions, bounded reconstruction, private indexes and Engine insertion/read
+APIs under the approved roadmap/appendix. Execution remains absent.
 
 ## Current modules
 
 | Module | Responsibility |
 | --- | --- |
-| `Tay` | Documents the available library boundary |
+| `Tay` | Explicit Engine supervision, insert/get/status APIs |
 | `Tay.Application` | Validates configuration, then starts an empty named supervisor |
 | `Tay.Supervisor` | Implements the empty OTP root supervisor and its child specification |
 | `Tay.Config` | Reads runtime application configuration, validates and normalizes it |
-| `Tay.Job` | Holds an initial in-memory job description |
-| `Tay.Worker` | Defines the `perform/1` behaviour callback |
+| `Tay.Job`, `Tay.JobID`, `Tay.Error` | Immutable definition builder, stable public IDs, disposable views and bounded errors |
+| `Tay.Worker` | Defines `perform/1` and optional explicit-key builder macro; no execution |
+| `Tay.Event`, `.Value`, `.V1` | Exact canonical value bytes, six immutable schemas, production EventDecoder |
+| `Tay.State.Transition` | Sole pure prepare/apply model and bounded map candidate/accounting |
+| `Tay.State.Projection`, `JobIndex`, `QueueIndex`, `SchedulerIndex` | Private unnamed disposable ETS; bounded passive selection |
+| `Tay.Engine`, `.Supervisor`, `.Lifecycle`, `.Admission`, `.Config` | Semantic owner, whole-generation revocation, bounded pre-message permits and explicit configuration |
+| `Tay.Storage` | Explicit initialize-only administrative operation |
 | `Tay.Storage.Record` | Encodes/decodes one opaque v1 physical frame with exact integrity and limit checks |
 | `Tay.Storage.CRC32C` | Internal bit-by-bit Castagnoli reference checksum, with explicit raw incremental state |
 | `Tay.Storage.Segment` | Pure STORE/header/footer codecs, physical limits and canonical names |
@@ -29,7 +35,7 @@ Production Event semantics, projection and execution remain absent.
 | `Tay.Storage.Native` | Owner-only versioned Port protocol; strict reply matching and uncertainty reporting |
 | `Tay.Storage.Writer` | Serialized bootstrap, append, seal and R0–R7 rotation; linked Port supervision and poison state |
 | `Tay.Storage.Recovery` | Complete physical preflight, ordered semantic gates, private reduction and same-session revalidation |
-| `Tay.Storage.Recovery.EventDecoder` | Explicit trusted semantic capability/consumption behaviour; no production implementation |
+| `Tay.Storage.Recovery.EventDecoder` | Explicit trusted semantic capability/consumption behaviour; implemented by `Tay.Event` |
 | `Tay.Storage.Recovery.Error` | Bounded, payload-free diagnostics; preserve-and-stop action, no repair authority |
 
 `Tay.Supervisor` is a dedicated module using the standard OTP `Supervisor`
@@ -44,6 +50,59 @@ The application reads configuration at startup, validates it, and starts the
 supervisor only after validation succeeds. It does not retain mutable state or
 apply live configuration changes. `Tay.Config.load/0` independently reads current
 application environment values on each call.
+
+## Phase 4 ownership and admission
+
+The explicit host child is an OTP Engine supervisor (`:one_for_all`, zero
+automatic restarts). Its guardian starts first; its Engine child is temporary.
+Guardian death terminates the runtime group. Engine or Writer failure closes
+the gate and leaves only bounded failed-generation diagnostics until the host
+stops/restarts the entire group. No Writer is restarted under surviving ETS.
+
+Engine starts the existing recovered Writer with production EventDecoder and a
+pure bounded map reducer. Full preflight/replay/revalidation/activation retain
+the same Writer, native Port and flock. Terminal coordinate exhaustion grants
+no Engine readiness. Private unnamed ETS is allocated only after activation,
+loaded and checked before readiness. The full candidate map is then discarded;
+only accounting counters survive beside ETS. Codec/reducer replay does not
+read time, generate randomness, consult registries, touch ETS or perform I/O.
+
+Only Engine holds the physical mutation admission reference. An insertion is
+bounded validation/prepare/accounting → matching Writer receipt → actual sequence
+binding → every secondary/index update → reply. Any unexpected receipt or
+post-append failure kills the generation, not a rollback. Reads are serialized
+by the same Engine. The public revision token is scoped to STORE/job/generation.
+
+The guardian owns a public fixed-size reservation/status ETS table, **not job
+projection**. Clients atomically claim free metadata slots and send only a small
+reservation RPC. Guardian installs the caller monitor before granting it.
+Payloads go to that same guardian, which changes reserved to submitted before
+forwarding to Engine. Same-recipient signal ordering makes submit versus caller
+DOWN unambiguous. Reserved abandoned slots can be reclaimed; submitted slots
+cannot be reclaimed by timeout/DOWN. Only completion or generation destruction
+releases them. Tokens prevent ABA/stale-generation forwarding. A bounded reaper
+handles abandoned pre-grant claims; it is not a job scheduler timer.
+
+Byte quota is fixed per slot, avoiding a shared-byte-counter crash window.
+Definition encoding is bounded/measured on the caller before message admission;
+actual new-insertion limits are checked after authoritative same-ID comparison
+and before Event output allocation/append. This preserves reconciliation under
+lower insertion limits without an unbounded transport exception.
+
+Candidate charge per retained job is twice its canonical definition byte count,
+plus 64 times the definition value-node count, plus 2048 metadata bytes. Node
+charge is definition nodes + 64. Updates subtract the previous immutable charge;
+checks precede map insertion or live append. Up to three charged views are
+accounted during startup; this is a deterministic operational envelope, not a
+platform-independent peak-RSS assertion. Decoded text/IDs are detached from
+backing frames. Secondary indexes never duplicate args. Blocked jobs are counted
+and omitted from ready selection without scanning unbounded blocked heads.
+
+All Event schemas/state transitions exist, but the only live event producer is
+insertion. Recovered executing state stays inert in Phase 4. No outcome producer,
+execution relay, cancellation/retry API, scheduler timer, snapshot, manifest,
+retention, batching or repair has been added. Frozen native and physical codecs,
+Phase 3 traversal/accumulator semantics and G1–G6 remain unchanged.
 
 ## Configuration scope
 
@@ -76,8 +135,8 @@ configuration is reported explicitly, without converting strings into atoms.
   private reduction, stop on unknown semantics and keep framing registry-free.
 - Physical append receipts follow the selected write/sync contract; they are not
   job-insertion receipts. No component dispatches jobs.
-- The remaining storage, replay, indexing, and execution invariants require
-  their corresponding future components and are not proven by codec tests alone.
+- Phase 4 adds insertion/replay/index/generation invariants. Execution and release
+  qualification still require Phases 5–6; codec tests alone do not establish them.
 
 The Phase 0 root remains empty, with production path validation added. Phase 1 implements only the approved physical record
 format and CRC32C, with no durability mode, segment lifecycle, recovery policy,
@@ -120,8 +179,8 @@ validation; reducers must be pure, since callback side effects cannot be rolled
 back. Neither reductions nor physical Writer startup grant semantic recovery
 readiness. The Phase 3 EventDecoder boundary validates known types, schemas and
 payloads before any normal-recovery mutation or projection. Unknown semantics
-must stop recovery with storage unchanged. No Event encoding, truncation, tail
-repair, snapshot, manifest, compaction or deletion is implemented.
+must stop recovery with storage unchanged. These physical modules do not encode
+Events. No truncation, tail repair, snapshot, manifest, compaction or deletion is implemented.
 
 ## Phase 3 recovery and activation boundary
 
@@ -155,8 +214,9 @@ consumption. It must enforce depth/node/binary budgets while decoding, without
 worker loading, atom creation or external effects. The reducer is pure and owns
 its candidate-state memory budget. Provider code/configuration and dependencies
 must remain fixed for the attempt; the coordinator also checks the provider's
-module fingerprint. No production Event numbers, serialization or raw-byte
-fallback are selected. Tests use artificial providers only in `test/support/`.
+module fingerprint. Phase 3 selected no production semantics; Phase 4 now supplies
+the separate approved Event v1 provider. Artificial Phase 3 providers remain only
+in `test/support/`; there is no raw-byte production fallback.
 
 Record, footer or canonical incompleteness always preserves bytes and refuses
 writable activation. A complete contiguous understood event still participates
@@ -178,10 +238,10 @@ resources; `decode/2` accepts only `max_decode_payload_bytes`. The hard maximum
 is 16 MiB regardless of insertion configuration. Neither codec function knows
 Event types, runtime job layouts, workers, or application configuration.
 
-Physical framing/integrity precedes future sequence continuity, then Event
+Physical framing/integrity precedes sequence continuity, then Event
 type/schema/payload validation, then projection. Record accepts every assignable
 type/nonzero schema but does not authorize semantic replay. Unknown semantics
-must stop future recovery without changing storage; `incomplete` never grants
+must stop recovery without changing storage; `incomplete` never grants
 repair authority. Physical cursor advancement is not applied checkpoint progress.
 
 CRC32C uses the approved reflected bit-by-bit algorithm. It retains raw header
