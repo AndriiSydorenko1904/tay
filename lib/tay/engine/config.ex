@@ -23,6 +23,16 @@ defmodule Tay.Engine.Config do
     caller_timeout: 5_000,
     execution_batch: 32,
     execution_wake_ms: 1_000,
+    # External execution is opt-in for the existing embedded API.  Supplying a
+    # socket path starts the local UDS Protocol v1 listener; TCP is never
+    # enabled by this configuration.
+    executor_socket: nil,
+    executor_socket_mode: 0o600,
+    executor_max_frame_bytes: 1_048_576,
+    executor_max_connections: 128,
+    executor_max_tasks_per_connection: 256,
+    executor_result_bytes: 65_536,
+    executor_error_bytes: 8_192,
     start_paused: false,
     max_history_bytes: :infinity,
     max_segments: :infinity
@@ -92,7 +102,12 @@ defmodule Tay.Engine.Config do
       :client_bytes,
       :caller_timeout,
       :insert_value_depth,
-      :insert_value_nodes
+      :insert_value_nodes,
+      :executor_max_frame_bytes,
+      :executor_max_connections,
+      :executor_max_tasks_per_connection,
+      :executor_result_bytes,
+      :executor_error_bytes
     ]
 
     nonnegative = [
@@ -113,6 +128,10 @@ defmodule Tay.Engine.Config do
         c.caller_timeout <= 4_294_967_295 and c.client_slots <= 65_536 and
         is_integer(c.execution_batch) and c.execution_batch in 1..1_024 and
         is_integer(c.execution_wake_ms) and c.execution_wake_ms in 1..1_000 and
+        executor_socket?(c.executor_socket) and c.executor_socket_mode in [0o600, 0o660] and
+        c.executor_max_frame_bytes <= 16_777_216 and
+        c.executor_result_bytes <= c.executor_max_frame_bytes and
+        c.executor_error_bytes <= c.executor_max_frame_bytes and
         is_boolean(c.start_paused) and
         Enum.all?([c.max_history_bytes, c.max_segments], fn limit ->
           limit == :infinity or (is_integer(limit) and limit >= 0)
@@ -139,6 +158,15 @@ defmodule Tay.Engine.Config do
 
     if valid, do: :ok, else: {:error, :invalid_engine_options}
   end
+
+  defp executor_socket?(nil), do: true
+
+  defp executor_socket?(path) when is_binary(path) do
+    path != "" and byte_size(path) <= 100 and String.valid?(path) and
+      not String.contains?(path, <<0>>) and Path.type(path) == :absolute
+  end
+
+  defp executor_socket?(_), do: false
 
   # Compile only the applicable branch. Test hooks remain unavailable to
   # production configuration and no environment check runs on a live request.

@@ -8,8 +8,9 @@ defmodule Tay.Engine do
   alias Tay.{Event, Error, Job, JobID}
   alias Tay.Event.{V1, Value}
   alias Tay.Engine.{Admission, Config}
-  alias Tay.State.{Transition, Projection, JobIndex, QueueIndex, SchedulerIndex}
+  alias Tay.State.{Transition, Projection, JobIndex, SchedulerIndex, TaskIndex}
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
+  alias Tay.Executor.Server
   alias Tay.Storage.{Writer, Segment}
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, timeout: :infinity)
@@ -78,6 +79,7 @@ defmodule Tay.Engine do
           slots: Map.new(config.queue_limits, fn {queue, _} -> {queue, 0} end),
           relay_monitors: %{},
           controls: %{},
+          executor_server: nil,
           control_wakes: MapSet.new(),
           snapshot_pending: nil,
           snapshot_dirty: false,
@@ -103,7 +105,8 @@ defmodule Tay.Engine do
             JobIndex.fold(
               projection.jobs,
               fn job, n ->
-                if not Map.has_key?(dispatch_registry, job.definition["worker_key"]) or
+                if (not Map.has_key?(dispatch_registry, job.definition["worker_key"]) and
+                      not external_enabled?(config)) or
                      not Map.has_key?(config.queues, job.definition["queue_key"]),
                    do: n + 1,
                    else: n
@@ -187,6 +190,46 @@ defmodule Tay.Engine do
       {:noreply, publish(complete_drains(next))}
     else
       {:noreply, s}
+    end
+  end
+
+  # Protocol v1 connections and their capabilities are intentionally
+  # generation-local.  They are never written to the job log: after a Tay
+  # restart the durable task-ready index remains, but this pointer starts empty
+  # until runtimes reconnect and advertise again.
+  def handle_info({:executor_server_ready, server}, s) when is_pid(server) do
+    {:noreply, wake_queues(%{s | executor_server: server})}
+  end
+
+  def handle_info({:executor_capacity_changed, server}, %{executor_server: server} = s) do
+    {:noreply, wake_queues(s)}
+  end
+
+  def handle_info(
+        {:executor_completion, server, reservation, result},
+        %{executor_server: server} = s
+      ) do
+    key = {:executor, reservation}
+
+    case Map.get(s.running, key) do
+      %{kind: :external, reservation: ^reservation} = entry ->
+        {:noreply, wake_controls(publish(settle_external(s, key, entry, result)))}
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  def handle_info({:executor_timeout, reservation, execution}, s) do
+    key = {:executor, reservation}
+
+    case Map.get(s.running, key) do
+      %{kind: :external, execution: ^execution} = entry ->
+        if is_pid(entry.server), do: safe_external_cancel(entry.server, reservation)
+        {:noreply, wake_controls(publish(settle_external(s, key, entry, :timeout)))}
+
+      _ ->
+        {:noreply, s}
     end
   end
 
@@ -478,7 +521,32 @@ defmodule Tay.Engine do
         Map.put(acc, kind, pid)
       end)
 
-    %{s | controls: controls}
+    # The listener is a runtime child, not a foundation child: it is torn down
+    # with this Engine generation and stale Unix socket state is therefore not
+    # durable ownership.  Existing BEAM-only engines keep the exact old child
+    # topology by leaving `executor_socket` nil.
+    if s.config.executor_socket do
+      {:ok, server} =
+        DynamicSupervisor.start_child(
+          supervisor,
+          {Server,
+           %{
+             engine: self(),
+             socket_path: s.config.executor_socket,
+             socket_mode: s.config.executor_socket_mode,
+             max_frame_bytes: s.config.executor_max_frame_bytes,
+             max_connections: s.config.executor_max_connections,
+             max_tasks_per_connection: s.config.executor_max_tasks_per_connection,
+             result_bytes: s.config.executor_result_bytes,
+             error_bytes: s.config.executor_error_bytes,
+             engine_name: s.config.name
+           }}
+        )
+
+      %{s | controls: controls, executor_server: server}
+    else
+      %{s | controls: controls}
+    end
   end
 
   defp control_member?(s, kind, pid) do
@@ -530,14 +598,14 @@ defmodule Tay.Engine do
 
   defp control({:queue, queue}, s) do
     if not MapSet.member?(s.paused, queue) and s.slots[queue] < s.config.queue_limits[queue] do
-      case QueueIndex.ready(s.projection.queue, queue, Clock.wall(s.config.clock), 1) do
-        [id] ->
-          case claim(s, JobIndex.get(s.projection.jobs, id), queue) do
+      case next_ready(s, queue, Clock.wall(s.config.clock)) do
+        {:ok, job} ->
+          case claim(s, job, queue) do
             {:ok, next} -> {next, 0}
             {:error, next} -> {next, s.config.execution_wake_ms}
           end
 
-        [] ->
+        :none ->
           {s, s.config.execution_wake_ms}
       end
     else
@@ -545,35 +613,95 @@ defmodule Tay.Engine do
     end
   end
 
+  # Pick the oldest ready job *among capabilities with current capacity*.
+  # Querying the task index per advertised capability is bounded by the server
+  # connection/task limits, and means an absent PHP executor cannot hide a
+  # later Python task at the head of a shared queue.
+  defp next_ready(s, queue, now) do
+    local = Map.keys(s.projection.registry)
+
+    external =
+      if is_pid(s.executor_server) and Process.alive?(s.executor_server),
+        do: Server.available_tasks(s.executor_server),
+        else: []
+
+    candidates =
+      (local ++ external)
+      |> Enum.uniq()
+      |> Enum.flat_map(fn task ->
+        case TaskIndex.ready(s.projection.task, queue, task, now, 1) do
+          [id] ->
+            case JobIndex.get(s.projection.jobs, id) do
+              nil -> []
+              job -> [job]
+            end
+
+          [] ->
+            []
+        end
+      end)
+
+    case candidates do
+      [] -> :none
+      jobs -> {:ok, Enum.min_by(jobs, &TaskIndex.key/1)}
+    end
+  catch
+    :exit, _ -> :none
+  end
+
   defp claim(s, job, queue) do
     at = Clock.wall(s.config.clock)
     started = event(3, job, at, %{"attempt" => job.next_attempt, "cycle_token" => job.cycle})
 
-    with {:ok, worker} <- Registry.resolve(s.config.workers, job.definition["worker_key"]),
+    with {:ok, dispatch} <- dispatch_for(s, job),
          true <- not MapSet.member?(s.projection.held, job.id),
          {:ok, prepared} <- Transition.prepare(job, started, s.config.value_limits),
          {:ok, predicted} <- Transition.apply(prepared, %{sequence: s.next_sequence}),
          :ok <- settlement_fits(s, predicted, at),
          {:ok, {_, _, payload}} <- encoded_event(s, started, nil),
          :ok <- headroom(s, byte_size(payload), s.settlement_reserve + 1) do
-      options = %{
-        engine: self(),
-        guardian: s.guardian,
-        generation: s.generation,
-        worker: worker,
-        timeout_ms: job.definition["timeout_ms"],
-        clock: s.config.clock,
-        eligible_at: job.eligible_at,
-        test_terminate: test_terminate_option(s.config)
-      }
+      case dispatch do
+        {:local, worker} ->
+          options = %{
+            engine: self(),
+            guardian: s.guardian,
+            generation: s.generation,
+            worker: worker,
+            timeout_ms: job.definition["timeout_ms"],
+            clock: s.config.clock,
+            eligible_at: job.eligible_at,
+            test_terminate: test_terminate_option(s.config)
+          }
 
-      case Tay.Execution.Supervisor.prepare(s.runtime, options) do
-        {:ok, identity} -> start_waiting(s, job, queue, identity)
-        _ -> exit(:execution_start_failed)
+          case Tay.Execution.Supervisor.prepare(s.runtime, options) do
+            {:ok, identity} -> start_waiting(s, job, queue, identity)
+            _ -> exit(:execution_start_failed)
+          end
+
+        {:external, server, reservation} ->
+          start_external(s, job, queue, started, server, reservation)
       end
     else
       _ -> {:error, s}
     end
+  end
+
+  defp dispatch_for(s, job) do
+    case Registry.resolve(s.config.workers, job.definition["worker_key"]) do
+      {:ok, worker} ->
+        {:ok, {:local, worker}}
+
+      _ when is_pid(s.executor_server) ->
+        case Server.reserve(s.executor_server, job.definition["worker_key"]) do
+          {:ok, reservation} -> {:ok, {:external, s.executor_server, reservation}}
+          _ -> {:error, :no_executor_capacity}
+        end
+
+      _ ->
+        {:error, :unavailable_worker}
+    end
+  catch
+    :exit, _ -> {:error, :no_executor_capacity}
   end
 
   defp settlement_fits(s, executing, at) do
@@ -632,6 +760,55 @@ defmodule Tay.Engine do
     end
   end
 
+  # Remote executors are not BEAM tasks and must never be put behind the local
+  # relay/fence protocol.  Reserve an advertised connection first, make the
+  # existing durable START transition, then send EXECUTE.  A process crash in
+  # any later window is reconciled through the normal `:executing` recovery
+  # path, giving the documented at-least-once behaviour.
+  defp start_external(s, job, queue, started, server, reservation) do
+    case commit(s, job, started) do
+      {:ok, executing, next} ->
+        key = {:executor, reservation}
+
+        timer =
+          Process.send_after(
+            self(),
+            {:executor_timeout, reservation, executing.execution},
+            job.definition["timeout_ms"]
+          )
+
+        entry = %{
+          kind: :external,
+          id: job.id,
+          queue: queue,
+          execution: executing.execution,
+          reservation: reservation,
+          server: server,
+          timer: timer
+        }
+
+        next = %{
+          next
+          | running: Map.put(next.running, key, entry),
+            executions: Map.put(next.executions, job.id, key),
+            slots: Map.update!(next.slots, queue, &(&1 + 1)),
+            projection: Projection.hold(next.projection, job)
+        }
+
+        # The server only serializes JSON-compatible fields from this view and
+        # preserves the reservation until completion/disconnect.  It cannot
+        # send an execution before this durable START exists.
+        case safe_external_dispatch(server, reservation, view(next, executing)) do
+          :ok -> {:ok, next}
+          _ -> {:error, settle_external(next, key, entry, :lost)}
+        end
+
+      {:error, _} ->
+        safe_external_release(server, reservation)
+        {:error, s}
+    end
+  end
+
   defp abandon_waiting(s, relay) do
     entry = s.running[relay]
     :ok = Relay.terminate_task(relay, entry.ticket)
@@ -640,7 +817,8 @@ defmodule Tay.Engine do
 
   defp release_pending(s) do
     Enum.reduce(s.running, s, fn {relay, entry}, acc ->
-      if (not entry.released and not entry.settled and entry.execution) &&
+      if (Map.get(entry, :kind) != :external and
+            (not entry.released and not entry.settled and entry.execution)) &&
            Clock.wall(acc.config.clock) >= entry.eligible_at do
         hook(acc.config, {:execution, :pre_release})
         # Recheck after a fault barrier as well as after storage latency.
@@ -704,6 +882,16 @@ defmodule Tay.Engine do
       nil ->
         s
 
+      {:executor, reservation} = key ->
+        case Map.get(s.running, key) do
+          %{kind: :external} = entry ->
+            if is_pid(entry.server), do: safe_external_cancel(entry.server, reservation)
+            settle_external(s, key, entry, :cancelled)
+
+          _ ->
+            s
+        end
+
       relay ->
         entry = s.running[relay]
         :ok = Relay.terminate_task(relay, entry.ticket)
@@ -729,6 +917,68 @@ defmodule Tay.Engine do
       _ ->
         s
     end
+  end
+
+  defp settle_external(s, key, entry, result) do
+    if entry.timer, do: Process.cancel_timer(entry.timer)
+    job = JobIndex.get(s.projection.jobs, entry.id)
+
+    s =
+      case {result, job} do
+        {:cancelled, _} ->
+          s
+
+        {_, %{state: :executing, execution: execution}} when execution == entry.execution ->
+          outcome = external_outcome(result)
+
+          case Outcome.event(job, outcome, Clock.wall(s.config.clock)) do
+            {:ok, finished} ->
+              case commit(s, job, finished) do
+                {:ok, _, next} -> next
+                _ -> exit(:external_execution_settlement_failed)
+              end
+
+            _ ->
+              exit(:external_execution_outcome_invalid)
+          end
+
+        _ ->
+          s
+      end
+
+    if is_pid(entry.server), do: safe_external_release(entry.server, entry.reservation)
+
+    %{
+      s
+      | running: Map.delete(s.running, key),
+        executions: Map.delete(s.executions, entry.id),
+        slots: Map.update!(s.slots, entry.queue, &max(&1 - 1, 0)),
+        projection: if(job, do: Projection.release(s.projection, job), else: s.projection)
+    }
+  end
+
+  defp external_outcome(:success), do: :success
+  defp external_outcome(:timeout), do: :timeout
+  defp external_outcome(:lost), do: :interrupted
+  defp external_outcome({:failure, _}), do: {:failure, 1}
+  defp external_outcome(_), do: {:failure, 1}
+
+  defp safe_external_dispatch(server, reservation, job) do
+    Server.dispatch(server, reservation, job)
+  catch
+    :exit, _ -> {:error, :executor_unavailable}
+  end
+
+  defp safe_external_release(server, reservation) do
+    Server.release(server, reservation)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_external_cancel(server, reservation) do
+    Server.cancel(server, reservation)
+  catch
+    :exit, _ -> :ok
   end
 
   defp wake_controls(s) do
@@ -765,7 +1015,7 @@ defmodule Tay.Engine do
     with {:ok, definition} <- Value.decode(bytes, c.value_limits),
          true <- V1.definition?(definition) || {:error, :invalid_definition},
          true <-
-           (Map.get(c.workers, definition["worker_key"]) == worker and not is_nil(worker)) ||
+           valid_worker_mapping?(c, definition["worker_key"], worker) ||
              {:error, :worker_mapping},
          at = Clock.wall(c.clock),
          event = %Event{
@@ -933,8 +1183,17 @@ defmodule Tay.Engine do
 
   defp blocked?(s, job),
     do:
-      not Map.has_key?(s.projection.registry, job.definition["worker_key"]) or
+      (not Map.has_key?(s.projection.registry, job.definition["worker_key"]) and
+         not external_enabled?(s.config)) or
         not Map.has_key?(s.config.queues, job.definition["queue_key"])
+
+  defp valid_worker_mapping?(config, key, worker) do
+    (Map.get(config.workers, key) == worker and not is_nil(worker)) or
+      (external_enabled?(config) and worker == Tay.Executor.RemoteWorker and
+         not Map.has_key?(config.workers, key))
+  end
+
+  defp external_enabled?(config), do: is_binary(config.executor_socket)
 
   defp failure(s, kind, reason, raw),
     do: {{:error, Error.new(kind, reason, JobID.encode(raw), :insert)}, s}

@@ -67,6 +67,26 @@ defmodule Tay do
 
   def insert(_, _), do: {:error, Error.new(:invalid, :invalid_job, nil, :insert)}
 
+  @doc """
+  Enqueues a portable task for a currently configured Protocol v1 listener.
+
+  `task` is a stable UTF-8 capability name, not an Elixir module name.  `args`
+  must be a JSON-compatible string-keyed map.  A supplied 128-bit lowercase
+  hexadecimal `:id` is also the idempotency key: repeat the exact submission
+  after an unknown outcome rather than allocating another ID.
+  """
+  def enqueue(task, args, options \\ []) do
+    with true <- Keyword.keyword?(options) || {:error, :invalid_options},
+         {job_options, request_options} <-
+           Keyword.split(options, [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at]),
+         {:ok, job} <- Tay.Executor.Job.new(task, args, job_options) do
+      insert(job, request_options)
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _} -> {:error, Error.new(:invalid, :invalid_request, nil, :enqueue)}
+    end
+  end
+
   def get_job(id, options \\ []) do
     with {:ok, raw} <- JobID.decode(id),
          {:ok, name, timeout} <- request_options(options),
