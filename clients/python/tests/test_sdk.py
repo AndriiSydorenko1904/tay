@@ -33,14 +33,14 @@ class SocketPathTests(unittest.TestCase):
             "/chosen/tay.sock",
         )
         self.assertEqual(
-            resolve_socket_path(
-                environ={"TAY_SOCKET_PATH": "/environment/tay.sock"}, uid=4242
-            ),
+            resolve_socket_path(environ={"TAY_SOCKET_PATH": "/environment/tay.sock"}, uid=4242),
             "/environment/tay.sock",
         )
 
     def test_automatic_resolution_matches_protocol_contract(self) -> None:
-        always_usable = lambda _path: True
+        def always_usable(_path: str) -> bool:
+            return True
+
         self.assertEqual(
             resolve_socket_path(
                 environ={"XDG_RUNTIME_DIR": "/runtime", "TMPDIR": "/temporary"},

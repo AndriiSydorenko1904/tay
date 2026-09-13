@@ -106,15 +106,15 @@ class Task:
         else:
             raise ValidationError("enqueue options must be a mapping")
 
-        parameter_names = (
-            set(self.signature.parameters) if self.signature is not None else set()
-        )
+        parameter_names = set(self.signature.parameters) if self.signature is not None else set()
         for key in tuple(task_keywords):
             if key in _ENQUEUE_OPTION_NAMES and key not in parameter_names:
                 options[key] = task_keywords.pop(key)
         return task_keywords, options
 
-    def _arguments_from_call(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    def _arguments_from_call(
+        self, args: tuple[Any, ...], kwargs: Mapping[str, Any]
+    ) -> dict[str, Any]:
         if self.signature is None:
             if args:
                 raise ValidationError(
@@ -176,12 +176,16 @@ class Task:
         serialized_args = self._arguments_from_call(args, task_kwargs)
         return await self.tay.enqueue(self.name, serialized_args, options=options)
 
-    async def schedule(self, *, cron: str, kwargs: Mapping[str, Any] | None = None, **options: Any) -> ScheduleHandle:
+    async def schedule(
+        self, *, cron: str, kwargs: Mapping[str, Any] | None = None, **options: Any
+    ) -> ScheduleHandle:
         """Create or update a cron schedule for this task."""
 
         return await self.tay.schedule(self, cron=cron, kwargs=kwargs, **options)
 
-    async def every(self, *, kwargs: Mapping[str, Any] | None = None, **units: Any) -> ScheduleHandle:
+    async def every(
+        self, *, kwargs: Mapping[str, Any] | None = None, **units: Any
+    ) -> ScheduleHandle:
         """Create or update an interval schedule for this task."""
 
         return await self.tay.every(self, kwargs=kwargs, **units)

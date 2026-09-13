@@ -21,7 +21,9 @@ def _instance(specification: str) -> Tay:
             raise TypeError(f"{specification!r} is not a Tay instance")
         return candidate
 
-    candidates = tuple(instance for instance in Tay.instances() if instance.__module__ == "tay.client")
+    candidates = tuple(
+        instance for instance in Tay.instances() if instance.__module__ == "tay.client"
+    )
     if len(candidates) != 1:
         raise RuntimeError(
             f"{module_name!r} must create exactly one Tay instance, or use module:attribute"
@@ -61,4 +63,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
-

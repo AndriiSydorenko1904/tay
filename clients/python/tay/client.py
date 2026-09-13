@@ -92,7 +92,9 @@ def _server_error_from_payload(payload: Any) -> ServerError:
         message = payload.get("message") or payload.get("reason") or "Tay rejected the request"
         code = payload.get("code") or payload.get("type")
         if payload.get("remote_task") or code in {"task_failed", "TaskFailed"}:
-            return RemoteTaskError(str(message), code=str(code) if code else None, details=dict(payload))
+            return RemoteTaskError(
+                str(message), code=str(code) if code else None, details=dict(payload)
+            )
         return ServerError(str(message), code=str(code) if code else None, details=dict(payload))
     return ServerError(str(payload))
 
@@ -260,9 +262,9 @@ class Tay:
         if cron is not None and every is not None:
             raise ValidationError("a task can declare cron or every, not both")
         if cron is not None and (
-            type(cron) is not str or not cron.strip()
-            or len(cron.encode("utf-8")) > 256):
-                raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
+            type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256
+        ):
+            raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
         if every is not None:
             every = self._validate_every_mapping(every)
 
@@ -417,7 +419,7 @@ class Tay:
                 await self._connection_lost.wait()
             except asyncio.CancelledError:
                 return
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - reconnect supervision boundary
                 self._last_connection_error = exc
                 self._connected.clear()
             finally:
@@ -462,16 +464,14 @@ class Tay:
         if self.mode != "client" and self._tasks:
             await self._exchange("register_tasks", {"tasks": list(self._tasks)})
 
-    async def _read_loop(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             while self._running and self._writer is writer:
                 message = await read_frame(reader, max_frame_bytes=self.max_frame_bytes)
                 await self._handle_message(message)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._last_connection_error = exc
         finally:
             if self._writer is writer:
@@ -494,7 +494,10 @@ class Tay:
 
         request_id = message.get("request_id")
         if request_id is not None:
-            if message_type in {"accepted", "heartbeat_ok"} and request_id in self._event_request_ids:
+            if (
+                message_type in {"accepted", "heartbeat_ok"}
+                and request_id in self._event_request_ids
+            ):
                 self._event_request_ids.discard(request_id)
                 return
             future = self._pending.pop(request_id, None)
@@ -615,7 +618,7 @@ class Tay:
             raise ValidationError("enqueue options must be a mapping")
         overlap = set(merged_options).intersection(option_keywords)
         if overlap:
-            raise ValidationError(f"enqueue option supplied twice: {sorted(overlap)[0]}")
+            raise ValidationError(f"enqueue option supplied twice: {min(overlap)}")
         merged_options.update(option_keywords)
         backoff = merged_options.get("backoff")
         if not (backoff is None or backoff == "exponential"):
@@ -669,10 +672,10 @@ class Tay:
         self,
         task: str | Task,
         *,
-        seconds: int | float | None = None,
-        minutes: int | float | None = None,
-        hours: int | float | None = None,
-        days: int | float | None = None,
+        seconds: float | None = None,
+        minutes: float | None = None,
+        hours: float | None = None,
+        days: float | None = None,
         kwargs: Mapping[str, Any] | None = None,
         args: Mapping[str, Any] | None = None,
         declaration_id: str | None = None,
@@ -845,7 +848,7 @@ class Tay:
                     },
                 )
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - user task exceptions must become FAILED
             with contextlib.suppress(ConnectionLost, OSError):
                 await self._send_event(
                     "failed",
@@ -860,7 +863,12 @@ class Tay:
     async def _execution_failure(self, message: Mapping[str, Any], error: BaseException) -> None:
         execution_id = message.get("execution_id")
         reservation_id = message.get("reservation_id")
-        if type(execution_id) is not str or not execution_id or type(reservation_id) is not str or not reservation_id:
+        if (
+            type(execution_id) is not str
+            or not execution_id
+            or type(reservation_id) is not str
+            or not reservation_id
+        ):
             raise ProtocolError("cannot report execute failure without execution context")
         fields: dict[str, Any] = {
             "reservation_id": reservation_id,
@@ -878,7 +886,9 @@ class Tay:
             "message": str(exc) or type(exc).__name__,
         }
         if self.include_traceback:
-            error["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            error["traceback"] = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
         # Trim text fields until the JSON representation obeys the configured
         # cap.  This never silently truncates a successful result.
         while encoded_json_size(error) > self.max_error_bytes:

@@ -65,9 +65,7 @@ def normalize_json(
 
     if type(value) is list:
         if len(value) > max_collection_items:
-            raise ValidationError(
-                f"JSON list has more than {max_collection_items} items"
-            )
+            raise ValidationError(f"JSON list has more than {max_collection_items} items")
         return [
             normalize_json(
                 item,
@@ -80,9 +78,7 @@ def normalize_json(
 
     if isinstance(value, Mapping):
         if len(value) > max_collection_items:
-            raise ValidationError(
-                f"JSON object has more than {max_collection_items} entries"
-            )
+            raise ValidationError(f"JSON object has more than {max_collection_items} entries")
 
         normalized: dict[str, Any] = {}
         for key, item in value.items():
@@ -126,9 +122,7 @@ def validate_task_name(name: str) -> str:
     if type(name) is not str or not name:
         raise ValidationError("task name must be a non-empty string")
     if len(name.encode("utf-8")) > DEFAULT_MAX_TASK_NAME_BYTES:
-        raise ValidationError(
-            f"task name exceeds {DEFAULT_MAX_TASK_NAME_BYTES} UTF-8 bytes"
-        )
+        raise ValidationError(f"task name exceeds {DEFAULT_MAX_TASK_NAME_BYTES} UTF-8 bytes")
     if any(ord(character) < 0x20 for character in name):
         raise ValidationError("task name cannot contain control characters")
     return name
@@ -177,13 +171,13 @@ def encode_frame(
     normalized = validate_envelope(envelope)
     payload = json_bytes(normalized)
     if not payload or len(payload) > max_frame_bytes:
-        raise ProtocolError(
-            f"protocol payload size {len(payload)} exceeds limit {max_frame_bytes}"
-        )
+        raise ProtocolError(f"protocol payload size {len(payload)} exceeds limit {max_frame_bytes}")
     return struct.pack(">I", len(payload)) + payload
 
 
-def decode_payload(payload: bytes, *, max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES) -> dict[str, Any]:
+def decode_payload(
+    payload: bytes, *, max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
+) -> dict[str, Any]:
     """Decode and validate a raw JSON frame payload."""
 
     if not payload or len(payload) > max_frame_bytes:
@@ -218,9 +212,7 @@ async def read_frame(
         raise ConnectionError("socket closed while reading protocol header") from exc
     length = struct.unpack(">I", header)[0]
     if length == 0 or length > max_frame_bytes:
-        raise ProtocolError(
-            f"protocol frame length {length} is outside 1..{max_frame_bytes}"
-        )
+        raise ProtocolError(f"protocol frame length {length} is outside 1..{max_frame_bytes}")
     try:
         payload = await reader.readexactly(length)
     except asyncio.IncompleteReadError as exc:
