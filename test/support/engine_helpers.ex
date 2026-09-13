@@ -19,6 +19,9 @@ defmodule Tay.Test.EngineHelpers do
         workers: %{"worker.v1" => EngineWorker},
         durability: mode,
         validated_filesystem: mode == :sync,
+        # Legacy Engine tests are intentionally BEAM-only. `nil` explicitly
+        # opts them out of production's auto-discovered UDS listener.
+        executor_socket: nil,
         test_helper: true,
         # Isolate the accepted Phase 4 command/commit assertions. Production
         # rejects this option; Phase 5 tests explicitly enable execution.

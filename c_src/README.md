@@ -31,8 +31,11 @@ Loss/timeout/bad response is `:uncertain`, with no inferred mutation outcome.
 
 `str` means `length:u16 | bytes`, with no embedded NUL. Paths are bounded by
 PATH_MAX; basenames by 255 bytes and cannot contain `/`, `.` or `..` entries.
-`scope:u8` is 0 for data_dir and 1 for segments/. An identity is
-`size:u64 | device:u64 | inode:u64 | links:u64 | type:u8 | mode:u32` (37 bytes).
+`scope:u8` is 0 for data_dir and 1 for segments/. The established storage
+identity is `size:u64 | device:u64 | inode:u64 | links:u64 | type:u8 |
+mode:u32` (37 bytes). Cold-copy sessions append `mtime_ns:u64 | ctime_ns:u64`
+(53 bytes total); they revalidate these timestamps before and after hashing
+and copying to reject source replacement or extent mutation.
 Type is regular=1, directory=2, symlink=3, other=4.
 
 | Opcode | Request body | Success body |

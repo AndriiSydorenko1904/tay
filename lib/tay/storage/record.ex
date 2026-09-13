@@ -2,7 +2,7 @@ defmodule Tay.Storage.Record do
   @moduledoc """
   Pure Tay v1 physical framing and integrity codec.
 
-  The approved contract is `docs/phase-1-storage-format-rfc.md`: a 24-byte
+  The public contract is `docs/storage.md`: a 24-byte
   header, 28-byte overhead, big-endian integers, CRC32C over header bytes 0..19
   and over those bytes followed by the opaque payload, and a 16 MiB hard limit.
 

@@ -39,13 +39,12 @@ defmodule Tay.System.PackageTest do
 
     assert File.read!(Path.join(vendor, "LICENSE")) == File.read!(Path.join(@checkout, "LICENSE"))
     assert File.regular?(Path.join(vendor, "CHANGELOG.md"))
-    assert File.regular?(Path.join(vendor, "docs/qualification/linux-lifecycle.json"))
+
+    assert Enum.sort(File.ls!(Path.join(vendor, "docs"))) ==
+             Enum.sort(~w(protocol.md storage.md operations.md compatibility.md))
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))
-
-    assert File.read!(Path.join(vendor, "scripts/tay_cold_copy.py")) ==
-             File.read!(Path.join(@checkout, "scripts/tay_cold_copy.py"))
 
     assert File.regular?(Path.join(vendor, "c_src/README.md"))
 

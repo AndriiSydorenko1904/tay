@@ -23,6 +23,9 @@ defmodule Tay.Executor.Protocol do
     succeeded
     failed
     heartbeat
+    schedule
+    cancel_schedule
+    register_schedules
   ))
 
   @type message :: %{required(binary()) => term()}
@@ -38,7 +41,6 @@ defmodule Tay.Executor.Protocol do
          true <- byte_size(bytes) > 0 || {:error, :empty_frame} do
       {:ok, <<byte_size(bytes)::unsigned-big-32, bytes::binary>>}
     else
-      false -> {:error, :invalid_frame}
       {:error, _} = error -> error
     end
   end
@@ -69,7 +71,7 @@ defmodule Tay.Executor.Protocol do
         {:ok, Enum.reverse(acc), <<size::unsigned-big-32, rest::binary>>}
 
       true ->
-        <<payload::binary-size(size), tail::binary>> = rest
+        <<payload::binary-size(^size), tail::binary>> = rest
 
         with {:ok, message} <- decode_message(payload, max_frame_bytes) do
           decode_frames(tail, max_frame_bytes, [message | acc])
@@ -89,7 +91,6 @@ defmodule Tay.Executor.Protocol do
          {:ok, message} <- envelope(value) do
       {:ok, message}
     else
-      false -> {:error, :invalid_message}
       {:error, _} = error -> error
     end
   end
@@ -101,9 +102,10 @@ defmodule Tay.Executor.Protocol do
     version = Map.get(message, "version", Map.get(message, "v"))
 
     with true <- version == @version || {:error, :unsupported_version},
-         true <- not (Map.has_key?(message, "version") and Map.has_key?(message, "v")) or
-                   Map.fetch!(message, "version") == Map.fetch!(message, "v") ||
-                   {:error, :invalid_version},
+         true <-
+           (not (Map.has_key?(message, "version") and Map.has_key?(message, "v")) or
+              Map.fetch!(message, "version") == Map.fetch!(message, "v")) ||
+             {:error, :invalid_version},
          type when is_binary(type) <- Map.get(message, "type") || {:error, :invalid_type},
          true <- MapSet.member?(@types, type) || {:error, :unknown_message},
          request_id when is_binary(request_id) <-

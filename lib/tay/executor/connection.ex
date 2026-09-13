@@ -15,15 +15,19 @@ defmodule Tay.Executor.Connection do
     do: GenServer.call(connection, {:deliver, message}, @send_timeout)
 
   def reply(connection, request_id, type, fields \\ %{}) do
-    GenServer.call(connection, {:reply, request_id, type, fields}, @send_timeout)
-  catch
-    :exit, _ -> {:error, :connection_closed}
+    try do
+      GenServer.call(connection, {:reply, request_id, type, fields}, @send_timeout)
+    catch
+      :exit, _ -> {:error, :connection_closed}
+    end
   end
 
-  def error(connection, request_id, code),
-    do: GenServer.call(connection, {:error, request_id, code}, @send_timeout)
-  catch
-    :exit, _ -> {:error, :connection_closed}
+  def error(connection, request_id, code) do
+    try do
+      GenServer.call(connection, {:error, request_id, code}, @send_timeout)
+    catch
+      :exit, _ -> {:error, :connection_closed}
+    end
   end
 
   def close(connection), do: GenServer.cast(connection, :close)
@@ -32,18 +36,24 @@ defmodule Tay.Executor.Connection do
   def init(options) do
     with true <- is_port(options.socket) || {:error, :invalid_socket},
          true <- is_pid(options.server) || {:error, :invalid_server},
-         true <- is_integer(options.max_frame_bytes) and options.max_frame_bytes >= 1 ||
-                   {:error, :invalid_frame_limit},
-         true <- is_integer(options.max_tasks) and options.max_tasks >= 1 ||
-                   {:error, :invalid_task_limit},
-         true <- is_integer(options.request_timeout) and options.request_timeout >= 1 ||
-                   {:error, :invalid_request_timeout},
-         true <- is_integer(options.max_pending_requests) and options.max_pending_requests >= 1 ||
-                   {:error, :invalid_pending_limit},
-         true <- is_integer(options.result_bytes) and options.result_bytes >= 1 ||
-                   {:error, :invalid_result_limit},
-         true <- is_integer(options.error_bytes) and options.error_bytes >= 1 ||
-                   {:error, :invalid_error_limit} do
+         true <-
+           (is_integer(options.max_frame_bytes) and options.max_frame_bytes >= 1) ||
+             {:error, :invalid_frame_limit},
+         true <-
+           (is_integer(options.max_tasks) and options.max_tasks >= 1) ||
+             {:error, :invalid_task_limit},
+         true <-
+           (is_integer(options.request_timeout) and options.request_timeout >= 1) ||
+             {:error, :invalid_request_timeout},
+         true <-
+           (is_integer(options.max_pending_requests) and options.max_pending_requests >= 1) ||
+             {:error, :invalid_pending_limit},
+         true <-
+           (is_integer(options.result_bytes) and options.result_bytes >= 1) ||
+             {:error, :invalid_result_limit},
+         true <-
+           (is_integer(options.error_bytes) and options.error_bytes >= 1) ||
+             {:error, :invalid_error_limit} do
       {:ok,
        %{
          socket: options.socket,
@@ -136,7 +146,11 @@ defmodule Tay.Executor.Connection do
   end
 
   def handle_call({:error, request_id, code}, _from, s) do
-    next = case take_pending(s, request_id) do {:ok, state} -> state; :error -> s end
+    next =
+      case take_pending(s, request_id) do
+        {:ok, state} -> state
+        :error -> s
+      end
 
     case send_wire(next, Protocol.error(request_id, code)) do
       {:ok, sent} -> {:reply, :ok, sent}
@@ -176,13 +190,31 @@ defmodule Tay.Executor.Connection do
   defp request(%{"type" => "hello"} = message, s), do: protocol_reply(s, message, "already_hello")
 
   defp request(%{"type" => type} = message, %{session: nil} = s)
-       when type in ["register_tasks", "unregister_tasks", "enqueue", "status", "result", "cancel", "started", "succeeded", "failed", "heartbeat"],
+       when type in [
+              "register_tasks",
+              "unregister_tasks",
+              "enqueue",
+              "status",
+              "result",
+              "cancel",
+              "started",
+              "succeeded",
+              "failed",
+              "heartbeat",
+              "schedule",
+              "cancel_schedule",
+              "register_schedules"
+            ],
        do: protocol_reply(s, message, "hello_required")
 
   defp request(%{"type" => "register_tasks"} = message, s) do
     with {:ok, tasks} <- task_list(message, s.max_tasks),
          :ok <- Server.register_tasks(s.server, self(), tasks),
-         {:ok, next} <- send_wire(s, Protocol.reply("tasks_registered", Protocol.request_id(message), %{"tasks" => tasks})) do
+         {:ok, next} <-
+           send_wire(
+             s,
+             Protocol.reply("tasks_registered", Protocol.request_id(message), %{"tasks" => tasks})
+           ) do
       {:ok, next}
     else
       {:error, code} -> protocol_reply(s, message, code)
@@ -193,7 +225,13 @@ defmodule Tay.Executor.Connection do
   defp request(%{"type" => "unregister_tasks"} = message, s) do
     with {:ok, tasks} <- task_list(message, s.max_tasks),
          :ok <- Server.unregister_tasks(s.server, self(), tasks),
-         {:ok, next} <- send_wire(s, Protocol.reply("tasks_unregistered", Protocol.request_id(message), %{"tasks" => tasks})) do
+         {:ok, next} <-
+           send_wire(
+             s,
+             Protocol.reply("tasks_unregistered", Protocol.request_id(message), %{
+               "tasks" => tasks
+             })
+           ) do
       {:ok, next}
     else
       {:error, code} -> protocol_reply(s, message, code)
@@ -202,12 +240,23 @@ defmodule Tay.Executor.Connection do
   end
 
   defp request(%{"type" => "enqueue"} = message, s) do
-    with :ok <- enqueue_message?(message), do: forward(s, message), else: (_ -> protocol_reply(s, message, "invalid_enqueue"))
+    with :ok <- enqueue_message?(message),
+         do: forward(s, message),
+         else: (_ -> protocol_reply(s, message, "invalid_enqueue"))
   end
 
   defp request(%{"type" => type} = message, s) when type in ["status", "result", "cancel"] do
-    with :ok <- job_message?(message), do: forward(s, message), else: (_ -> protocol_reply(s, message, "invalid_job_id"))
+    with :ok <- job_message?(message),
+         do: forward(s, message),
+         else: (_ -> protocol_reply(s, message, "invalid_job_id"))
   end
+
+  # Keep request correlation intact for SDK methods that predate the durable
+  # periodic-schedule event design. An explicit feature error is safer than a
+  # disconnect that looks like a transport outage.
+  defp request(%{"type" => type} = message, s)
+       when type in ["schedule", "cancel_schedule", "register_schedules"],
+       do: protocol_reply(s, message, "scheduling_unsupported")
 
   defp request(%{"type" => "started"} = message, s) do
     with {:ok, reservation_id, execution} <- execution_context(message),
@@ -338,34 +387,40 @@ defmodule Tay.Executor.Connection do
     message = Map.get(error, "message")
     traceback = Map.get(error, "traceback")
 
-    normalized =
-      %{}
-      |> maybe_put("type", type, 128)
-      |> maybe_put("message", message, max_bytes)
-      |> maybe_put("traceback", traceback, max_bytes)
-
-    with true <- map_size(normalized) > 0 || {:error, "invalid_failure"},
+    with {:ok, normalized} <-
+           normalize_failure(%{}, [
+             {"type", type, 128},
+             {"message", message, max_bytes},
+             {"traceback", traceback, max_bytes}
+           ]),
+         true <- map_size(normalized) > 0 || {:error, "invalid_failure"},
          {:ok, _} <- Protocol.json_bytes(normalized, max_bytes) do
       {:ok, normalized}
     else
       {:error, :json_too_large} -> {:error, "error_too_large"}
+      {:error, code} -> {:error, code}
       _ -> {:error, "invalid_failure"}
     end
   end
 
   defp failure(_, _), do: {:error, "invalid_failure"}
 
-  defp maybe_put(map, _key, nil, _maximum), do: map
+  defp normalize_failure(map, []), do: {:ok, map}
+  defp normalize_failure(map, [{_key, nil, _maximum} | rest]), do: normalize_failure(map, rest)
 
-  defp maybe_put(map, key, value, maximum)
-       when is_binary(value) and String.valid?(value) and byte_size(value) <= maximum,
-       do: Map.put(map, key, value)
+  defp normalize_failure(map, [{key, value, maximum} | rest]) when is_binary(value) do
+    if String.valid?(value) and byte_size(value) <= maximum,
+      do: normalize_failure(Map.put(map, key, value), rest),
+      else: {:error, "invalid_failure"}
+  end
 
-  defp maybe_put(_map, _key, _value, _maximum), do: throw(:invalid_failure)
+  defp normalize_failure(_, _), do: {:error, "invalid_failure"}
 
   defp take_pending(s, request_id) when is_binary(request_id) do
     case Map.pop(s.pending, request_id) do
-      {nil, _} -> :error
+      {nil, _} ->
+        :error
+
       {timer, pending} ->
         Process.cancel_timer(timer)
         {:ok, %{s | pending: pending}}

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import update_wrapper
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any
 
 from .errors import ValidationError
 from .protocol import normalize_json, validate_task_name

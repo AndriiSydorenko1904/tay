@@ -115,4 +115,4 @@ mix test test/tay/qualification/benchmark_test.exs --warnings-as-errors
 The final qualification report must retain exact commands, outputs, physical
 fixture hashes and platform evidence. Publish only measured envelopes and leave
 R5, hardware certification, actual workload RAM/disk headroom and unmeasured
-profiles explicit. See [production limits](../docs/production-limits.md).
+profiles explicit. See [compatibility and limits](../docs/compatibility.md).

@@ -16,7 +16,6 @@ from typing import Any
 
 from .errors import ProtocolError, ValidationError
 
-
 PROTOCOL_VERSION = 1
 DEFAULT_MAX_FRAME_BYTES = 1_048_576
 DEFAULT_MAX_JSON_DEPTH = 32
@@ -160,10 +159,8 @@ def validate_envelope(envelope: Mapping[str, Any], *, incoming: bool = False) ->
         raise ProtocolError("protocol message type is too long")
 
     request_id = normalized.get("request_id")
-    # EXECUTE and CANCEL_EXECUTION are peer-initiated commands.  They are not
-    # request/reply RPCs, so a request id is optional for those two messages.
-    if request_id is not None and (type(request_id) is not str or not request_id):
-        raise ProtocolError("request_id must be a non-empty string when present")
+    if type(request_id) is not str or not request_id:
+        raise ProtocolError("protocol envelope requires a non-empty string request_id")
     if isinstance(request_id, str) and len(request_id.encode("utf-8")) > 128:
         raise ProtocolError("request_id is too long")
 

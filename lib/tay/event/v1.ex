@@ -10,7 +10,15 @@ defmodule Tay.Event.V1 do
     6 => ~w(mode new_due_at)
   }
   @definition ~w(args definition_version max_attempts queue_key retry_policy scheduled_at timeout_ms worker_key)
-  @policy %{"base_ms" => 1000, "cap_ms" => 60_000, "jitter_divisor" => 4, "version" => 1}
+  @retry_base_ms 1_000
+  @retry_cap_ms 60_000
+  @retry_jitter_divisor 4
+  @policy %{
+    "base_ms" => @retry_base_ms,
+    "cap_ms" => @retry_cap_ms,
+    "jitter_divisor" => @retry_jitter_divisor,
+    "version" => 1
+  }
   @max_time 9_223_372_036_854_775_807
   def policy, do: @policy
   def max_time, do: @max_time
@@ -90,10 +98,22 @@ defmodule Tay.Event.V1 do
   defp args?(x), do: x in [nil, false, true] or is_number(x) or is_binary(x)
 
   @doc false
+  def retry_delay(attempt) when is_integer(attempt) and attempt in 1..65_535 do
+    # Branch before exponentiation: Event-v1 permits a large attempt ordinal,
+    # but the fixed policy reaches its cap at the seventh execution.
+    if attempt >= 7,
+      do: @retry_cap_ms,
+      else: @retry_base_ms * Integer.pow(2, attempt - 1)
+  end
+
+  def retry_jitter_max(delay) when is_integer(delay) and delay in 0..@retry_cap_ms,
+    do: min(div(delay, @retry_jitter_divisor), @retry_cap_ms - delay)
+
+  @doc false
   def retry_interval(at, attempt)
       when is_integer(at) and is_integer(attempt) and attempt in 1..65_535 do
-    delay = if attempt >= 7, do: 60_000, else: 1000 * Integer.pow(2, attempt - 1)
-    jitter = min(div(delay, 4), 60_000 - delay)
+    delay = retry_delay(attempt)
+    jitter = retry_jitter_max(delay)
     {min(@max_time, at + delay), min(@max_time, at + delay + jitter)}
   end
 end

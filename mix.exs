@@ -91,14 +91,15 @@ defmodule Tay.MixProject do
         "lib",
         "c_src/tay_storage_helper.c",
         "c_src/README.md",
-        "scripts/tay_cold_copy.py",
         "mix.exs",
         ".formatter.exs",
         "README.md",
         "CHANGELOG.md",
         "LICENSE",
-        "docs/*.md",
-        "docs/qualification"
+        "docs/protocol.md",
+        "docs/storage.md",
+        "docs/operations.md",
+        "docs/compatibility.md"
       ],
       build_tools: ["mix"],
       links: %{

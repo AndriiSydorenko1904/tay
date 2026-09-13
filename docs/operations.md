@@ -1,222 +1,125 @@
-# Tay operations
+# Operations
 
-This is the Tay v0.5.0 public-preview operational procedure. R5 approves only
-the finite measured reference profile and target-validation condition in
-[production limits](production-limits.md), not this procedure alone or an
-unrestricted production deployment. Package publication remains a separate
-action. No repair, compaction, live backup or distributed execution is provided.
+Run one Engine per whole store. Production `:sync` requires an explicitly
+validated local Linux filesystem with truthful file and directory sync,
+advisory locking, and exclusive rename semantics. `validated_filesystem: true`
+is the operator's attestation, not a filesystem probe or device certification.
+Never silently downgrade to `:write`; production builds reject that mode.
+macOS `:write` is for development and carries no power-loss promise. A release
+must be built for its target OS/architecture with Elixir 1.20, OTP 29, and a
+C11 compiler at build time; the deployed release runs its included native
+helper without Mix or a compiler.
 
-## Deployment boundary
+## Initialize and inspect
 
-Run one Engine against a whole store on explicitly validated local Linux storage
-with `durability: :sync` and `validated_filesystem: true`. The flag is an operator
-attestation, not filesystem/device certification. Verify file and directory sync,
-advisory locks, exclusive publication, stable identities, mount configuration and
-the device's documented power-loss behavior. See the frozen Phase 2 platform assumptions and
-the actual tested matrix in the implementation report. NFS/SMB, network/object
-stores, Windows and macOS production durability are unsupported. Explicit macOS
-development `:write` has no power-loss durability promise. Never silently fall
-back from sync to write. A built production application rejects write mode.
+Set a dedicated absolute `data_dir` in the consuming application's runtime
+configuration, then initialize a genuinely new store once before supervising
+the Engine:
 
-Provide an absolute, dedicated local path in the consuming application's runtime
-configuration; dependencies do not import this repository's Mix config:
-
-```elixir
-config :tay, data_dir: "/srv/tay/jobs"
+```sh
+MIX_ENV=prod mix tay.storage.init --data-dir /srv/tay/jobs --durability sync --validated-filesystem
+MIX_ENV=prod mix tay.storage.inspect --data-dir /srv/tay/jobs --durability sync --validated-filesystem
 ```
 
-Initialize once as an administrative operation, then supervise the Engine:
+Initialization is not an idempotent “ensure” or repair command. Normal startup
+is existing-only; a missing lock, STORE marker, or required history is an error.
+Only an explicitly intended empty pre-existing root permits
+`--bootstrap-existing`. Never delete or replace a lock to bypass contention.
+Offline inspection acquires the existing lock and performs complete physical
+and Event-v1 semantic validation without activation. It returns aggregate
+diagnostics, not jobs or a reusable recovery ticket. Use `mix help
+tay.storage.inspect` for independent replay budgets.
+
+## Local executor access
+
+An Engine normally creates its Unix socket automatically outside `data_dir`.
+The final automatic directory is private (`0700`), and the socket defaults to
+`0600`. An explicit path or `TAY_SOCKET_PATH` overrides discovery; prepare the
+parent ownership and permissions yourself. Tay refuses a regular file at the
+socket path and removes only a verified stale socket. Grant access only to
+trusted local processes: a peer can submit, inspect, cancel, and execute tasks.
+Bound connection, frame, task, result, and error limits for the workload. See
+the [protocol contract](protocol.md) for the wire format and result lifetime.
+
+## Queue and lifecycle controls
+
+Use `name:` when an Engine has a nondefault name. Pause is volatile and stops
+new claims, not already-started effects. Drain closes new insertion/claim
+admission and succeeds after active tasks and their outcomes settle; queued
+jobs may remain. A timeout leaves the Engine draining. Stop normally drains;
+forced stop is an explicit interruption, not successful drain. Restart creates
+a fresh ownership, recovery, projection, and execution generation:
 
 ```elixir
-Tay.child_spec(
-  name: MyApp.Jobs,
-  data_dir: "/srv/tay/jobs",
-  durability: :sync,
-  validated_filesystem: true,
-  workers: %{"mail.send.v1" => MyApp.MailWorker},
-  queues: [default: 2],
-  start_paused: true
-)
+:ok = Tay.pause_queue(:default)
+:ok = Tay.resume_queue(:default)
+:ok = Tay.drain(timeout: 30_000)
+:ok = Tay.stop(timeout: 30_000)
+:ok = Tay.restart(timeout: 30_000)
 ```
 
-The example is schematic, **not** the jointly measured R5 workload or its finite
-admission configuration. Apply every R5 boundary from
-[production limits](production-limits.md), then validate the actual target and
-workload before deployment. Startup is
-existing-only: a missing root, lock, STORE or required canonical is an error,
-never permission to initialize. `Tay.Storage.initialize/1` and
-`mix tay.storage.init` are initialize-only, not idempotent ensure operations.
-Only an explicitly intended empty pre-existing root permits `bootstrap: true`
-(CLI `--bootstrap-existing`). Never delete/recreate a lock to resolve contention.
-See [packaging](packaging.md) for the build-only C11 dependency and consuming-release
-verification. Running a built release must not build a native helper.
+An unknown outcome after a submitted insert or control call does not prove no
+change. Reconcile by stable job ID, original definition, status, or a new
+explicit control decision; do not automatically allocate another job ID.
+Worker effects are at-least-once. Cancellation fences the durable execution
+token before best-effort termination but cannot undo an effect already made.
 
-## Queue controls and drain
+## Cold backup and restore
 
-All calls select the Engine with `name: MyApp.Jobs`; default name is `Tay.Engine`.
-Finite `timeout` is a caller deadline in milliseconds, not a worker timeout.
-Queue controls accept a configured trusted queue atom or its stable UTF-8 key.
+Stop and fence every Engine using the source before copying. The native tools
+hold its **existing** exclusive lock throughout inventory, hashing, and copy;
+they refuse a live owner. A cold copy is whole-store bytes, not a live snapshot,
+semantic validation, repair, or a proof that the backup contains the latest
+acknowledged history. Keep the SHA-256 catalog outside both stores. The source,
+destination parent, and catalog parent must exist; destination and output
+catalog must not. Do not run source and restored copies concurrently: they
+share a STORE_ID.
 
-```elixir
-:ok = Tay.pause_queue(:default, name: MyApp.Jobs)
-:ok = Tay.resume_queue(:default, name: MyApp.Jobs)
-:ok = Tay.drain(name: MyApp.Jobs, timeout: 30_000)
+```sh
+MIX_ENV=prod mix tay.storage.backup \
+  --source /srv/tay/jobs \
+  --destination /srv/backups/tay-2026-09-13 \
+  --catalog /srv/backups/tay-2026-09-13.json \
+  --durability sync --validated-filesystem
+
+MIX_ENV=prod mix tay.storage.restore \
+  --source /srv/backups/tay-2026-09-13 \
+  --destination /srv/tay/restored \
+  --verify-catalog /srv/backups/tay-2026-09-13.json \
+  --catalog /srv/backups/tay-restored.json \
+  --durability sync --validated-filesystem
+
+MIX_ENV=prod mix tay.storage.inspect \
+  --data-dir /srv/tay/restored --durability sync --validated-filesystem
 ```
 
-Pause serializes through the sole semantic Engine owner. After its accepted
-barrier there are no new claims for that queue; already durably started tasks
-may enter/continue and produce external effects. A pause reply is not proof that
-all workers are dead. Pause is volatile, creates no Event and resets to the
-boolean `start_paused` configuration on every fresh generation. `true` pauses all
-configured queues initially; `false` pauses none.
+For development copies use `--durability development` on backup/restore and
+`--durability write` on inspection. Strict copying is Linux-only on a supported
+validated persistent local filesystem. The tools reject symlinks, hard-linked
+source files, unsafe aliases, unexpected file types, changed ancestors/source
+identities, missing/extra archive files, malformed catalogs, checksum mismatch,
+and exhausted file/byte budgets. Defaults are 100,000 inventory entries
+(including `segments`) and 10 GiB of file bytes; override only for a separately
+qualified workload.
 
-Drain closes new-insert and new-claim admission, stops automatic due-event
-production, and allows active settlements. It succeeds only when all registered
-execution tasks are dead and their accepted outcomes are durably committed and
-projected. Queued, scheduled and retryable jobs may remain. Same-ID/same-definition
-insertion reconciliation and lookups remain available; new IDs are refused with
-`:draining`. Explicit revision-checked cancellation/manual retry still serialize
-normally, but do not restart dispatch. Queue resume does not undo Engine drain.
+The destination is a new private `0700` sibling staging directory with `0600`
+files. STORE is copied last. In strict mode every copied file is fsynced,
+followed by the segments and store directories, exclusive no-replace
+publication, ancestor syncs, then exclusive external catalog creation and its
+syncs. A failure preserves the source and any partial staging or published
+destination. A complete-looking destination without a successful catalog is
+not acknowledged backup success; never overwrite it or infer a recoverable
+prefix. Restore always verifies the selected backup's catalog before creating
+destination data. An older valid backup explicitly accepts lost later jobs and
+possible repeated external effects. Inspect and activate it in a fresh Engine
+generation before admitting work.
 
-A drain timeout leaves `:draining`; it never resumes or force-kills work. If a
-submitted call loses its reply, its barrier may still have taken effect:
-`:unknown_outcome` is not proof of no change. Bounded status/explicit new control
-calls reconcile operational intent; no pending RPC is automatically retried.
-Concurrent drain waiters occupy the existing fixed client permits and expire;
-execution outcome capacity is separate and remains usable under client saturation.
+## Incident boundary
 
-## Explicit stop/restart
-
-```elixir
-:ok = Tay.stop(name: MyApp.Jobs, timeout: 30_000)
-:ok = Tay.restart(name: MyApp.Jobs, timeout: 30_000)
-# Explicit infrastructure interruption, not successful drain:
-Tay.stop(name: MyApp.Jobs, force: true, timeout: 5_000)
-```
-
-Stop retains the original host-supervised root and bounded named lifecycle
-coordinator in `:stopped`; it does not move ownership under the caller. Remove the
-host child through its own supervisor if that coordinator should also disappear.
-Restart uses the retained validated startup configuration and a new generation.
-A separate single control permit serializes stop/restart independently of client
-slots. Once closing/recovery begins, caller timeout reports unknown outcome and
-that permit remains occupied until the real operation resolves; it never spawns
-a second replacement. Status can remain `:stopping`/`:recovering` while proof is
-pending. After graceful timeout, the Engine remains draining/drained, not resumed.
-
-Once lifecycle drain acknowledges quiescence to its coordinator, queued
-cancel/retry commands cannot begin another append before closing. They receive
-known pre-I/O `:generation_stopping` when processed, or a conservative unknown
-outcome if the submitted caller loses its generation. This extra barrier belongs
-to stop/restart; plain drain continues to permit explicit administration. An
-expired/aborted lifecycle token does not permanently block drained-state admin.
-
-Normal stop first drains. Forced stop is a distinct explicit operation, not a
-successful drain or an assertion that external effects did not occur. The old
-generation's admission is revoked before its runtime group is dismantled. Local
-task death is proven separately from OS lock release: a released flock or exited
-supervisor alone does not authorize replacement callbacks. A poisoned Writer,
-lost helper, Engine, execution runtime or local fence revokes the whole generation.
-
-Restart performs full existing-only physical/semantic recovery and revalidation,
-then creates new private ETS and execution state. It never inherits a writable
-reference, projection or pending RPC. Every complete understood event replays,
-even if its previous caller ACK is unknown. An execution left in history is
-settled as infrastructure interruption before dispatch readiness; its logical
-attempt is reused with a fresh physical execution token. Completed work is not
-silently undone. Changes to worker mappings/concurrency/configuration require a
-controlled host-supervisor replacement with explicit new startup options, not
-persisted configuration mutation or hot reload.
-
-Normal stop does not seal the active segment. Native closure may finish after an
-abrupt owner death, and a fresh attempt can report `ownership_busy`. There is no
-automatic mutation retry or lock replacement. Loss of the VM-local fence ledger
-while a lease exists deliberately requires a fresh VM for that STORE_ID: no API
-erases an orphan marker or pretends missing task evidence is safe.
-
-## Outcomes, cancellation and retry
-
-Workers must make external side effects idempotent or reconcile them explicitly.
-Tay provides at-least-once execution, not exactly-once external effects. Ordinary
-worker failure/timeout consumes the logical attempt; infrastructure interruption
-does not. Retry v1 uses the immutable Event appendix's bounded delay/jitter math.
-Timeout is monotonic from post-commit release; schedule eligibility rechecks wall
-time. Clock jumps do not justify early callback entry.
-
-`Tay.cancel/2` durably fences an executing token before best-effort termination.
-Late results cannot reverse cancellation; external effects already performed
-cannot be reversed. `Tay.retry/2` expedites retryable work or begins a new cycle
-for discarded work, retaining the immutable definition. Both use a captured
-opaque job revision, never refresh it automatically, and return unknown outcome
-with that exact context if a submitted request loses its reply. Reconcile before
-deciding a new command. Cross-generation revisions intentionally conflict.
-
-## Capacity and diagnosis
-
-`Tay.status/1` is a bounded, stale-capable lifecycle snapshot, not a transaction,
-backup or recovery certificate. It reports state, durability, charged candidate
-bytes/nodes, retained jobs/definition bytes, canonical history bytes/segments,
-remaining sequence/segment coordinates, active/paused queue credits, fixed client
-permits and active outcome reserves. It exposes no job args, ETS identifiers,
-Port or mutation reference. Charged bytes are not an RSS guarantee.
-
-`max_history_bytes` and `max_segments` are non-persisted admission ceilings,
-independent of physical validity and recovery budgets; defaults are `:infinity`,
-not a production unlimited-history claim. Configure finite measured limits.
-Every active outcome reserves 1,024 frame bytes plus a possible 64-byte footer
-and 44-byte successor header, as well as one sequence/segment coordinate.
-Inserts, starts and other producers cannot consume this reserved capacity.
-Conservative reservation may refuse a start even when its particular outcome
-would fit without rotating. Counters are initialized during recovery and updated
-from verified receipts, not by scanning historical files for each insert.
-
-No completed job/ID is evicted. Lower insertion limits do not invalidate retained
-definitions or prevent same-definition reconciliation, subject to independent
-transport/replay budgets. A lower operational budget can prevent reconstruction
-or reconciliation; increase resources through an explicit configuration change
-and fresh recovery, never delete history. Outcome reserves cannot protect against
-actual ENOSPC, hardware failure or unlimited repeated crashes. Reserve free disk
-outside these counters for stages, temporary copies, logs and filesystem overhead.
-
-Offline `mix tay.storage.inspect` / `Tay.Diagnostics.inspect/1` acquire the existing
-lock and run full physical/semantic validation without activation or successor
-creation. They report ownership busy against a live Engine. Missing lock is an
-ownership failure, not permission to create one. Diagnostics do not return jobs,
-payloads or a reusable recovery ticket. See the task help for exact budget options.
-
-## Fail-closed incident procedure
-
-1. Stop external admission; record the bounded diagnosis and deployment/build ID.
-2. Preserve the complete original store and namespace. Do not truncate, pad,
-   delete, rename-aside, skip records, reuse sequence space or select a valid prefix.
-3. Distinguish ownership contention, operational resource limits, unsupported
-   semantics and physical corruption. Correct only operational configuration or
-   ownership through documented procedures; no automatic repair is bundled.
-4. If history is fully valid, restart with adequate budgets and supported code.
-   If torn/corrupt/unsupported, writable activation remains refused.
-5. If choosing an older acceptable backup, follow the separately qualified
-   [cold restore procedure](restore.md), retain the failed source, and explicitly
-   account for lost later ACKs and potentially repeated external effects.
-
-A torn Record/footer/canonical suffix preserves all evidence and refuses writable
-activation; it does **not** automatically recover a writable prefix. No partial
-recovered job state is published. Without a valid acceptable backup, this can be
-an operational outage with no supported in-place repair.
-
-## Security and shutdown boundaries
-
-The embedding application, configured modules and cooperative API callers are
-trusted. Same-VM ETS/message/process access is not a hostile-code sandbox.
-Persisted worker/queue keys remain inert UTF-8, never atom/module creation inputs.
-Default diagnostics are fixed bounded codes, not worker exception/result dumps;
-do not add application logs that reveal args or secrets. Payloads are plaintext
-on disk; provision private ownership/permissions, encryption and backup access
-controls externally.
-
-Unlinked children created by a callback and remote side effects are outside Tay's
-local task ledger. A worker stuck in a non-preemptible native call may prevent
-proven local death and thus safe replacement; timeout is not a sandbox. VM/process
-kill tests and a filesystem-type check do not certify real hardware power loss.
-
-Phase 11 snapshots/retention/compaction and Phase 12 orchestration/uniqueness remain
-deferred. Neither is a hidden remedy for this release's retained-history limits.
+On corruption, incomplete history, unsupported semantics, or an uncertain
+storage operation, stop admission and preserve the entire store and namespace.
+Do not truncate, pad, delete, rename-aside, skip records, or reuse sequence
+space. Distinguish ownership contention and operational budget refusal from
+bad bytes. Increase a budget only for a new full inspection of unchanged data.
+There is no automatic repair, retention/compaction, or live backup. Protect
+plaintext args, stores, catalogs, and backups with deployment access controls.

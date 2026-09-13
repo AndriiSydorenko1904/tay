@@ -25,9 +25,18 @@ defmodule Tay.Storage.Native do
     shutdown: 17,
     acquire_existing: 18,
     enable_mutations: 19,
+    cold_target_open: 20,
+    cold_stage_create: 21,
+    cold_open_write: 22,
+    cold_sync_staging: 23,
+    cold_publish: 24,
+    cold_sync_catalog: 25,
+    cold_check: 26,
+    cold_source: 27,
+    cold_list: 28,
     fault: 240
   }
-  defstruct [:port, :owner, :facts, :generation, :deadline, timeout: 10_000]
+  defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, timeout: 10_000]
   @type t :: %__MODULE__{}
 
   @doc "Acquires only existing ownership objects; no creation or sync is allowed."
@@ -80,9 +89,42 @@ defmodule Tay.Storage.Native do
     end
   end
 
+  @doc false
+  def open_cold_target(source, destination, catalog, verify_catalog, options \\ []) do
+    with true <- valid_cold_source?(source),
+         true <- valid_open_options?(destination, options),
+         true <- valid_path?(catalog),
+         true <- is_nil(verify_catalog) or valid_path?(verify_catalog),
+         true <- valid_cold_options?(options) do
+      native = new_native(options)
+      mode = if Keyword.get(options, :durability, :sync) == :sync, do: 1, else: 0
+      validated = if Keyword.get(options, :validated_filesystem, false), do: 1, else: 0
+
+      body =
+        <<mode, validated, source.root.device::64, source.root.inode::64,
+          source.segments.device::64, source.segments.inode::64,
+          string(Path.dirname(destination))::binary, string(Path.basename(destination))::binary,
+          string(Path.dirname(catalog))::binary, string(Path.basename(catalog))::binary,
+          cold_verify(verify_catalog)::binary>>
+
+      case request(native, :cold_target_open, body) do
+        {:ok, <<filesystem::64>>, 0} ->
+          {:ok, %{native | facts: %{filesystem: filesystem}, cold?: true}}
+
+        {:error, _} = error ->
+          shutdown(native)
+          error
+
+        _ ->
+          uncertain(native, :invalid_cold_target_reply)
+      end
+    else
+      _ -> {:error, %{kind: :native_argument, reason: :invalid_cold_target_options}}
+    end
+  end
+
   defp valid_open_options?(path, options) do
-    is_binary(path) and byte_size(path) in 1..4095 and String.valid?(path) and
-      not String.contains?(path, <<0>>) and Path.type(path) == :absolute and
+    valid_path?(path) and
       Keyword.keyword?(options) and Keyword.get(options, :durability, :sync) in [:write, :sync] and
       is_boolean(Keyword.get(options, :validated_filesystem, false)) and
       is_boolean(Keyword.get(options, :test_helper, false)) and
@@ -90,25 +132,33 @@ defmodule Tay.Storage.Native do
       Keyword.get(options, :timeout, 10_000) > 0
   end
 
+  defp valid_path?(path),
+    do:
+      is_binary(path) and byte_size(path) in 1..4095 and String.valid?(path) and
+        not String.contains?(path, <<0>>) and Path.type(path) == :absolute
+
+  defp valid_cold_source?(%{root: root, segments: segments}) do
+    valid_identity?(root) and valid_identity?(segments)
+  end
+
+  defp valid_cold_source?(_), do: false
+
+  defp valid_identity?(%{device: device, inode: inode}),
+    do: is_integer(device) and device >= 0 and is_integer(inode) and inode >= 0
+
+  defp valid_identity?(_), do: false
+
+  defp valid_cold_options?(options) do
+    allowed = [:durability, :validated_filesystem, :test_helper, :timeout]
+
+    Keyword.keyword?(options) and
+      length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
+      Enum.all?(Keyword.keys(options), &(&1 in allowed))
+  end
+
   defp do_open(path, options, operation \\ :acquire) do
-    executable = Application.app_dir(:tay, "priv/" <> helper_name(options))
-
-    port =
-      Port.open({:spawn_executable, String.to_charlist(executable)}, [
-        :binary,
-        :exit_status,
-        :use_stdio,
-        :hide,
-        {:packet, 4}
-      ])
-
-    native = %__MODULE__{
-      port: port,
-      owner: self(),
-      generation: make_ref(),
-      deadline: Keyword.get(options, :deadline),
-      timeout: Keyword.get(options, :timeout, 10_000)
-    }
+    native = new_native(options)
+    port = native.port
 
     mode = if Keyword.get(options, :durability, :sync) == :sync, do: 1, else: 0
     validated = if Keyword.get(options, :validated_filesystem, false), do: 1, else: 0
@@ -142,6 +192,27 @@ defmodule Tay.Storage.Native do
     end
   rescue
     error -> {:error, %{kind: :native_start, reason: Exception.message(error)}}
+  end
+
+  defp new_native(options) do
+    executable = Application.app_dir(:tay, "priv/" <> helper_name(options))
+
+    port =
+      Port.open({:spawn_executable, String.to_charlist(executable)}, [
+        :binary,
+        :exit_status,
+        :use_stdio,
+        :hide,
+        {:packet, 4}
+      ])
+
+    %__MODULE__{
+      port: port,
+      owner: self(),
+      generation: make_ref(),
+      deadline: Keyword.get(options, :deadline),
+      timeout: Keyword.get(options, :timeout, 10_000)
+    }
   end
 
   if @test do
@@ -193,7 +264,7 @@ defmodule Tay.Storage.Native do
   def list(native, scope) do
     case request(native, :list, <<scope(scope)>>) do
       {:ok, <<count::32, bytes::binary>>, 0} ->
-        case entries(bytes, count, []) do
+        case entries(bytes, count, [], false) do
           {:ok, entries} -> {:ok, entries}
           _ -> uncertain(native, :invalid_directory_reply)
         end
@@ -205,6 +276,60 @@ defmodule Tay.Storage.Native do
         uncertain(native, :invalid_directory_reply)
     end
   end
+
+  @doc false
+  def cold_source(native) do
+    case empty(native, :cold_source) do
+      :ok ->
+        Process.put({__MODULE__, native.port, :cold_source}, true)
+        :ok
+
+      error ->
+        error
+    end
+  end
+
+  @doc false
+  def cold_list(native, scope, remaining)
+      when is_integer(remaining) and remaining in 1..4_294_967_295 do
+    case request(native, :cold_list, <<scope(scope)::8, remaining::32>>) do
+      {:ok, <<count::32, bytes::binary>>, 0} ->
+        case entries(bytes, count, [], true) do
+          {:ok, entries} -> {:ok, entries}
+          _ -> uncertain(native, :invalid_directory_reply)
+        end
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        uncertain(native, :invalid_directory_reply)
+    end
+  end
+
+  def cold_list(_native, _scope, _remaining),
+    do: {:error, %{kind: :native_argument, reason: :invalid_cold_list_limit}}
+
+  @doc false
+  def cold_create_stage(native, name), do: empty(native, :cold_stage_create, string(name))
+
+  @doc false
+  def cold_open_write(native, scope, name, lock \\ false) when is_boolean(lock),
+    do:
+      identity_request(
+        native,
+        :cold_open_write,
+        <<scope(scope), if(lock, do: 1, else: 0), string(name)::binary>>
+      )
+
+  @doc false
+  def cold_sync_staging(native), do: empty(native, :cold_sync_staging)
+  @doc false
+  def cold_publish(native), do: empty(native, :cold_publish)
+  @doc false
+  def cold_sync_catalog(native), do: empty(native, :cold_sync_catalog)
+  @doc false
+  def cold_check(native), do: empty(native, :cold_check)
 
   def mkdir_segments(native), do: empty(native, :mkdir)
 
@@ -236,7 +361,7 @@ defmodule Tay.Storage.Native do
   def write(native, offset, bytes) when is_binary(bytes) do
     case request(native, :write, <<offset::64, bytes::binary>>) do
       {:ok, metadata, written} when written == byte_size(bytes) ->
-        case identity(metadata) do
+        case identity(metadata, cold?(native)) do
           {:ok, id, <<>>} -> {:ok, %{written: written, identity: id}}
           _ -> uncertain(native, :invalid_write_reply)
         end
@@ -265,14 +390,18 @@ defmodule Tay.Storage.Native do
 
   def info(native) do
     case request(native, :info, <<>>) do
-      {:ok, <<pid::64, writable, readable, filesystem::64, ancestor_syncs::32>>, 0} ->
+      {:ok,
+       <<pid::64, writable, readable, filesystem::64, ancestor_syncs::32, root_device::64,
+         root_inode::64, segments_device::64, segments_inode::64>>, 0} ->
         {:ok,
          %{
            os_pid: pid,
            writable: writable,
            readable: readable == 1,
            filesystem: filesystem,
-           ancestor_syncs: ancestor_syncs
+           ancestor_syncs: ancestor_syncs,
+           root: %{device: root_device, inode: root_inode},
+           segments: %{device: segments_device, inode: segments_inode}
          }}
 
       {:error, _} = error ->
@@ -329,7 +458,7 @@ defmodule Tay.Storage.Native do
   defp identity_request(native, op, body) do
     case request(native, op, body) do
       {:ok, bytes, 0} ->
-        case identity(bytes) do
+        case identity(bytes, cold?(native)) do
           {:ok, id, <<>>} -> {:ok, id}
           _ -> uncertain(native, {:invalid_identity_reply, op})
         end
@@ -342,7 +471,29 @@ defmodule Tay.Storage.Native do
     end
   end
 
-  defp identity(<<size::64, device::64, inode::64, links::64, type, mode::32, rest::binary>>)
+  defp identity(
+         <<size::64, device::64, inode::64, links::64, type, mode::32, mtime_ns::64, ctime_ns::64,
+           rest::binary>>,
+         true
+       )
+       when type in 1..4 do
+    {:ok,
+     %{
+       size: size,
+       device: device,
+       inode: inode,
+       links: links,
+       type: elem({:regular, :directory, :symlink, :other}, type - 1),
+       mode: mode,
+       mtime_ns: mtime_ns,
+       ctime_ns: ctime_ns
+     }, rest}
+  end
+
+  defp identity(
+         <<size::64, device::64, inode::64, links::64, type, mode::32, rest::binary>>,
+         false
+       )
        when type in 1..4 do
     {:ok,
      %{
@@ -355,20 +506,34 @@ defmodule Tay.Storage.Native do
      }, rest}
   end
 
-  defp identity(_), do: :error
-  defp entries(<<>>, 0, acc), do: {:ok, Enum.reverse(acc)}
+  defp identity(_, _), do: :error
+  defp entries(<<>>, 0, acc, _cold?), do: {:ok, Enum.reverse(acc)}
 
-  defp entries(<<n::16, name::binary-size(n), rest::binary>>, count, acc) when count > 0 do
-    case identity(rest) do
-      {:ok, id, remaining} -> entries(remaining, count - 1, [Map.put(id, :name, name) | acc])
-      _ -> :error
+  defp entries(<<n::16, name::binary-size(n), rest::binary>>, count, acc, cold?) when count > 0 do
+    case identity(rest, cold?) do
+      {:ok, id, remaining} ->
+        entries(remaining, count - 1, [Map.put(id, :name, name) | acc], cold?)
+
+      _ ->
+        :error
     end
   end
 
-  defp entries(_, _, _), do: :error
+  defp entries(_, _, _, _), do: :error
+
+  defp cold?(native),
+    do: native.cold? || Process.get({__MODULE__, native.port, :cold_source}) == true
+
   defp scope(:root), do: 0
   defp scope(:segments), do: 1
+  defp scope(:verify), do: 2
+  defp scope(:catalog), do: 2
   defp string(bytes), do: <<byte_size(bytes)::16, bytes::binary>>
+
+  defp cold_verify(nil), do: <<0>>
+
+  defp cold_verify(path),
+    do: <<1, string(Path.dirname(path))::binary, string(Path.basename(path))::binary>>
 
   defp request(native, operation, body) do
     cond do

@@ -1,8 +1,8 @@
 # Permanent Tay v1 record fixtures
 
-These 18 binary files contain the literal approved bytes in
-[RFC §18.1](../../../../../docs/phase-1-storage-format-rfc.md). Their numeric
-types/schemas are conformance identifiers, not production Event allocations.
+These 18 binary files contain the approved literal bytes recorded in
+`manifest.exs`. Their numeric types/schemas are conformance identifiers, not
+production Event allocations.
 
 | File | Contract exercised |
 | --- | --- |
@@ -37,7 +37,7 @@ elixir test/fixtures/storage/record/v1/materialize.exs
 
 Tests read the binary files as committed compatibility anchors. They never
 regenerate them with the encoder. Encoder and decoder fixture tests are separate;
-the manifest and RFC literal comparison provides an additional byte-level check.
+the committed manifest provides an additional byte-level check.
 The 16 MiB payload is constructed deterministically only in boundary tests,
 anchored by F10 and an independent checksum oracle, not stored as a large fixture.
 

@@ -9,6 +9,14 @@ defmodule Tay.Engine.ConfigTest do
     assert {c.max_insert_payload_bytes, c.max_insert_args_bytes, c.insert_value_depth,
             c.insert_value_nodes} == {1_048_576, 262_144, 32, 10_000}
 
+    assert is_binary(c.executor_socket)
+    refute String.starts_with?(c.executor_socket, Path.expand("tmp/config-only") <> "/")
+    assert c.executor_socket_private_directory
+
+    assert {:ok, disabled} = Config.new(base ++ [executor_socket: nil])
+    assert disabled.executor_socket == nil
+    refute disabled.executor_socket_private_directory
+
     for extra <- [
           [max_insert_payload_bytes: 0],
           [max_insert_payload_bytes: 16_777_217],
@@ -36,6 +44,14 @@ defmodule Tay.Engine.ConfigTest do
         do: assert({:error, %Tay.Error{kind: :invalid}} = Config.new(Keyword.merge(base, extra)))
 
     assert {:ok, _} = Config.new(base ++ [max_insert_payload_bytes: 1, max_insert_args_bytes: 5])
+
+    assert {:error, _} =
+             Config.new(base ++ [executor_socket: Path.expand("tmp/config-only/tay.sock")])
+
+    assert {:ok, config} =
+             Config.new(base ++ [executor_socket: Path.expand("tmp/tay-config-only.sock")])
+
+    assert config.executor_max_results == 10_000
     assert {:error, _} = Config.new(base ++ [durability: :write])
     assert {:error, _} = Config.new(:bad)
   end

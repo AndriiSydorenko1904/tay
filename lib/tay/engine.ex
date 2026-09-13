@@ -523,8 +523,8 @@ defmodule Tay.Engine do
 
     # The listener is a runtime child, not a foundation child: it is torn down
     # with this Engine generation and stale Unix socket state is therefore not
-    # durable ownership.  Existing BEAM-only engines keep the exact old child
-    # topology by leaving `executor_socket` nil.
+    # durable ownership. Passing `executor_socket: nil` explicitly remains the
+    # opt-out for a BEAM-only Engine; otherwise Config resolves a local path.
     if s.config.executor_socket do
       {:ok, server} =
         DynamicSupervisor.start_child(
@@ -534,11 +534,13 @@ defmodule Tay.Engine do
              engine: self(),
              socket_path: s.config.executor_socket,
              socket_mode: s.config.executor_socket_mode,
+             private_directory: s.config.executor_socket_private_directory,
              max_frame_bytes: s.config.executor_max_frame_bytes,
              max_connections: s.config.executor_max_connections,
              max_tasks_per_connection: s.config.executor_max_tasks_per_connection,
              result_bytes: s.config.executor_result_bytes,
              error_bytes: s.config.executor_error_bytes,
+             max_results: s.config.executor_max_results,
              engine_name: s.config.name
            }}
         )
@@ -958,6 +960,7 @@ defmodule Tay.Engine do
   end
 
   defp external_outcome(:success), do: :success
+  defp external_outcome({:success, _result}), do: :success
   defp external_outcome(:timeout), do: :timeout
   defp external_outcome(:lost), do: :interrupted
   defp external_outcome({:failure, _}), do: {:failure, 1}

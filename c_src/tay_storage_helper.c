@@ -28,7 +28,10 @@
 enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   CLOSE_READ=6, CREATE_STAGE=7, OPEN_ACTIVE=8, WRITE_AT=9, SYNC_FILE=10,
   CLOSE_WRITE=11, PUBLISH=12, SYNC_DIR=13, CHECK=14, INFO=15,
-  SYNC_READ=16, SHUTDOWN=17, ACQUIRE_EXISTING=18, ENABLE_MUTATIONS=19, FAULT=240 };
+  SYNC_READ=16, SHUTDOWN=17, ACQUIRE_EXISTING=18, ENABLE_MUTATIONS=19,
+  COLD_TARGET_OPEN=20, COLD_STAGE_CREATE=21, COLD_OPEN_WRITE=22,
+  COLD_SYNC_STAGING=23, COLD_PUBLISH=24, COLD_SYNC_CATALOG=25,
+  COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28, FAULT=240 };
 static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
 static int write_scope, write_kind, read_scope, poisoned, acquired;
 static char root_path[PATH_MAX], write_name[256], read_name[256];
@@ -38,6 +41,22 @@ static uint64_t filesystem_type, known_written;
 static uint32_t ancestor_syncs;
 static int inspection_only;
 static uint32_t directory_limit=UINT32_MAX;
+static int list_directory(void);
+
+/* Cold-copy targets deliberately use a second, source-independent descriptor
+ * tree. The source store remains held by a separate existing-only helper; this
+ * tree never traverses it and refuses any pinned ancestor that aliases it. */
+struct cold_chain { int *fds; size_t count; };
+static int cold_target, cold_source;
+static int cold_parent_fd=-1, cold_stage_fd=-1, cold_stage_segments_fd=-1;
+static int cold_lock_fd=-1;
+static int cold_catalog_parent_fd=-1, cold_verify_parent_fd=-1;
+static struct cold_chain cold_parent_chain, cold_catalog_chain, cold_verify_chain;
+static char cold_parent_path[PATH_MAX], cold_catalog_parent_path[PATH_MAX];
+static char cold_verify_parent_path[PATH_MAX];
+static char cold_target_name[256], cold_staging_name[256], cold_catalog_name[256], cold_verify_name[256];
+static struct stat cold_source_root, cold_source_segments, cold_stage_identity, cold_stage_segments_identity, cold_lock_identity;
+static int cold_has_verify, cold_stage_created, cold_published;
 static const unsigned char *input;
 static size_t input_n, pos;
 static unsigned char output[PACKET_MAX];
@@ -84,9 +103,16 @@ static int string(char *dst, size_t cap) {
 static int basename_ok(const char *s) {
   return *s && !strchr(s,'/') && strcmp(s,".") && strcmp(s,"..");
 }
-static int scope_fd(int scope) { return scope==0 ? root_fd : scope==1 ? segments_fd : -1; }
+static int scope_fd(int scope) {
+  if (scope==0) return root_fd;
+  if (scope==1) return segments_fd;
+  return cold_target && scope==2 ? cold_verify_parent_fd : -1;
+}
 static int same(const struct stat *a,const struct stat *b) {
   return a->st_dev==b->st_dev && a->st_ino==b->st_ino;
+}
+static uint64_t time_ns(const struct timespec *time) {
+  return (uint64_t)time->tv_sec*1000000000ull+(uint64_t)time->tv_nsec;
 }
 static unsigned int type_of(mode_t mode) {
   return S_ISREG(mode)?1:S_ISDIR(mode)?2:S_ISLNK(mode)?3:4;
@@ -94,6 +120,15 @@ static unsigned int type_of(mode_t mode) {
 static void stat_out(const struct stat *s) {
   put((uint64_t)s->st_size,8); put((uint64_t)s->st_dev,8); put((uint64_t)s->st_ino,8);
   put((uint64_t)s->st_nlink,8); put(type_of(s->st_mode),1); put((uint32_t)s->st_mode,4);
+  /* The ordinary storage protocol has a frozen 37-byte identity.  Cold-copy
+   * sessions opt into timestamps so their source mutation check is stronger
+   * without changing recovery's existing identity contract. */
+  if (!cold_source && !cold_target) return;
+#ifdef __APPLE__
+  put(time_ns(&s->st_mtimespec),8); put(time_ns(&s->st_ctimespec),8);
+#else
+  put(time_ns(&s->st_mtim),8); put(time_ns(&s->st_ctim),8);
+#endif
 }
 static int checked_regular(int fd, int directory, const char *name, struct stat *s) {
   struct stat path;
@@ -144,6 +179,96 @@ static int filesystem(int fd) {
 #else
   return ENOTSUP;
 #endif
+}
+
+static void cold_chain_close(struct cold_chain *chain) {
+  if (chain->fds) {
+    for (size_t i=0;i<chain->count;i++) if (chain->fds[i]>=0) close(chain->fds[i]);
+    free(chain->fds);
+  }
+  chain->fds=NULL; chain->count=0;
+}
+static int cold_chain_push(struct cold_chain *chain,int fd) {
+  int *next=realloc(chain->fds,(chain->count+1)*sizeof(int));
+  if (!next) return ENOMEM;
+  chain->fds=next; chain->fds[chain->count++]=fd; return 0;
+}
+/* Pin an existing absolute directory path from /. Path components are opened
+ * descriptor-relatively with O_NOFOLLOW; the retained chain permits an exact
+ * ancestor revalidation before every destination mutation/publication. */
+static int cold_open_chain(const char *absolute,struct cold_chain *chain) {
+  if (!absolute || absolute[0]!='/') return EINVAL;
+  char path[PATH_MAX]; size_t n=strlen(absolute);
+  if (!n || n>=sizeof(path)) return ENAMETOOLONG;
+  memcpy(path,absolute,n+1);
+  int fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+  if (fd<0) return errno;
+  int e=cold_chain_push(chain,fd);
+  if (e) { close(fd); return e; }
+  /* / is a valid already-existing parent.  Keeping the root descriptor gives
+   * it the same identity revalidation as every longer ancestor chain. */
+  if (!strcmp(absolute,"/")) return 0;
+  char *save=NULL,*part=strtok_r(path,"/",&save);
+  while (part) {
+    if (!basename_ok(part)) { cold_chain_close(chain); return EINVAL; }
+    int child=openat(fd,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (child<0) { e=errno; cold_chain_close(chain); return e; }
+    e=cold_chain_push(chain,child);
+    if (e) { close(child); cold_chain_close(chain); return e; }
+    fd=child; part=strtok_r(NULL,"/",&save);
+  }
+  return 0;
+}
+static int cold_chain_matches(const char *absolute,const struct cold_chain *original) {
+  struct cold_chain current={0};
+  int e=cold_open_chain(absolute,&current);
+  if (e) return e;
+  if (current.count!=original->count) e=ESTALE;
+  for (size_t i=0;!e && i<current.count;i++) {
+    struct stat a,b;
+    if (fstat(current.fds[i],&a)<0 || fstat(original->fds[i],&b)<0) e=errno;
+    else if (!S_ISDIR(a.st_mode) || !same(&a,&b)) e=ESTALE;
+  }
+  cold_chain_close(&current); return e;
+}
+static int cold_chain_aliases_source(const struct cold_chain *chain) {
+  for (size_t i=0;i<chain->count;i++) {
+    struct stat current;
+    if (fstat(chain->fds[i],&current)<0) return errno;
+    if (same(&current,&cold_source_root) || same(&current,&cold_source_segments)) return EBUSY;
+  }
+  return 0;
+}
+static int cold_absent(int parent,const char *name) {
+  struct stat found;
+  if (fstatat(parent,name,&found,AT_SYMLINK_NOFOLLOW)==0) return EEXIST;
+  return errno==ENOENT?0:errno;
+}
+static int cold_check_paths(void) {
+  if (!cold_target || cold_parent_fd<0 || cold_catalog_parent_fd<0) return EBADF;
+  int e=cold_chain_matches(cold_parent_path,&cold_parent_chain); if (e) return e;
+  e=cold_chain_matches(cold_catalog_parent_path,&cold_catalog_chain); if (e) return e;
+  if (cold_has_verify) {
+    e=cold_chain_matches(cold_verify_parent_path,&cold_verify_chain); if (e) return e;
+  }
+  e=cold_chain_aliases_source(&cold_parent_chain); if (e) return e;
+  e=cold_chain_aliases_source(&cold_catalog_chain); if (e) return e;
+  if (cold_has_verify) { e=cold_chain_aliases_source(&cold_verify_chain); if (e) return e; }
+  if (cold_stage_created) {
+    struct stat opened,named;
+    if (fstat(cold_stage_fd,&opened)<0) return errno;
+    if (fstatat(cold_parent_fd,cold_published?cold_target_name:cold_staging_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold_stage_segments_fd,&opened)<0) return errno;
+    if (fstatat(cold_stage_fd,"segments",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_segments_identity) || !same(&opened,&named)) return ESTALE;
+    if (cold_lock_fd>=0) {
+      e=checked_regular(cold_lock_fd,cold_stage_fd,".tay-owner.lock",&opened);
+      if (e) return e;
+      if (!same(&opened,&cold_lock_identity)) return ESTALE;
+    }
+  }
+  return 0;
 }
 /* Walk from a pinned / FD. Never follow a symlink or use cwd resolution. */
 static int walk_root(int create, int *result, int *created) {
@@ -296,6 +421,131 @@ static int enable_mutations(void) {
   inspection_only=0;
   return 0;
 }
+
+/* The cold target opens only caller-supplied, already-existing parent
+ * directories. It cannot create a STORE until source ownership, inventory and
+ * optional catalog verification have all succeeded in Elixir. */
+static int cold_target_open(void) {
+  if (cold_target || acquired || !need(2+32)) return EPROTO;
+  strict_mode=(int)number(1); validated_fs=(int)number(1);
+  if (strict_mode>1 || validated_fs>1) return EINVAL;
+#ifndef __linux__
+  if (strict_mode) return ENOTSUP;
+#endif
+  if (strict_mode && !validated_fs) return ENOTSUP;
+  cold_source_root.st_dev=(dev_t)number(8); cold_source_root.st_ino=(ino_t)number(8);
+  cold_source_segments.st_dev=(dev_t)number(8); cold_source_segments.st_ino=(ino_t)number(8);
+  int e=string(cold_parent_path,sizeof(cold_parent_path)); if (e) return e;
+  e=string(cold_target_name,sizeof(cold_target_name)); if (e || !basename_ok(cold_target_name)) return e?e:EINVAL;
+  e=string(cold_catalog_parent_path,sizeof(cold_catalog_parent_path)); if (e) return e;
+  e=string(cold_catalog_name,sizeof(cold_catalog_name)); if (e || !basename_ok(cold_catalog_name)) return e?e:EINVAL;
+  if (!need(1)) return EPROTO;
+  cold_has_verify=(int)number(1);
+  if (cold_has_verify>1) return EINVAL;
+  if (cold_has_verify) {
+    e=string(cold_verify_parent_path,sizeof(cold_verify_parent_path)); if (e) return e;
+    e=string(cold_verify_name,sizeof(cold_verify_name)); if (e || !basename_ok(cold_verify_name)) return e?e:EINVAL;
+  }
+  if (strcmp(cold_parent_path,cold_catalog_parent_path)==0 && !strcmp(cold_target_name,cold_catalog_name)) return EINVAL;
+  e=cold_open_chain(cold_parent_path,&cold_parent_chain); if (e) return e;
+  cold_parent_fd=cold_parent_chain.fds[cold_parent_chain.count-1];
+  e=cold_open_chain(cold_catalog_parent_path,&cold_catalog_chain); if (e) return e;
+  cold_catalog_parent_fd=cold_catalog_chain.fds[cold_catalog_chain.count-1];
+  if (cold_has_verify) {
+    e=cold_open_chain(cold_verify_parent_path,&cold_verify_chain); if (e) return e;
+    cold_verify_parent_fd=cold_verify_chain.fds[cold_verify_chain.count-1];
+  }
+  e=cold_chain_aliases_source(&cold_parent_chain); if (e) return e;
+  e=cold_chain_aliases_source(&cold_catalog_chain); if (e) return e;
+  if (cold_has_verify) { e=cold_chain_aliases_source(&cold_verify_chain); if (e) return e; }
+  e=cold_absent(cold_parent_fd,cold_target_name); if (e) return e;
+  e=cold_absent(cold_catalog_parent_fd,cold_catalog_name); if (e) return e;
+  if (strict_mode) {
+    e=filesystem(cold_parent_fd); if (e) return e;
+    e=filesystem(cold_catalog_parent_fd); if (e) return e;
+  }
+  cold_target=1; put(filesystem_type,8); return 0;
+}
+static int cold_stage_create(void) {
+  if (!cold_target || cold_stage_created || !need(2)) return EPROTO;
+  int e=string(cold_staging_name,sizeof(cold_staging_name));
+  if (e || !basename_ok(cold_staging_name)) return e?e:EINVAL;
+  e=cold_check_paths(); if (e) return e;
+  e=cold_absent(cold_parent_fd,cold_target_name); if (e) return e;
+  e=cold_absent(cold_catalog_parent_fd,cold_catalog_name); if (e) return e;
+  if (mkdirat(cold_parent_fd,cold_staging_name,0700)<0) return errno;
+  cold_stage_fd=openat(cold_parent_fd,cold_staging_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (cold_stage_fd<0) return errno;
+  if (fstat(cold_stage_fd,&cold_stage_identity)<0) return errno;
+  if (!S_ISDIR(cold_stage_identity.st_mode)) return ESTALE;
+  if (mkdirat(cold_stage_fd,"segments",0700)<0) return errno;
+  cold_stage_segments_fd=openat(cold_stage_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (cold_stage_segments_fd<0) return errno;
+  if (fstat(cold_stage_segments_fd,&cold_stage_segments_identity)<0) return errno;
+  if (!S_ISDIR(cold_stage_segments_identity.st_mode)) return ESTALE;
+  cold_stage_created=1; return cold_check_paths();
+}
+static int cold_scope_fd(int scope) {
+  return scope==0?cold_stage_fd:scope==1?cold_stage_segments_fd:scope==2?cold_catalog_parent_fd:scope==3?cold_verify_parent_fd:-1;
+}
+static int cold_open_write(void) {
+  if (!cold_target || write_fd>=0 || !need(2)) return EPROTO;
+  int scope=(int)number(1), lock=(int)number(1), fd=cold_scope_fd(scope);
+  int e=string(write_name,sizeof(write_name));
+  if (e || !basename_ok(write_name) || fd<0 || lock>1 || scope==3) return e?e:EINVAL;
+  if (scope==2 && strcmp(write_name,cold_catalog_name)) return EINVAL;
+  if (scope<2 && !cold_stage_created) return EBADF;
+  e=cold_check_paths(); if (e) return e;
+  write_scope=scope; write_kind=4;
+  write_fd=openat(fd,write_name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if (write_fd<0) return errno;
+  e=checked_regular(write_fd,fd,write_name,&write_identity);
+  if (e) { close(write_fd); write_fd=-1; return e; }
+  if (lock) {
+    if (cold_lock_fd>=0 || flock(write_fd,LOCK_EX|LOCK_NB)<0) { e=cold_lock_fd>=0?EBUSY:errno; close(write_fd); write_fd=-1; return e; }
+    cold_lock_fd=dup(write_fd);
+    if (cold_lock_fd<0) { e=errno; close(write_fd); write_fd=-1; return e; }
+    if (fstat(cold_lock_fd,&cold_lock_identity)<0) { e=errno; close(cold_lock_fd); cold_lock_fd=-1; close(write_fd); write_fd=-1; return e; }
+  }
+  stat_out(&write_identity); return 0;
+}
+static int cold_sync_staging(void) {
+  int e=cold_check_paths(); if (e) return e;
+  if (!cold_stage_created || fsync(cold_stage_segments_fd)<0) return errno;
+  return fsync(cold_stage_fd)<0?errno:0;
+}
+static int cold_publish(void) {
+  int e=cold_check_paths(); if (e) return e;
+  if (!cold_stage_created || write_fd>=0) return EBUSY;
+  e=cold_absent(cold_parent_fd,cold_target_name); if (e) return e;
+  if (no_replace(cold_parent_fd,cold_staging_name,cold_target_name)<0) return errno;
+  cold_published=1;
+  if (strict_mode)
+    for (size_t i=cold_parent_chain.count;i>0;i--) if (fsync(cold_parent_chain.fds[i-1])<0) return errno;
+  return 0;
+}
+static int cold_sync_catalog(void) {
+  int e=cold_check_paths(); if (e) return e;
+  if (write_fd>=0) return EBUSY;
+  if (strict_mode)
+    for (size_t i=cold_catalog_chain.count;i>0;i--) if (fsync(cold_catalog_chain.fds[i-1])<0) return errno;
+  return 0;
+}
+static int cold_list_directory(void) {
+  if (!need(5)) return EPROTO;
+  int scope=(int)number(1), fd=scope_fd(scope);
+  uint32_t limit=(uint32_t)number(4);
+  if (!cold_source || !limit || fd<0 || scope>1) return EINVAL;
+  /* Reuse the normal listing implementation's wire format, but give the
+   * caller its remaining global budget so copy inventory stops incrementally. */
+  uint32_t saved=directory_limit; directory_limit=limit;
+  unsigned char body[1]={ (unsigned char)scope };
+  const unsigned char *saved_input=input; size_t saved_n=input_n,saved_pos=pos;
+  input=body; input_n=1; pos=0;
+  int e=list_directory();
+  input=saved_input; input_n=saved_n; pos=saved_pos; directory_limit=saved;
+  return e;
+}
 static int list_directory(void) {
   if (!need(1)) return EPROTO;
   int scope=(int)number(1), fd=scope_fd(scope);
@@ -310,7 +560,7 @@ static int list_directory(void) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
     if (count>=directory_limit) { e=EFBIG; break; }
     size_t n=strlen(ent->d_name); struct stat s;
-    if (output_n+n+39>PACKET_MAX-23) { e=EFBIG; break; }
+    if (output_n+n+55>PACKET_MAX-23) { e=EFBIG; break; }
     if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
     put(n,2); memcpy(output+output_n,ent->d_name,n); output_n+=n; stat_out(&s); count++;
     errno=0;
@@ -324,7 +574,7 @@ static int open_read(void) {
   if (read_fd>=0 || !need(1)) return EBUSY;
   read_scope=(int)number(1); int fd=scope_fd(read_scope);
   int e=string(read_name,sizeof(read_name));
-  if (e || !basename_ok(read_name) || fd<0) return e?e:EINVAL;
+  if (e || !basename_ok(read_name) || fd<0 || (read_scope==2 && strcmp(read_name,cold_verify_name))) return e?e:EINVAL;
   read_fd=openat(fd,read_name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
   if (read_fd<0) return errno;
   e=checked_regular(read_fd,fd,read_name,&read_identity);
@@ -341,7 +591,8 @@ static int validate_read(void) {
 static int read_at(void) {
   if (!need(12)) return EPROTO;
   uint64_t off=number(8), n=number(4);
-  if (off>SEGMENT_MAX || n>16777244u || off+n>SEGMENT_MAX) return EFBIG;
+  if (n>16777244u || off>INT64_MAX || n>(uint64_t)INT64_MAX-off ||
+      (!cold_source && (off>SEGMENT_MAX || off+n>SEGMENT_MAX))) return EFBIG;
   int e=validate_read(); if (e) return e;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==2 && n) n=fault_short<n?fault_short:n-1;
@@ -384,8 +635,9 @@ static int write_at(void) {
   uint64_t off=number(8); size_t n=input_n-pos;
   struct stat s;
   if (fstat(write_fd,&s)<0) return errno;
-  if (!n || n>16777244u || off!=(uint64_t)s.st_size || off>SEGMENT_MAX || n>SEGMENT_MAX-off) return EINVAL;
-  if (write_kind>1 && (off!=0 || n!=(write_kind==2?44u:28u))) return EINVAL;
+  if (!n || n>16777244u || off!=(uint64_t)s.st_size || off>INT64_MAX || n>(uint64_t)INT64_MAX-off ||
+      (write_kind!=4 && (off>SEGMENT_MAX || n>SEGMENT_MAX-off))) return EINVAL;
+  if (write_kind>1 && write_kind!=4 && (off!=0 || n!=(write_kind==2?44u:28u))) return EINVAL;
   size_t requested=n;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==2) n=(size_t)(fault_short<n?fault_short:n-1);
@@ -440,12 +692,19 @@ static int dispatch(unsigned op) {
     if (poisoned || root_fd>=0) return ECANCELED;
     return acquire(op==ACQUIRE_EXISTING);
   }
+  if (op==COLD_TARGET_OPEN) {
+    if (poisoned) return ECANCELED;
+    return cold_target_open();
+  }
   if (op==SHUTDOWN) {
-    int descriptors[]={write_fd,read_fd,segments_fd,root_fd,lock_fd};
+    int descriptors[]={write_fd,read_fd,segments_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_segments_fd,cold_lock_fd};
     for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
       if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(94);
     }
     write_fd=read_fd=segments_fd=root_fd=lock_fd=-1; acquired=0;
+    cold_stage_fd=cold_stage_segments_fd=cold_lock_fd=-1;
+    cold_chain_close(&cold_parent_chain); cold_chain_close(&cold_catalog_chain); cold_chain_close(&cold_verify_chain);
+    cold_parent_fd=cold_catalog_parent_fd=cold_verify_parent_fd=-1; cold_target=0;
     return 0;
   }
 #ifdef TAY_TEST_FAULTS
@@ -456,9 +715,37 @@ static int dispatch(unsigned op) {
   }
 #endif
   if (poisoned) return ECANCELED;
-  e=check_paths(); if (e) return e;
+  if (cold_target) {
+    e=cold_check_paths(); if (e) return e;
+    switch (op) {
+      case COLD_STAGE_CREATE: return cold_stage_create();
+      case COLD_OPEN_WRITE: return cold_open_write();
+      case COLD_SYNC_STAGING: return cold_sync_staging();
+      case COLD_PUBLISH: return cold_publish();
+      case COLD_SYNC_CATALOG: return cold_sync_catalog();
+      case COLD_CHECK: return cold_check_paths();
+      case OPEN_READ: case READ_AT: case CLOSE_READ: case SYNC_READ:
+        break;
+      case WRITE_AT: case SYNC_FILE: case CLOSE_WRITE:
+        break;
+      default: return EPROTO;
+    }
+  }
+  if (op==COLD_SOURCE) {
+    e=check_paths(); if (e) return e;
+    if (!inspection_only) return EPERM;
+    cold_source=1; return 0;
+  }
+  if (op==COLD_LIST) {
+    e=check_paths(); if (e) return e;
+    if (!inspection_only) return EPERM;
+    return cold_list_directory();
+  }
+  if (!cold_target) {
+    e=check_paths(); if (e) return e;
+  }
   if (op==ENABLE_MUTATIONS) return enable_mutations();
-  if (inspection_only && op!=LIST && op!=OPEN_READ && op!=READ_AT &&
+  if (!cold_target && inspection_only && op!=LIST && op!=OPEN_READ && op!=READ_AT &&
       op!=CLOSE_READ && op!=CHECK && op!=INFO) return EPERM;
   switch (op) {
     case LIST: return list_directory();
@@ -486,7 +773,19 @@ static int dispatch(unsigned op) {
     case CHECK: return check_paths();
     case INFO:
       put((uint64_t)getpid(),8); put(write_fd<0?0:write_kind,1); put(read_fd>=0,1);
-      put(filesystem_type,8); put(ancestor_syncs,4); return 0;
+      put(filesystem_type,8); put(ancestor_syncs,4);
+      if (acquired) {
+        struct stat root,segments;
+        if (fstat(root_fd,&root)<0) return errno;
+        put((uint64_t)root.st_dev,8); put((uint64_t)root.st_ino,8);
+        if (segments_fd>=0) {
+          if (fstat(segments_fd,&segments)<0) return errno;
+          put((uint64_t)segments.st_dev,8); put((uint64_t)segments.st_ino,8);
+        } else {
+          put(0,8); put(0,8);
+        }
+      }
+      return 0;
     case SYNC_READ:
       e=validate_read(); return e?e:fsync(read_fd)<0?errno:0;
     default: return EPROTO;
@@ -505,6 +804,27 @@ static int validate_request(unsigned op) {
     case OPEN_READ: case CREATE_STAGE:
       if (!need(1)) return EPROTO;
       pos++; e=string(name,256); break;
+    case COLD_STAGE_CREATE:
+      e=string(name,256); break;
+    case COLD_OPEN_WRITE:
+      if (!need(2)) return EPROTO;
+      pos+=2; e=string(name,256); break;
+    case COLD_TARGET_OPEN: {
+      if (!need(34)) return EPROTO;
+      pos+=34;
+      for (int i=0;i<4 && !e;i++) e=string(name,i==0 || i==2?PATH_MAX:256);
+      if (e || !need(1)) return e?e:EPROTO;
+      unsigned verify=(unsigned)number(1);
+      if (verify>1) return EPROTO;
+      if (verify) {
+        e=string(name,PATH_MAX);
+        if (!e) e=string(name,256);
+      }
+      break;
+    }
+    case COLD_LIST:
+      if (!need(5)) return EPROTO;
+      pos+=5; break;
     case READ_AT:
       if (!need(12)) return EPROTO;
       pos+=12; break;
@@ -522,7 +842,9 @@ static int validate_request(unsigned op) {
       if (!need(16)) return EPROTO;
       pos+=16; break;
     case MKDIR_SEGMENTS: case CLOSE_READ: case SYNC_FILE: case CLOSE_WRITE:
-    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS: break;
+    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS:
+    case COLD_SYNC_STAGING: case COLD_PUBLISH: case COLD_SYNC_CATALOG:
+    case COLD_CHECK: case COLD_SOURCE: break;
 #ifdef TAY_TEST_FAULTS
     case FAULT:
       if (!need(18)) return EPROTO;

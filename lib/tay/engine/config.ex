@@ -1,6 +1,7 @@
 defmodule Tay.Engine.Config do
   @moduledoc "Validated, non-persisted Engine configuration. No storage is opened here."
   alias Tay.Event.V1
+  alias Tay.Executor.SocketPath
   alias Tay.Storage.Recovery
   @environment Mix.env()
   @defaults %{
@@ -23,16 +24,16 @@ defmodule Tay.Engine.Config do
     caller_timeout: 5_000,
     execution_batch: 32,
     execution_wake_ms: 1_000,
-    # External execution is opt-in for the existing embedded API.  Supplying a
-    # socket path starts the local UDS Protocol v1 listener; TCP is never
-    # enabled by this configuration.
-    executor_socket: nil,
+    # A local Protocol v1 listener is automatic by default. Set an absolute
+    # path to override discovery, or explicitly pass nil to disable it.
+    executor_socket: :auto,
     executor_socket_mode: 0o600,
     executor_max_frame_bytes: 1_048_576,
     executor_max_connections: 128,
     executor_max_tasks_per_connection: 256,
     executor_result_bytes: 65_536,
     executor_error_bytes: 8_192,
+    executor_max_results: 10_000,
     start_paused: false,
     max_history_bytes: :infinity,
     max_segments: :infinity
@@ -52,6 +53,11 @@ defmodule Tay.Engine.Config do
            ),
          true <- base.data_dir != nil || {:error, :data_dir_required},
          config = Map.merge(@defaults, Map.new(options)),
+         {:ok, socket} <- SocketPath.resolve(config.executor_socket),
+         config =
+           config
+           |> Map.put(:executor_socket, socket.path)
+           |> Map.put(:executor_socket_private_directory, socket.private_directory),
          {:ok, recovery} <- Recovery.options(config.recovery),
          :ok <- validate(config, recovery) do
       queues = Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
@@ -107,7 +113,8 @@ defmodule Tay.Engine.Config do
       :executor_max_connections,
       :executor_max_tasks_per_connection,
       :executor_result_bytes,
-      :executor_error_bytes
+      :executor_error_bytes,
+      :executor_max_results
     ]
 
     nonnegative = [
@@ -129,6 +136,8 @@ defmodule Tay.Engine.Config do
         is_integer(c.execution_batch) and c.execution_batch in 1..1_024 and
         is_integer(c.execution_wake_ms) and c.execution_wake_ms in 1..1_000 and
         executor_socket?(c.executor_socket) and c.executor_socket_mode in [0o600, 0o660] and
+        is_boolean(c.executor_socket_private_directory) and
+        executor_socket_outside_data_dir?(c.executor_socket, c.data_dir) and
         c.executor_max_frame_bytes <= 16_777_216 and
         c.executor_result_bytes <= c.executor_max_frame_bytes and
         c.executor_error_bytes <= c.executor_max_frame_bytes and
@@ -167,6 +176,20 @@ defmodule Tay.Engine.Config do
   end
 
   defp executor_socket?(_), do: false
+
+  # Storage owns and validates every entry below data_dir. Keep a runtime Unix
+  # socket beside it, never inside it, so recovery cannot mistake it for foreign
+  # storage state or require a weakened directory scan.
+  defp executor_socket_outside_data_dir?(nil, _data_dir), do: true
+
+  defp executor_socket_outside_data_dir?(socket, data_dir)
+       when is_binary(socket) and is_binary(data_dir) do
+    socket = Path.expand(socket)
+    data_dir = Path.expand(data_dir)
+    socket != data_dir and not String.starts_with?(socket, data_dir <> "/")
+  end
+
+  defp executor_socket_outside_data_dir?(_, _), do: false
 
   # Compile only the applicable branch. Test hooks remain unavailable to
   # production configuration and no environment check runs on a live request.

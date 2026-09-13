@@ -9,9 +9,9 @@ import os
 import traceback
 import uuid
 import weakref
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from .errors import (
     ConnectionLost,
@@ -33,14 +33,15 @@ from .protocol import (
     read_frame,
     validate_task_name,
 )
+from .socket_path import resolve_socket_path
 from .task import Task, TaskConfig
 
-
-DEFAULT_SOCKET_PATH = os.environ.get("TAY_SOCKET_PATH", "/tmp/tay.sock")
 DEFAULT_MAX_RESULT_BYTES = 65_536
-DEFAULT_MAX_ERROR_BYTES = 16_384
+DEFAULT_MAX_ERROR_BYTES = 8_192
 _MODES = frozenset({"client", "embedded", "worker"})
-_BACKOFF_MODES = frozenset({"none", "immediate", "fixed", "exponential"})
+# Event-v1 freezes a single durable retry curve. Keep the SDK's accepted surface
+# aligned with the listener rather than accepting values it cannot represent.
+_BACKOFF_MODES = frozenset({"exponential"})
 _OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
 
 
@@ -127,8 +128,8 @@ class Tay:
     ) -> None:
         if mode not in _MODES:
             raise ValidationError(f"mode must be one of {sorted(_MODES)}, not {mode!r}")
-        if type(capacity) is not int or capacity < 1:
-            raise ValidationError("capacity must be a positive integer")
+        if type(capacity) is not int or capacity not in range(1, 65_536):
+            raise ValidationError("capacity must be an integer in 1..65535")
         if type(max_frame_bytes) is not int or max_frame_bytes < 256:
             raise ValidationError("max_frame_bytes must be an integer of at least 256")
         if type(max_result_bytes) is not int or max_result_bytes < 1:
@@ -141,11 +142,16 @@ class Tay:
             raise ValidationError("invalid reconnect delay configuration")
 
         self.mode = mode
-        self.socket_path = os.fspath(socket_path or DEFAULT_SOCKET_PATH)
+        self.socket_path = resolve_socket_path(socket_path)
         self.capacity = capacity
         self.client_id = client_id or f"python-{uuid.uuid4().hex}"
-        if type(self.client_id) is not str or not self.client_id:
-            raise ValidationError("client_id must be a non-empty string")
+        if (
+            type(self.client_id) is not str
+            or not self.client_id
+            or "\x00" in self.client_id
+            or len(self.client_id.encode("utf-8")) > 128
+        ):
+            raise ValidationError("client_id must be a non-empty UTF-8 string of at most 128 bytes")
         self.max_frame_bytes = max_frame_bytes
         self.max_result_bytes = max_result_bytes
         self.max_error_bytes = max_error_bytes
@@ -171,6 +177,7 @@ class Tay:
         self._write_lock = asyncio.Lock()
         self._execution_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._event_request_ids: set[str] = set()
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
         self._last_connection_error: BaseException | None = None
@@ -243,13 +250,9 @@ class Tay:
         backoff = raw["backoff"]
         if isinstance(backoff, str):
             if backoff not in _BACKOFF_MODES:
-                raise ValidationError(
-                    f"backoff must be one of {sorted(_BACKOFF_MODES)} or a JSON object"
-                )
+                raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
         elif backoff is not None:
-            backoff = normalize_json(backoff)
-            if not isinstance(backoff, dict):
-                raise ValidationError("backoff must be a string or JSON object")
+            raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
 
         cron = raw["cron"]
         every = raw["every"]
@@ -361,6 +364,7 @@ class Tay:
             execution.cancel()
         self._executions.clear()
         self._execution_is_sync.clear()
+        self._event_request_ids.clear()
         await self._close_writer(writer)
         self._reader = None
         self._writer = None
@@ -444,19 +448,12 @@ class Tay:
             "hello",
             {
                 "mode": self.mode,
-                "client_id": self.client_id,
-                "capacity": self.capacity if self.mode != "client" else 0,
+                "runtime_id": self.client_id,
+                "max_concurrency": self.capacity if self.mode != "client" else 0,
             },
         )
         if self.mode != "client" and self._tasks:
             await self._exchange("register_tasks", {"tasks": list(self._tasks)})
-        declarations = [
-            declaration
-            for task in self._tasks.values()
-            if (declaration := task.static_schedule_declaration()) is not None
-        ]
-        if declarations:
-            await self._exchange("register_schedules", {"schedules": declarations})
 
     async def _read_loop(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -471,6 +468,7 @@ class Tay:
             self._last_connection_error = exc
         finally:
             if self._writer is writer:
+                self._event_request_ids.clear()
                 self._connected.clear()
                 self._connection_lost.set()
                 await self._fail_pending(ConnectionLost("connection to Tay was lost"))
@@ -489,6 +487,9 @@ class Tay:
 
         request_id = message.get("request_id")
         if request_id is not None:
+            if message_type in {"accepted", "heartbeat_ok"} and request_id in self._event_request_ids:
+                self._event_request_ids.discard(request_id)
+                return
             future = self._pending.pop(request_id, None)
             if future is not None and not future.done():
                 if message_type in {"error", "protocol_error"}:
@@ -524,13 +525,19 @@ class Tay:
                 raise ConnectionLost("failed to write to Tay") from exc
 
     async def _send_event(self, message_type: str, fields: Mapping[str, Any]) -> None:
+        request_id = uuid.uuid4().hex
         envelope = {
             "version": PROTOCOL_VERSION,
             "type": message_type,
-            "request_id": uuid.uuid4().hex,
+            "request_id": request_id,
             **normalize_json(fields),
         }
-        await self._send_envelope(envelope)
+        self._event_request_ids.add(request_id)
+        try:
+            await self._send_envelope(envelope)
+        except Exception:
+            self._event_request_ids.discard(request_id)
+            raise
 
     async def _exchange(self, message_type: str, fields: Mapping[str, Any]) -> dict[str, Any]:
         """Issue exactly one request without retrying it after a disconnect."""
@@ -603,6 +610,9 @@ class Tay:
         if overlap:
             raise ValidationError(f"enqueue option supplied twice: {sorted(overlap)[0]}")
         merged_options.update(option_keywords)
+        backoff = merged_options.get("backoff")
+        if not (backoff is None or backoff == "exponential"):
+            raise ValidationError("Protocol v1 supports only backoff='exponential'")
         payload = {
             "task": task_name,
             "args": normalize_json(args),
@@ -701,11 +711,14 @@ class Tay:
             )
             return
         execution_id = message.get("execution_id")
+        reservation_id = message.get("reservation_id")
         job_id = message.get("job_id")
         task_name = message.get("task", message.get("task_name"))
         arguments = message.get("args", {})
         if type(execution_id) is not str or not execution_id:
             raise ProtocolError("execute requires a non-empty execution_id")
+        if type(reservation_id) is not str or not reservation_id:
+            raise ProtocolError("execute requires a non-empty reservation_id")
         if type(job_id) is not str or not job_id:
             raise ProtocolError("execute requires a non-empty job_id")
         if type(task_name) is not str:
@@ -727,7 +740,10 @@ class Tay:
             if existing is not None:
                 # Duplicate delivery of an active execution must not start a
                 # second local invocation.  Reaffirming STARTED is harmless.
-                await self._send_event("started", {"execution_id": execution_id})
+                await self._send_event(
+                    "started",
+                    {"reservation_id": reservation_id, "execution_id": execution_id},
+                )
                 return
             if len(self._executions) >= self.capacity:
                 await self._execution_failure(
@@ -736,7 +752,9 @@ class Tay:
                 return
             synchronous = not inspect.iscoroutinefunction(task.function)
             execution = asyncio.create_task(
-                self._run_execution(execution_id, job_id, task, dict(arguments), synchronous),
+                self._run_execution(
+                    reservation_id, execution_id, job_id, task, dict(arguments), synchronous
+                ),
                 name=f"tay-execution-{execution_id}",
             )
             self._executions[execution_id] = execution
@@ -762,13 +780,21 @@ class Tay:
 
     async def _run_execution(
         self,
+        reservation_id: str,
         execution_id: str,
         job_id: str,
         task: Task,
         arguments: Mapping[str, Any],
         synchronous: bool,
     ) -> None:
-        await self._send_event("started", {"execution_id": execution_id, "job_id": job_id})
+        await self._send_event(
+            "started",
+            {
+                "reservation_id": reservation_id,
+                "execution_id": execution_id,
+                "job_id": job_id,
+            },
+        )
         try:
             if synchronous:
                 result = await asyncio.to_thread(task._call_from_arguments, arguments)
@@ -790,6 +816,7 @@ class Tay:
             await self._send_event(
                 "succeeded",
                 {
+                    "reservation_id": reservation_id,
                     "execution_id": execution_id,
                     "job_id": job_id,
                     "result": result,
@@ -800,6 +827,7 @@ class Tay:
                 await self._send_event(
                     "failed",
                     {
+                        "reservation_id": reservation_id,
                         "execution_id": execution_id,
                         "job_id": job_id,
                         "error": {
@@ -815,6 +843,7 @@ class Tay:
                 await self._send_event(
                     "failed",
                     {
+                        "reservation_id": reservation_id,
                         "execution_id": execution_id,
                         "job_id": job_id,
                         "error": self._bounded_error(exc),
@@ -823,9 +852,11 @@ class Tay:
 
     async def _execution_failure(self, message: Mapping[str, Any], error: BaseException) -> None:
         execution_id = message.get("execution_id")
-        if type(execution_id) is not str or not execution_id:
-            raise ProtocolError("cannot report execute failure without execution_id")
+        reservation_id = message.get("reservation_id")
+        if type(execution_id) is not str or not execution_id or type(reservation_id) is not str or not reservation_id:
+            raise ProtocolError("cannot report execute failure without execution context")
         fields: dict[str, Any] = {
+            "reservation_id": reservation_id,
             "execution_id": execution_id,
             "error": self._bounded_error(error),
         }

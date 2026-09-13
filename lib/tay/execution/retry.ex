@@ -18,9 +18,8 @@ defmodule Tay.Execution.Retry do
     if V1.time?(at) and V1.attempt?(attempt) and
          V1.attempt?(definition["max_attempts"]) and
          attempt <= definition["max_attempts"] and definition["retry_policy"] === V1.policy() do
-      # Branch before exponentiation; no ordinal can request an enormous power.
-      delay = if attempt >= 7, do: 60_000, else: 1000 * Integer.pow(2, attempt - 1)
-      jitter_max = min(div(delay, 4), 60_000 - delay)
+      delay = V1.retry_delay(attempt)
+      jitter_max = V1.retry_jitter_max(delay)
 
       with {:ok, jitter} <- jitter(jitter_max, random_bytes),
            do: {:ok, min(V1.max_time(), at + delay + jitter)}
