@@ -1,22 +1,29 @@
 # Packaging and consuming-release qualification
 
-This is a local qualification procedure, not publication authorization. The Mix
-version remains `0.1.0-dev`; phase Git tags do not select a production package
-version. No license has been chosen. Hex therefore warns about the empty license
-list during a private build. Choosing a license, selecting a release version and
-the R5 measured production-envelope approval remain explicit release decisions.
-No package was published and no commit, tag or release was created by this work.
+This is the Tay **v0.5.0 public-preview** package qualification procedure, not
+publication authorization. The public Hex package name is `tay`, the approved
+license is Elastic-2.0, and R5 covers only the constrained profile in
+[production limits](production-limits.md), with actual target/workload validation
+still required. The planned Git tag is `v0.5.0`; earlier `v0.1.0`–`v0.4.0`
+tags were development milestones. No package was published and no commit, tag,
+push or release was created by this preparation.
 
 ## Build and runtime boundary
 
 The source package has an explicit allowlist: `lib/`, the unchanged
 `c_src/tay_storage_helper.c`, its platform README, the external offline
-`scripts/tay_cold_copy.py` tool, `mix.exs`, `.formatter.exs`, README and Markdown
-documentation. The restore script is shipped as a source-package operational
+`scripts/tay_cold_copy.py` tool, `mix.exs`, `.formatter.exs`, `LICENSE`,
+`CHANGELOG.md`, README, Markdown documentation and small retained qualification
+JSON files. The restore script is shipped as a source-package operational
 tool, not a dependency of the running release; use it from a separately prepared
 offline operations environment. It excludes checkout-local `priv/` executables, tests/test providers,
 fixtures, configuration, dependencies, build output, Git metadata and storage.
-The native executable is compiled for the consuming build environment, not copied
+The package metadata uses the repository remote as its source URL and links to
+the versioned `v0.5.0` Git documentation tree. That documentation link becomes
+publicly resolvable only after the repository is accessible and the approved tag
+is pushed. No ExDoc dependency or `mix docs`
+task is configured; HexDocs generation is not claimed. The native executable is
+compiled for the consuming build environment, not copied
 from a developer's machine. It is a regular executable file in the application's
 release `priv/` directory. Non-test compilation removes only the exact generated
 fault-enabled helper if a prior test build left one in that output directory.
@@ -64,11 +71,13 @@ barriers or power-loss behavior. Do not set `TAY_TEST_SYNC=1` to bypass unsuppor
 filesystem qualification. These paths contain only newly generated synthetic
 data, never production storage.
 
-The test performs the following assertions:
+The test performs the following assertions. Final release validation also
+inspects the produced archive's name/version/license/links and included files:
 
 1. `mix hex.build --unpack --output <temporary-consumer>/vendor/tay` creates a
    private source package using its actual metadata/allowlist; frozen native source
-   equals the checkout's bytes and prohibited directories are absent.
+   equals the checkout's bytes and prohibited directories are absent. The
+   Elastic-2.0 LICENSE must be byte-identical to the approved source text.
 2. A distinct Mix application consumes that unpacked package as a production path
    dependency. Its own worker is ordinary consumer code, not Tay test support.
    It compiles with warnings as errors and builds a production release with ERTS.
@@ -102,8 +111,9 @@ sanitizers, 10,000-job and 1 GiB/many-segment suites, and the consuming-release 
 Linux creates a new disposable loopback Btrfs filesystem, verifies the mounted
 type before enabling strict-sync tests and never formats a pre-existing device.
 This virtual filesystem does not certify production hardware or prove power cuts.
-Restore/capacity evidence and final R5 sign-off still belong to the complete
-Phase 6 implementation report; a green workflow is not publication approval.
+Restore/capacity evidence is in the Phase 6 and pre-release reports; the final
+R5 envelope is in [production limits](production-limits.md). A green workflow
+is not publication approval or target-device certification.
 
 The workflow has read-only repository permissions, no persisted checkout
 credentials, immutable action revisions and no publishing step. Its BEAM setup
@@ -116,10 +126,12 @@ local platform results and any hosted-runner skips must be reported separately.
 
 ## Release checklist and remaining decisions
 
-- Review the complete Phase 6 report, measured production profile, fail-closed
-  cases, restore procedure and unsupported platforms. Resolve R5 explicitly.
-- Select an actual release version and license; include the approved license file
-  in the package allowlist before any publication. Do not infer either from tags.
+- Review the complete Phase 6 and pre-release reports, R5's finite profile,
+  fail-closed cases, restore procedure and unsupported platforms. Validate the
+  actual target and workload; no unrestricted production claim follows.
+- Confirm `tay` / `0.5.0` / Elastic-2.0 metadata, source and versioned documentation
+  links, LICENSE and CHANGELOG inclusion, and that the `v0.5.0` tag is created
+  only after explicit authorization. Recheck name availability at publication.
 - Qualify the actual target-specific consumer release and its native permissions,
   architecture/runtime libraries, filesystem barriers and deployment configuration.
 - Retain the frozen fixture manifests and compatibility matrix. Packaging may not

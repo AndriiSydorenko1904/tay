@@ -1,9 +1,12 @@
 # Production limits and qualification profile
 
-Status: **Measured qualification complete; R5 NOT APPROVED.** This
-document distinguishes immutable representability, operational configuration,
-observed tests and an approved deployment envelope. Implementation or a green
-development test does not by itself authorize a production-capacity claim.
+Status: **R5 APPROVED for Tay v0.5.0's constrained public preview only.** The
+measured reference target is the validated local Linux/Btrfs qualification
+volume, not every Linux filesystem, device or deployment. Operators must
+validate their actual target and workload before production use. This document
+distinguishes immutable representability, operational configuration, observed
+tests and the deliberately finite release policy. R5 does not authorize an
+unrestricted production-capacity claim.
 
 ## Frozen contracts versus operational defaults
 
@@ -116,6 +119,16 @@ process heaps exclude shared binary backing, and VM totals include the observer.
 Neither sampled peaks nor external command RSS establish a measured minimum RAM
 requirement or bound arbitrary application callback memory.
 
+The [pre-release hardening rerun](pre-release-hardening-report.md) repeated the
+same 10,000-job cohort on the validated Btrfs volume: 19,385,044 canonical bytes,
+212.53 jobs/s, 27.674 ms insertion p99 and 8.281 s restart. Its 1 GiB-capped
+repeat completed at 242.37 jobs/s, 26.411 ms insertion p99 and 8.234 s restart.
+Both retained the 15,448,760-byte ready ETS size. These one-run differences
+from the Phase 6 baseline are measurement variability, not proven improvement.
+The full Linux/Btrfs strict-sync and ASan/UBSan suites, detached consumer build,
+10,000-job reconstruction, 1 GiB physical recovery and 300-segment test passed
+again. They still do not certify host hardware power-loss behavior.
+
 ### Independent stress and operational observations
 
 | Case / retained artifact | Actual scope and result |
@@ -138,14 +151,16 @@ The shorter ten-segment than one-segment replay reflects ordinary small-sample
 noise, not a scaling law. Fairness observations show service to both queues in
 these runs, not a deadline guarantee for arbitrary worker runtimes or workloads.
 
-## Narrow deployment policy proposed for R5 review
+## R5 finite release policy
 
-The 10,000-job lifecycle timing runs used source defaults for insertion/candidate budgets and
-`:infinity` history/segment admission caps. The following **finite policy is a
-review proposal, not measured configuration, new defaults, or an approved capacity
-promise**. Validate it on the actual deployment and workload before adoption:
+The 10,000-job lifecycle timing runs used source defaults for insertion/candidate
+budgets and `:infinity` history/segment admission caps. R5 adopts the following
+**finite protective release policy**, not new source defaults or a jointly measured
+configuration. It may refuse earlier than the measured uncapped run. Validate its
+complete behavior on the actual deployment and workload before adoption; it is
+not a throughput, recovery-time or safe-capacity promise for arbitrary histories:
 
-| Proposed boundary | Value and purpose |
+| R5 release boundary | Value and purpose |
 | --- | --- |
 | Workload | At most the jointly measured 10,000 retained small-argument jobs, with bounded trusted callbacks; ≤ eight offered callers, two queues × two execution credits |
 | Insertion caps | `max_insert_args_bytes: 1_105`, `max_insert_payload_bytes: 2_048`; measured arg shape, not arbitrary 256 KiB jobs |
@@ -157,15 +172,16 @@ promise**. Validate it on the actual deployment and workload before adoption:
 
 Caps can refuse work early and never redefine existing-history validity. Repeated
 retries, cancellations, interruptions and differing args change the relationship
-between job count, records, memory and bytes. Crossing a proposed boundary requires
+between job count, records, memory and bytes. Crossing an R5 boundary requires
 new target-specific measurement/review, not deleting history or assuming that
 every physically valid store within one numeric cap has the measured performance.
-The proposed history cap is intentionally tight: only 4,956 bytes above the
+The R5 history cap is intentionally tight: only 4,956 bytes above the
 completed cohort, including outstanding-outcome headroom, not a practical allowance
 for long-lived repeated retries. Exhaustion must refuse further new work while
 preserving settlement reserves. This bounded store cannot serve indefinitely;
-a larger realistic retention/retry envelope needs its own measurements and R5
-approval, not implicit Phase 11 retention or an unauthorized cleanup procedure.
+a larger realistic retention/retry envelope needs its own measurements and
+separate review, not implicit Phase 11 retention or an unauthorized cleanup
+procedure.
 Maintain backup capacity separately and monitor failed-copy staging: preserved
 failures and repeated crashes can consume any finite margin. Application callbacks
 are trusted code, not memory-isolated sandboxes.
@@ -196,8 +212,7 @@ Phase 11 snapshots/retention/compaction and Phase 12 orchestration/uniqueness st
 deferred. There is no live backup, automatic repair, distributed execution, new
 storage format, or unbounded-history production promise.
 
-R5 requires explicit approval of the **measured** target profile, its limits,
-remaining operational risks and fail-closed cases. Selecting a release version
-and license, then publishing/tagging/releasing, also requires separate authority.
-Until those decisions are complete, this document
-does not claim a first production-usable Tay release.
+R5 approves the **finite public-preview profile above**, the measured reference
+target and the explicit target-validation condition. It does not approve an
+arbitrary workload or deployment. Tay v0.5.0 remains an early public preview;
+actual publication, tagging and pushing require separate authorization.

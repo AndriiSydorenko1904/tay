@@ -1,5 +1,10 @@
 # RFC: accelerated roadmap from v0.3.0 to the first production-usable Tay
 
+Current release reconciliation (2026-09-13): Phases 4–6 and R1–R4 were
+implemented; R5 is approved only for the finite Tay v0.5.0 public-preview
+profile and target-validation condition in [production limits](production-limits.md).
+The dated proposal/approval text below is retained as historical design input.
+
 Status: **R1/R3/R4 architecturally APPROVED; R2 specified for approval; no implementation authorized.**
 Date: 2026-09-12.
 Inspected HEAD: `741d6cb724eab6daa8dc88f9c15a5eb0ca366bcb`, `main`, tag `v0.3.0`.

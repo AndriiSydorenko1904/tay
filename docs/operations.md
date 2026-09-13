@@ -1,10 +1,10 @@
 # Tay operations
 
-This is the Phase 6 operational procedure. The implementation report and measured
-[production limits](production-limits.md), not a Git phase tag or this procedure
-alone, determine qualification. R5 approval and package publication remain
-separate release decisions. No repair, compaction, live backup or distributed
-execution is provided.
+This is the Tay v0.5.0 public-preview operational procedure. R5 approves only
+the finite measured reference profile and target-validation condition in
+[production limits](production-limits.md), not this procedure alone or an
+unrestricted production deployment. Package publication remains a separate
+action. No repair, compaction, live backup or distributed execution is provided.
 
 ## Deployment boundary
 
@@ -12,7 +12,7 @@ Run one Engine against a whole store on explicitly validated local Linux storage
 with `durability: :sync` and `validated_filesystem: true`. The flag is an operator
 attestation, not filesystem/device certification. Verify file and directory sync,
 advisory locks, exclusive publication, stable identities, mount configuration and
-the device's power-loss behavior. See the frozen Phase 2 platform assumptions and
+the device's documented power-loss behavior. See the frozen Phase 2 platform assumptions and
 the actual tested matrix in the implementation report. NFS/SMB, network/object
 stores, Windows and macOS production durability are unsupported. Explicit macOS
 development `:write` has no power-loss durability promise. Never silently fall
@@ -39,7 +39,10 @@ Tay.child_spec(
 )
 ```
 
-Substitute explicit measured workload limits before deployment. Startup is
+The example is schematic, **not** the jointly measured R5 workload or its finite
+admission configuration. Apply every R5 boundary from
+[production limits](production-limits.md), then validate the actual target and
+workload before deployment. Startup is
 existing-only: a missing root, lock, STORE or required canonical is an error,
 never permission to initialize. `Tay.Storage.initialize/1` and
 `mix tay.storage.init` are initialize-only, not idempotent ensure operations.

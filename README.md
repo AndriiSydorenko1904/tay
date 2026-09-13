@@ -1,21 +1,28 @@
 # Tay
 
-Tay is an Elixir library under development for embedded durable background jobs,
-using a segmented append-only log and reconstructable ETS indexes. The
-engine has at-least-once execution semantics and no external database or broker.
+Tay v0.5.0 is the first public preview of an embedded, durable **single-node**
+background-job engine for Elixir. It uses an authoritative segmented append-only
+log and reconstructable ETS indexes, without an external database or broker.
+The release includes insertion/reconciliation, supervised execution, scheduling,
+retries, cancellation/manual retry, operational controls and fail-closed recovery.
 
-**Phases 0–5** provide frozen physical storage/recovery and Event v1 contracts,
-durable insertion/reconciliation, private indexes, supervised execution,
-scheduling, automatic retries and revision-checked cancellation/manual retry.
-Phase 6 adds operational controls, cold restore, package and production-profile
-qualification. See the implementation reports and measured release gates before
-claiming production readiness; R5 approval and publication remain explicit.
-Starting the application starts an empty supervisor; it does not establish storage
-readiness or a durability guarantee.
+The R5 release profile is deliberately narrow: measured Elixir 1.20.2 / OTP 29
+on a validated local Linux/Btrfs test volume with strict `:sync` durability,
+for a finite 10,000-job, small-argument cohort. **Validate the actual target
+filesystem, device and workload before deployment.** This is not an unrestricted
+production-ready claim or hardware-independent power-loss certification. Worker
+effects are at-least-once, not exactly-once; there is no multi-node support,
+automatic torn-tail repair, or history retention/compaction. Starting the Tay
+application alone starts an empty supervisor, not a writable Engine.
 
 Operational references: [operations](docs/operations.md),
 [production limits](docs/production-limits.md), [cold restore](docs/restore.md),
-[compatibility](docs/compatibility.md), and [packaging](docs/packaging.md).
+[compatibility](docs/compatibility.md), [packaging](docs/packaging.md), and the
+[v0.5.0 changelog](CHANGELOG.md).
+
+After the approved public package is published, add `{:tay, "~> 0.5.0"}` to your
+Mix dependencies. Build the native helper on the consuming target; see
+[packaging](docs/packaging.md) before building a release.
 
 ## Development
 
@@ -25,8 +32,9 @@ There are no third-party runtime dependencies. OTP `:crypto` supplies store IDs
 and temporary-name randomness. A C11 compiler is required at build time for the
 native filesystem Port; releases must include the built helper in `priv/`.
 StreamData is a test-only dependency, locked in `mix.lock`, for codec properties.
-ExUnit and the built-in formatter are the
-other tooling; Credo and Dialyzer remain deferred.
+ExUnit and the built-in formatter are the other tooling. Standalone Dialyzer
+results and accepted diagnostics are recorded in the
+[pre-release hardening report](docs/pre-release-hardening-report.md).
 
 ```sh
 mix deps.get
@@ -137,8 +145,9 @@ Production builds reject `:write`. `:sync` requires Linux, explicit
 `validated_filesystem: true`, a genuinely validated supported local filesystem,
 and explicit production path configuration. There is no automatic mode downgrade.
 `Tay.status().durability` reports the actual mode; a write-mode reply is never
-relabeled sync-durable. Production release readiness requires the measured Phase 6
-qualification and explicit R5 approval.
+relabeled sync-durable. The approved R5 profile and its target-validation
+condition are in the [production limits](docs/production-limits.md); `:sync`
+does not certify an unvalidated filesystem or device.
 
 Use engine-specific options on `child_spec/start_link`, not in the foundation's
 `:tay` application environment. `:name` is a trusted atom (default `Tay.Engine`);
@@ -305,5 +314,5 @@ contract. The Phase 2 RFC and its approved implementation gates supersede the
 segment candidate. The Phase 3 RFC resolves recovery gates G1–G6 without changing
 either byte format. Phase 4 adds Event semantics and disposable projection without
 changing those contracts. Phase 5 execution and Phase 6 operational implementation
-retain the same contracts; measured R5 approval and publication remain explicit
-release gates, not an automatic consequence of a green development build.
+retain the same contracts. R5 is approved only for the constrained public-preview
+profile; publication remains a separate explicit action.

@@ -1,5 +1,10 @@
 # Compatibility and upgrade policy
 
+Tay v0.5.0 is a public preview. R5 approves only the constrained profile in
+[production limits](production-limits.md); it does not widen byte-format,
+semantic, platform or rollback compatibility. Validate the actual deployment
+target before use.
+
 ## Immutable storage contracts
 
 Record v1, STORE v1 and Segment v1 remain exactly the frozen Phase 1–3 formats.
@@ -86,6 +91,6 @@ not a production acknowledged-durability proof. Validated Linux/Btrfs tests do n
 automatically qualify all Linux filesystems, devices, containers or power failures.
 
 No live migration, snapshot, manifest, compaction, automatic repair, distributed
-execution or exactly-once external-effect contract is added by this release.
+execution or exactly-once external-effect contract is added by v0.5.0.
 See [operations](operations.md), [packaging](packaging.md) and the measured
 [production limits](production-limits.md) for operational and release gates.

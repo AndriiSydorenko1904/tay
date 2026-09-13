@@ -17,7 +17,29 @@ defmodule Tay.System.PackageTest do
     File.mkdir_p!(Path.dirname(vendor))
     build_env = build_env(artifact)
 
-    command!("mix", ["hex.build", "--unpack", "--output", vendor], @checkout, build_env)
+    case System.get_env("TAY_PACKAGE_ARCHIVE") do
+      nil ->
+        command!("mix", ["hex.build", "--unpack", "--output", vendor], @checkout, build_env)
+
+      archive ->
+        # Exercise the exact release candidate archive, including both Hex tar
+        # layers, rather than rebuilding a second source package for this path.
+        container = Path.join(artifact, "package-container")
+        File.mkdir_p!(container)
+        File.mkdir_p!(vendor)
+        command!("tar", ["-xf", archive, "-C", container], @checkout, build_env)
+
+        command!(
+          "tar",
+          ["-xzf", Path.join(container, "contents.tar.gz"), "-C", vendor],
+          @checkout,
+          build_env
+        )
+    end
+
+    assert File.read!(Path.join(vendor, "LICENSE")) == File.read!(Path.join(@checkout, "LICENSE"))
+    assert File.regular?(Path.join(vendor, "CHANGELOG.md"))
+    assert File.regular?(Path.join(vendor, "docs/qualification/linux-lifecycle.json"))
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))

@@ -9,5 +9,6 @@ data was used or overwritten.
 Read sample counts, durability mode, deadline and memory caveats with every
 percentile/peak. Compact 1/10/100-segment histories are topology microbenchmarks,
 not filled-segment throughput. The organic rotation case uses the unchanged
-minimum rotation target. Full qualification and explicit R5 approval remain
-separate from raw measurements.
+minimum rotation target. R5's constrained public-preview conclusion is in
+[production limits](../production-limits.md); these raw observations alone do
+not qualify other targets or workloads.

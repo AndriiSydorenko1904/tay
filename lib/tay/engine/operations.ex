@@ -2,7 +2,6 @@ defmodule Tay.Engine.Operations do
   @moduledoc false
   alias Tay.Engine.Admission
   alias Tay.{Error, Execution.LocalFence}
-  @test Mix.env() == :test
 
   # One fixed metadata-only permit is independent of saturated client/drain
   # permits. No unbounded public operational waiting queue is created.
@@ -68,8 +67,7 @@ defmodule Tay.Engine.Operations do
         end
       end
 
-    if @test and is_function(Map.get(config, :test_hook), 1),
-      do: config.test_hook.({:operations, :pre_result})
+    test_hook(config)
 
     send(guardian, {:operation_result, self(), token, result})
   catch
@@ -82,6 +80,15 @@ defmodule Tay.Engine.Operations do
       {:error, :not_found} -> :ok
       _ -> {:error, :lifecycle_shutdown_failed}
     end
+  end
+
+  if Mix.env() == :test do
+    defp test_hook(config) do
+      if is_function(Map.get(config, :test_hook), 1),
+        do: config.test_hook.({:operations, :pre_result})
+    end
+  else
+    defp test_hook(_config), do: :ok
   end
 
   defp wait_dead(pids) do

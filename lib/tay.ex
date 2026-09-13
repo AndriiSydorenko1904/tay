@@ -1,26 +1,21 @@
 defmodule Tay do
   @moduledoc """
-  The foundation of an embedded background job engine for Elixir.
+  An embedded background job engine with an authoritative append-only log.
+  Start an Engine explicitly; application startup only validates configuration
+  and starts an empty supervisor. The log is authoritative, while ETS indexes
+  and execution state are disposable projections rebuilt after full recovery.
 
-  Phase 0 provides configuration, application startup, a runtime `Tay.Job`
-  struct, and the `Tay.Worker` behaviour. Starting the application validates
-  configuration and starts an empty supervisor.
+  Tay supports durable insertion, supervised multi-queue execution, scheduling,
+  retries, revision-checked cancellation and manual retry, volatile queue
+  controls, drain, and explicit fresh-generation stop/restart. Callback effects
+  are at-least-once, not exactly-once. Cancellation durably fences future Tay
+  outcomes before best-effort termination, but cannot reverse external effects.
 
-  Phase 1 adds the pure `Tay.Storage.Record` framing/integrity codec with opaque
-  payloads. Physical decoding is not semantic acceptance or applied replay.
-
-  Phase 4 adds explicit Engine supervision, durable insertion, lookup and
-  same-ID reconciliation using Phase 3 fail-closed recovery. Application startup
-  remains storage-free. No worker execution or scheduling occurs in Phase 4.
-
-  Phase 5 adds supervised execution, scheduling, retries and revision-checked
-  cancellation/manual retry. Starts and outcomes pass through the same durable
-  Event commit path. Callbacks may repeat after infrastructure interruption;
-  external effects are not exactly-once. Cancellation fences future outcomes
-  before best-effort task termination and does not reverse external effects.
-
-  Phase 6 adds volatile pause/drain and explicit fresh-generation lifecycle
-  controls. Administrative calls never replay an RPC after an unknown outcome.
+  Physical framing validity is separate from Event support and state replay.
+  Torn, corrupt or unsupported history preserves evidence and refuses writable
+  activation; there is no automatic repair or partial-state publication.
+  Submitted calls with lost replies can have unknown outcomes and are not
+  automatically retried.
 
   Initialize storage explicitly with `Tay.Storage.initialize/1`, then supervise
   `Tay.child_spec/1`. Engine options are not `:tay` application environment keys.

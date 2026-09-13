@@ -29,20 +29,7 @@ defmodule Tay.Engine.Config do
   }
 
   def new(options) do
-    allowed =
-      Map.keys(@defaults) ++
-        [:data_dir, :queues] ++
-        if(@environment == :test,
-          do: [
-            :test_helper,
-            :test_hook,
-            :writer_hook,
-            :test_execution,
-            :test_clock,
-            :test_terminate
-          ],
-          else: []
-        )
+    allowed = Map.keys(@defaults) ++ [:data_dir, :queues] ++ test_option_keys()
 
     with true <- keyword?(options, allowed) || {:error, :invalid_engine_options},
          {:ok, base} <- Tay.Config.load(),
@@ -65,13 +52,8 @@ defmodule Tay.Engine.Config do
          data_dir: base.data_dir,
          queues: queues,
          queue_limits: queue_limits,
-         execution:
-           if(@environment == :test, do: Map.get(config, :test_execution, true), else: true),
-         clock:
-           if(@environment == :test,
-             do: Map.get(config, :test_clock, Tay.Execution.Clock),
-             else: Tay.Execution.Clock
-           ),
+         execution: execution_enabled(config),
+         clock: execution_clock(config),
          recovery: Map.to_list(recovery),
          value_limits: recovery.event_limits,
          slot_bytes: div(config.client_bytes, config.client_slots),
@@ -93,14 +75,7 @@ defmodule Tay.Engine.Config do
       validated_filesystem: config.validated_filesystem,
       rotation_target_bytes: config.rotation_target_bytes,
       timeout: config.storage_timeout
-    ] ++
-      if(@environment == :test,
-        do: [
-          test_helper: Map.get(config, :test_helper, false),
-          on_transition: Map.get(config, :writer_hook)
-        ],
-        else: []
-      )
+    ] ++ test_storage_options(config)
   end
 
   def keyword?(options, allowed),
@@ -147,7 +122,7 @@ defmodule Tay.Engine.Config do
         c.rotation_target_bytes <= 1_073_741_824 and
         is_boolean(c.validated_filesystem) and c.durability in [:write, :sync] and
         (c.durability != :sync or (c.validated_filesystem and :os.type() == {:unix, :linux})) and
-        (@environment != :prod or c.durability == :sync) and
+        production_durability?(c) and
         c.max_insert_payload_bytes <= r.max_decode_payload_bytes and
         c.max_insert_payload_bytes <= r.event_limits.binary_bytes and
         c.max_insert_payload_bytes >= 1 and c.max_insert_args_bytes >= 5 and
@@ -163,5 +138,32 @@ defmodule Tay.Engine.Config do
         (is_nil(Map.get(c, :writer_hook)) or is_function(c.writer_hook, 2))
 
     if valid, do: :ok, else: {:error, :invalid_engine_options}
+  end
+
+  # Compile only the applicable branch. Test hooks remain unavailable to
+  # production configuration and no environment check runs on a live request.
+  if @environment == :test do
+    defp test_option_keys,
+      do: [:test_helper, :test_hook, :writer_hook, :test_execution, :test_clock, :test_terminate]
+
+    defp execution_enabled(config), do: Map.get(config, :test_execution, true)
+    defp execution_clock(config), do: Map.get(config, :test_clock, Tay.Execution.Clock)
+
+    defp test_storage_options(config),
+      do: [
+        test_helper: Map.get(config, :test_helper, false),
+        on_transition: Map.get(config, :writer_hook)
+      ]
+  else
+    defp test_option_keys, do: []
+    defp execution_enabled(_config), do: true
+    defp execution_clock(_config), do: Tay.Execution.Clock
+    defp test_storage_options(_config), do: []
+  end
+
+  if @environment == :prod do
+    defp production_durability?(config), do: config.durability == :sync
+  else
+    defp production_durability?(_config), do: true
   end
 end

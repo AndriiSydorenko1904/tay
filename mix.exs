@@ -54,14 +54,14 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
+  @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
     [
       app: :tay,
-      version: "0.1.0-dev",
-      description:
-        "Embedded Elixir job engine with an authoritative append-only log and fail-closed recovery",
-      source_url: "https://github.com/AndriiSydorenko1904/tay",
+      version: "0.5.0",
+      description: "Public-preview single-node durable job engine with fail-closed recovery",
+      source_url: @source_url,
       package: package(),
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
@@ -84,6 +84,7 @@ defmodule Tay.MixProject do
 
   defp package do
     [
+      name: "tay",
       # Native code is compiled for the consuming build host. Never distribute
       # this checkout's priv binaries, test providers, local configuration or data.
       files: [
@@ -94,13 +95,17 @@ defmodule Tay.MixProject do
         "mix.exs",
         ".formatter.exs",
         "README.md",
-        "docs/*.md"
+        "CHANGELOG.md",
+        "LICENSE",
+        "docs/*.md",
+        "docs/qualification"
       ],
       build_tools: ["mix"],
-      links: %{"Source" => "https://github.com/AndriiSydorenko1904/tay"},
-      # No license decision has been approved. Local private qualification is
-      # permitted; publishing requires an explicit license and release decision.
-      licenses: []
+      links: %{
+        "Source" => @source_url,
+        "Documentation" => @source_url <> "/tree/v0.5.0/docs"
+      },
+      licenses: ["Elastic-2.0"]
     ]
   end
 end
