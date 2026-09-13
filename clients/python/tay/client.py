@@ -9,9 +9,10 @@ import os
 import traceback
 import uuid
 import weakref
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 from .errors import (
     ConnectionLost,
@@ -258,8 +259,9 @@ class Tay:
         every = raw["every"]
         if cron is not None and every is not None:
             raise ValidationError("a task can declare cron or every, not both")
-        if cron is not None:
-            if type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256:
+        if cron is not None and (
+            type(cron) is not str or not cron.strip()
+            or len(cron.encode("utf-8")) > 256):
                 raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
         if every is not None:
             every = self._validate_every_mapping(every)
@@ -301,18 +303,23 @@ class Tay:
             raise ValidationError(f"every.{unit} must be finite")
         return {unit: amount}
 
-    async def __aenter__(self) -> Tay:
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, traceback_: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback_: TracebackType | None,
+    ) -> None:
         await self.close()
 
     def lifespan(self) -> Callable[[Any], contextlib.AbstractAsyncContextManager[None]]:
         """Return a FastAPI-compatible lifespan callable without importing FastAPI."""
 
         @contextlib.asynccontextmanager
-        async def _lifespan(_app: Any) -> AsyncIterator[None]:
+        async def _lifespan(_app: Any) -> AsyncGenerator[None, None]:
             async with self:
                 yield
 
