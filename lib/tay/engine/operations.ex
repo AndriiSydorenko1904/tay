@@ -78,7 +78,6 @@ defmodule Tay.Engine.Operations do
     case Supervisor.terminate_child(root, id) do
       :ok -> :ok
       {:error, :not_found} -> :ok
-      _ -> {:error, :lifecycle_shutdown_failed}
     end
   end
 
