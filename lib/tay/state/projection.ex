@@ -3,7 +3,7 @@ defmodule Tay.State.Projection do
   alias Tay.State.{JobIndex, QueueIndex, SchedulerIndex}
   @test Mix.env() == :test
   def new(registry, queues, hook \\ nil) do
-    context = %{hook: if(@test, do: hook, else: nil)}
+    context = %{hook: test_hook(hook)}
     jobs = JobIndex.new()
     hook(context, :job_index_created)
     queue = QueueIndex.new()
@@ -18,7 +18,7 @@ defmodule Tay.State.Projection do
       registry: registry,
       queues: queues,
       held: MapSet.new(),
-      hook: if(@test, do: hook, else: nil)
+      hook: test_hook(hook)
     }
   end
 
@@ -77,8 +77,15 @@ defmodule Tay.State.Projection do
       Enum.sort(schedule) == Enum.sort(:ets.tab2list(p.schedule))
   end
 
-  defp hook(p, point) do
-    if @test and is_function(p.hook, 1), do: p.hook.({:projection, point})
-    :ok
+  if @test do
+    defp test_hook(hook), do: hook
+
+    defp hook(p, point) do
+      if is_function(p.hook, 1), do: p.hook.({:projection, point})
+      :ok
+    end
+  else
+    defp test_hook(_hook), do: nil
+    defp hook(_p, _point), do: :ok
   end
 end

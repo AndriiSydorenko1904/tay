@@ -243,10 +243,14 @@ defmodule Tay.Execution.Relay do
   defp cancel_timer(%{timer: nil}), do: :ok
   defp cancel_timer(s), do: Process.cancel_timer(s.timer)
 
-  defp request_termination(s) do
-    if @test and is_function(Map.get(s.options, :test_terminate), 1),
-      do: s.options.test_terminate.(s.task),
-      else: Process.exit(s.task, :kill)
+  if @test do
+    defp request_termination(s) do
+      if is_function(Map.get(s.options, :test_terminate), 1),
+        do: s.options.test_terminate.(s.task),
+        else: Process.exit(s.task, :kill)
+    end
+  else
+    defp request_termination(s), do: Process.exit(s.task, :kill)
   end
 
   @impl true

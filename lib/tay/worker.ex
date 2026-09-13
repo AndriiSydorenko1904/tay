@@ -7,8 +7,10 @@ defmodule Tay.Worker do
   `{:error, reason}` describes an unsuccessful return. Returned values are
   runtime terms, not an approved persisted representation.
 
-  Phase 4 has no executor. `use Tay.Worker, key: "stable.key"` provides pure
-  job builders; callback execution and outcome producers belong to Phase 5.
+  `use Tay.Worker, key: "stable.key"` provides pure job builders. The configured
+  Engine maps that stable key to a trusted module and executes `perform/1` only
+  after a durable start Event. Worker return terms are not persisted; only a
+  bounded outcome diagnostic and final retry/discard decision are logged.
   """
 
   @callback perform(Tay.Job.t()) :: :ok | {:ok, term()} | {:error, term()}

@@ -17,7 +17,8 @@ defmodule Tay.Config do
   startup only. Production startup requires an explicitly configured path.
 
   Unknown and duplicate options are rejected. Queue strings are not converted
-  to atoms. Durability and storage-format options are not defined in Phase 0.
+  to atoms. Durability and storage-session options belong to the Engine and
+  explicit Storage APIs, not this foundation configuration.
   """
 
   defstruct data_dir: nil, queues: [default: 10]

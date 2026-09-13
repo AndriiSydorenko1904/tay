@@ -1,12 +1,13 @@
 defmodule Tay.Storage.Recovery.EventDecoder do
   @moduledoc """
-  Explicit semantic capability boundary for recovery, not a production encoding.
+  Explicit semantic capability boundary for recovery, not a physical Record codec.
 
   Providers are trusted, explicitly configured modules. They must stay fixed for
   an attempt, decode into inert values, enforce budgets during decoding, and
   report exact payload consumption. No worker resolution, atom creation, fallback,
-  external side effect or implicit support is permitted. Production meanings and
-  serialization require their own RFC; Phase 3 supplies only this behaviour.
+  external side effect or implicit support is permitted. `Tay.Event` supplies
+  the separately approved production Event v1 implementation; this behaviour
+  does not itself assign types, schemas or payload bytes.
   """
   @type limits :: %{
           depth: pos_integer(),

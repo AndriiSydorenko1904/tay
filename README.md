@@ -24,6 +24,150 @@ After the approved public package is published, add `{:tay, "~> 0.5.0"}` to your
 Mix dependencies. Build the native helper on the consuming target; see
 [packaging](docs/packaging.md) before building a release.
 
+## Quick start in an Elixir application
+
+This example runs a **single** Tay Engine on an operator-validated local Linux
+filesystem. `validated_filesystem: true` is an assertion by the operator, not a
+filesystem probe or a way to bypass validation. `:sync` requires truthful file
+and directory sync barriers. For a local experiment on macOS, use explicit
+development `durability: :write` instead; it has no power-loss promise and a
+production build rejects it.
+
+First configure a dedicated, absolute directory in the consuming application's
+`config/runtime.exs`, before its application starts:
+
+```elixir
+import Config
+config :tay, data_dir: System.fetch_env!("TAY_DATA_DIR")
+```
+
+Define a worker. Its key is a stable durable identity; changing the Elixir module
+name later does not change that key. `perform/1` runs after a durable start. The
+example prints to the console; real external effects must use an idempotency key
+or their own reconciliation because the callback can run again after a crash.
+
+```elixir
+defmodule MyApp.HelloWorker do
+  use Tay.Worker, key: "example.hello.v1", queue: :default,
+    max_attempts: 5, timeout_ms: 30_000
+
+  @impl true
+  def perform(%Tay.Job{id: id, args: %{"name" => name}}) do
+    IO.puts("Hello #{name} from job #{id}")
+    :ok
+  end
+end
+```
+
+Initialize a **new** store once, as a separate administrative step before
+starting the Engine. This is not an idempotent “ensure” command and never repairs
+existing history. Set `TAY_DATA_DIR` to the validated directory first:
+
+```sh
+MIX_ENV=prod mix tay.storage.init --data-dir "$TAY_DATA_DIR" --durability sync --validated-filesystem
+```
+
+Then supervise Tay in `MyApp.Application`. The finite caps below are the R5
+public-preview policy, not universal defaults or a guarantee for arbitrary
+workloads. The measured cohort used 1,105-byte encoded arguments and at most
+10,000 retained jobs; validate this complete configuration and your own worker
+memory/disk needs on the target before deploying it.
+
+```elixir
+defmodule MyApp.Application do
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      Tay.child_spec(
+        data_dir: System.fetch_env!("TAY_DATA_DIR"),
+        durability: :sync,
+        validated_filesystem: true,
+        workers: %{"example.hello.v1" => MyApp.HelloWorker},
+        queues: [default: 2, bulk: 2],
+        max_insert_args_bytes: 1_105,
+        max_insert_payload_bytes: 2_048,
+        max_jobs: 10_000,
+        max_state_bytes: 80_000_000,
+        max_state_nodes: 1_000_000,
+        max_history_bytes: 19_390_000,
+        max_segments: 5,
+        execution_wake_ms: 50
+      )
+    ]
+
+    Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+  end
+end
+```
+
+Once the Engine reports `:ready`, construct an immutable insertion intent and
+submit it. Keep that original intent until the result is known:
+
+```elixir
+%{state: :ready} = Tay.status()
+{:ok, intent} = MyApp.HelloWorker.new(%{"name" => "Ada"})
+{:ok, job} = Tay.insert(intent)
+{:ok, current} = Tay.get_job(job.id)
+IO.inspect({current.state, current.attempt})
+
+{:ok, scheduled} = MyApp.HelloWorker.new(
+  %{"name" => "Lin"},
+  scheduled_at: DateTime.add(DateTime.utc_now(), 60, :second)
+)
+{:ok, _} = Tay.insert(scheduled)
+```
+
+`Tay.insert/2` can return `%Tay.Error{kind: :unknown_outcome}` after submission:
+the job might already be durable. Do **not** create a new ID and blindly retry.
+After a ready-generation lookup, reconcile with `Tay.get_job(intent.id)` or
+resubmit the *same* ID and definition; Tay will not append it twice. `Tay.status/1`
+is a bounded, possibly stale snapshot, not a transaction. `Tay.cancel/2` and
+`Tay.retry/2` require an eligible state and an opaque revision from a fresh job
+view; they can conflict if the job has moved on. Callback return values are not
+stored as a Celery-style result backend.
+
+The R5 history ceiling is only 4,956 bytes above the measured completed cohort
+before active-outcome reservations. Tay never evicts terminal jobs and has no
+retention/compaction yet. Plan admission refusal, whole-store cold backups and
+capacity growth before that ceiling is reached; deleting individual log files
+or truncating a torn tail is not supported.
+
+## Can Tay replace Celery?
+
+Not as a drop-in replacement today. Tay is an embedded **Elixir, single-node**
+engine; Celery is a Python task system with broker-backed workers. Tay already
+covers durable single-job insertion, one-time scheduling, retries, queue
+concurrency, cancellation and restart recovery within its documented profile.
+For a small Elixir service whose workload fits that profile, those may be the
+only Celery-like capabilities it needs. A broader replacement requires separate
+design, implementation and qualification of at least:
+
+- Retention/compaction and faster large-history recovery, plus a separately
+  reviewed torn-tail repair procedure; today an incomplete tail stops writable
+  startup and there is no supported in-place repair.
+- Periodic/cron scheduling and durable workflow primitives such as chains,
+  groups and fan-in/chords. Tay only has one-time job scheduling today; the
+  Phase 11/12 retention and orchestration work remains deferred.
+- A deliberately specified result/progress API if applications need to await or
+  retrieve worker return values. Tay persists bounded outcomes and diagnostics,
+  not arbitrary callback results.
+- A distributed ownership, dispatch and failure protocol if workers must run on
+  multiple hosts. A shared directory or copied STORE_ID is **not** a substitute.
+- Operational scale work: rate limits, autoscaling, metrics/tracing, inspection,
+  security isolation, migration tooling and target-specific throughput/restore
+  qualification. Python Celery tasks also need an explicit interoperability or
+  migration path; Tay cannot execute them unchanged.
+
+These are gaps, not promises for v0.5.0. They reflect capabilities documented in
+Celery's [workflow](https://docs.celeryq.dev/en/stable/userguide/canvas.html),
+[periodic task](https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html),
+[worker](https://docs.celeryq.dev/en/stable/userguide/workers.html) and
+[result-backend](https://docs.celeryq.dev/en/stable/userguide/configuration.html)
+guides. Any future Tay feature must preserve the frozen storage/Event contracts
+or undergo its own explicit compatibility review.
+
 ## Development
 
 The initial baseline is Elixir 1.20 and Erlang/OTP 29. Verification uses Elixir
@@ -33,8 +177,12 @@ and temporary-name randomness. A C11 compiler is required at build time for the
 native filesystem Port; releases must include the built helper in `priv/`.
 StreamData is a test-only dependency, locked in `mix.lock`, for codec properties.
 ExUnit and the built-in formatter are the other tooling. Standalone Dialyzer
-results and accepted diagnostics are recorded in the
-[pre-release hardening report](docs/pre-release-hardening-report.md).
+currently reports two accepted diagnostics in both test and production builds:
+the defensive `Supervisor.terminate_child/2` fallback and the bounded decoder
+`throw` path. Test-only `false`/`true` patterns from compile-time environment
+branches have been removed. No warning is suppressed. The earlier
+[pre-release hardening report](docs/pre-release-hardening-report.md) records the
+pre-cleanup baseline.
 
 ```sh
 mix deps.get

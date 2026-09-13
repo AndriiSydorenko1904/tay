@@ -4,8 +4,9 @@ defmodule Tay.Application do
 
   Configuration is validated before the empty `Tay.Supervisor` is started.
   No storage directories are created and no workers are dispatched.
-  Production startup requires an explicitly configured data directory. Physical
-  storage sessions are started explicitly; engine recovery wiring is deferred.
+  Production startup requires an explicitly configured data directory. Engine
+  recovery, storage ownership and worker execution start only when a host
+  application explicitly supervises `Tay.child_spec/1`.
   """
 
   use Application

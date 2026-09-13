@@ -11,7 +11,6 @@ defmodule Tay.Engine do
   alias Tay.State.{Transition, Projection, JobIndex, QueueIndex, SchedulerIndex}
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Storage.{Writer, Segment}
-  @test Mix.env() == :test
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, timeout: :infinity)
 
@@ -565,7 +564,7 @@ defmodule Tay.Engine do
         timeout_ms: job.definition["timeout_ms"],
         clock: s.config.clock,
         eligible_at: job.eligible_at,
-        test_terminate: if(@test, do: Map.get(s.config, :test_terminate), else: nil)
+        test_terminate: test_terminate_option(s.config)
       }
 
       case Tay.Execution.Supervisor.prepare(s.runtime, options) do
@@ -982,9 +981,16 @@ defmodule Tay.Engine do
 
   defp startup_error(_), do: Error.new(:unavailable, :recovery_failed)
 
-  defp hook(c, point) do
-    if @test and is_function(Map.get(c, :test_hook), 1), do: c.test_hook.(point)
-    :ok
+  if Mix.env() == :test do
+    defp test_terminate_option(config), do: Map.get(config, :test_terminate)
+
+    defp hook(config, point) do
+      if is_function(Map.get(config, :test_hook), 1), do: config.test_hook.(point)
+      :ok
+    end
+  else
+    defp test_terminate_option(_config), do: nil
+    defp hook(_config, _point), do: :ok
   end
 
   def terminate(_, s) do

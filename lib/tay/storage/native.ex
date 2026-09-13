@@ -40,7 +40,7 @@ defmodule Tay.Storage.Native do
         :timeout,
         :max_directory_entries,
         :deadline
-      ] ++ if(@test, do: [:test_before_acquire], else: [])
+      ] ++ test_existing_option_keys()
 
     if valid_open_options?(path, options) and Path.expand(path) != "/" and
          length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
@@ -91,13 +91,7 @@ defmodule Tay.Storage.Native do
   end
 
   defp do_open(path, options, operation \\ :acquire) do
-    test = @test and Keyword.get(options, :test_helper, false)
-
-    executable =
-      Application.app_dir(
-        :tay,
-        "priv/" <> if(test, do: "tay_storage_helper_test", else: "tay_storage_helper")
-      )
+    executable = Application.app_dir(:tay, "priv/" <> helper_name(options))
 
     port =
       Port.open({:spawn_executable, String.to_charlist(executable)}, [
@@ -151,6 +145,14 @@ defmodule Tay.Storage.Native do
   end
 
   if @test do
+    defp test_existing_option_keys, do: [:test_before_acquire]
+
+    defp helper_name(options) do
+      if Keyword.get(options, :test_helper, false),
+        do: "tay_storage_helper_test",
+        else: "tay_storage_helper"
+    end
+
     defp before_acquire(native, options) do
       case Keyword.get(options, :test_before_acquire) do
         nil -> :ok
@@ -161,6 +163,8 @@ defmodule Tay.Storage.Native do
       _, _ -> {:error, %{kind: :native_argument, reason: :failed_acquire_hook}}
     end
   else
+    defp test_existing_option_keys, do: []
+    defp helper_name(_options), do: "tay_storage_helper"
     defp before_acquire(_, _), do: :ok
   end
 

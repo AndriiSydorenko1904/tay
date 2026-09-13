@@ -65,6 +65,7 @@ defmodule Tay.Event.Value do
   end
 
   defp invalid(reason), do: throw({:value_error, reason})
+  @spec budget(term()) :: no_return()
   defp budget(key), do: invalid({:resource_limit, key})
 
   defp node(state, depth) do

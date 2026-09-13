@@ -524,7 +524,7 @@ defmodule Tay.Storage.Writer do
         :bootstrap,
         :lifecycle_observer,
         :timeout
-      ] ++ if(@test, do: [:test_helper, :on_transition], else: [])
+      ] ++ test_option_keys()
 
     with true <- Keyword.keyword?(options) || {:error, :invalid_writer_options},
          true <-
@@ -888,8 +888,12 @@ defmodule Tay.Storage.Writer do
   end
 
   if @test do
+    defp test_option_keys, do: [:test_helper, :on_transition]
+
     defp hook(%{options: %{on_transition: fun}, native: native}, tag) when is_function(fun, 2),
       do: fun.(tag, native)
+  else
+    defp test_option_keys, do: []
   end
 
   defp hook(_, _), do: :ok

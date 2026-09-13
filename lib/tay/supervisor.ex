@@ -1,10 +1,10 @@
 defmodule Tay.Supervisor do
   @moduledoc """
-  The empty root supervisor for Tay's Phase 0 application.
+  The deliberately empty root supervisor for Tay's application.
 
   `Tay.Application` validates configuration before starting this supervisor.
-  No storage, state, scheduling, or execution children exist yet. Their future
-  startup and restart dependencies are outside the Phase 0 scope.
+  It never owns storage, state, scheduling or execution children. A consuming
+  application explicitly supervises each Engine through `Tay.child_spec/1`.
   """
 
   use Supervisor
