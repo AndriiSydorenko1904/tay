@@ -91,7 +91,6 @@ defmodule Tay.Executor.Server do
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
-      _ -> {:stop, :executor_listener_failed}
     end
   end
 

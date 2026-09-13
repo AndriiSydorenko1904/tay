@@ -175,8 +175,6 @@ defmodule Tay.Engine.Config do
       not String.contains?(path, <<0>>) and Path.type(path) == :absolute
   end
 
-  defp executor_socket?(_), do: false
-
   # Storage owns and validates every entry below data_dir. Keep a runtime Unix
   # socket beside it, never inside it, so recovery cannot mistake it for foreign
   # storage state or require a weakened directory scan.
