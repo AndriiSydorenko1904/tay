@@ -118,7 +118,7 @@ defmodule Tay.Job do
   defp schedule(n), do: if(V1.time?(n), do: {:ok, n}, else: {:error, :invalid_schedule})
 
   @doc false
-  def view(job, registry, queues, store_id, generation) do
+  def view(job, registry, queues, store_id, generation, epoch_id \\ nil) do
     d = job.definition
 
     %__MODULE__{
@@ -137,7 +137,11 @@ defmodule Tay.Job do
       attempted_at: present_time(job.attempted_at),
       completed_at: present_time(job.completed_at),
       errors: if(job.diagnostic, do: [job.diagnostic], else: []),
-      revision: {:tay_revision, store_id, job.id, generation, job.revision}
+      revision:
+        if(epoch_id,
+          do: {:tay_revision_v2, store_id, epoch_id, job.id, generation, job.revision},
+          else: {:tay_revision, store_id, job.id, generation, job.revision}
+        )
     }
   end
 

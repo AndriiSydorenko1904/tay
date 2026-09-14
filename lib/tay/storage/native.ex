@@ -34,6 +34,15 @@ defmodule Tay.Storage.Native do
     cold_check: 26,
     cold_source: 27,
     cold_list: 28,
+    v2_select: 29,
+    v2_begin: 30,
+    v2_publish_epoch: 31,
+    v2_adopt_v1: 32,
+    v2_publish_current: 33,
+    v2_space: 34,
+    v2_restore_v1: 35,
+    v2_clear_adoption: 36,
+    v2_reclaim: 37,
     fault: 240
   }
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, timeout: 10_000]
@@ -333,6 +342,84 @@ defmodule Tay.Storage.Native do
 
   def mkdir_segments(native), do: empty(native, :mkdir)
 
+  @doc "Pins the CURRENT-named epoch and its mutable segments directory."
+  def v2_select(native, epoch_id) when is_binary(epoch_id) and byte_size(epoch_id) == 16,
+    do: empty(native, :v2_select, string("e-" <> Base.encode16(epoch_id, case: :lower)))
+
+  def v2_select(_, _), do: {:error, %{kind: :native_argument, reason: :epoch_id}}
+
+  @doc "Creates a private candidate epoch and its segments directory under the held lock."
+  def v2_begin(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,
+    do:
+      empty(
+        native,
+        :v2_begin,
+        string(".tay-candidate-" <> Base.encode16(nonce, case: :lower) <> ".tmp")
+      )
+
+  def v2_begin(_, _), do: {:error, %{kind: :native_argument, reason: :candidate_nonce}}
+
+  def v2_publish_epoch(native, epoch_id)
+      when is_binary(epoch_id) and byte_size(epoch_id) == 16,
+      do: empty(native, :v2_publish_epoch, string("e-" <> Base.encode16(epoch_id, case: :lower)))
+
+  def v2_publish_epoch(_, _), do: {:error, %{kind: :native_argument, reason: :epoch_id}}
+
+  def v2_adopt_v1(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,
+    do: empty(native, :v2_adopt_v1, string("legacy-" <> Base.encode16(nonce, case: :lower)))
+
+  def v2_adopt_v1(_, _), do: {:error, %{kind: :native_argument, reason: :adoption_nonce}}
+
+  @doc "Restores the exact intent-named V1 source when CURRENT is absent."
+  def v2_restore_v1(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,
+    do: empty(native, :v2_restore_v1, string("legacy-" <> Base.encode16(nonce, case: :lower)))
+
+  def v2_restore_v1(_, _), do: {:error, %{kind: :native_argument, reason: :adoption_nonce}}
+
+  def v2_clear_adoption(native), do: empty(native, :v2_clear_adoption)
+
+  def v2_publish_current(native, stage, source, previous) do
+    if is_binary(stage) and Regex.match?(~r/\A\.tay-current-[0-9a-f]{32}\.tmp\z/, stage) and
+         valid_identity?(source) and (is_nil(previous) or valid_identity?(previous)) do
+      old = previous || %{device: 0, inode: 0}
+
+      empty(
+        native,
+        :v2_publish_current,
+        <<string(stage)::binary, source.device::64, source.inode::64, old.device::64,
+          old.inode::64>>
+      )
+    else
+      {:error, %{kind: :native_argument, reason: :current_publication}}
+    end
+  end
+
+  def v2_space(native) do
+    case request(native, :v2_space, <<>>) do
+      {:ok, <<free::64>>, 0} -> {:ok, free}
+      {:error, _} = error -> error
+      _ -> uncertain(native, :invalid_v2_space_reply)
+    end
+  end
+
+  @doc "Unlinks only a verified non-CURRENT predecessor via pinned descriptors."
+  def v2_reclaim(native, target, current, intent \\ nil)
+
+  def v2_reclaim(native, target, current, intent)
+      when is_binary(target) and is_binary(current) and byte_size(current) == 76 and
+             (is_nil(intent) or (is_binary(intent) and byte_size(intent) == 28)) do
+    body = <<string(target)::binary, current::binary, if(intent, do: 1, else: 0)>>
+    body = if intent, do: <<body::binary, intent::binary>>, else: body
+
+    case request(native, :v2_reclaim, body) do
+      {:ok, <<bytes::64>>, 0} -> {:ok, bytes}
+      {:error, _} = error -> error
+      _ -> uncertain(native, :invalid_reclaim_reply)
+    end
+  end
+
+  def v2_reclaim(_, _, _, _), do: {:error, %{kind: :native_argument, reason: :reclaim}}
+
   def open_read(native, scope, name),
     do: identity_request(native, :open_read, <<scope(scope), string(name)::binary>>)
 
@@ -420,7 +507,20 @@ defmodule Tay.Storage.Native do
             promotion_ancestor: 241,
             promotion_lock: 242,
             promotion_root: 243,
-            promotion_segments: 244
+            promotion_segments: 244,
+            v2_epochs_root_sync: 245,
+            v2_candidate_parent_sync: 246,
+            v2_candidate_directory_sync: 247,
+            v2_epoch_segments_sync: 248,
+            v2_epoch_directory_sync: 249,
+            v2_epoch_parent_sync: 250,
+            v2_adoption_root_sync: 251,
+            v2_adoption_epochs_sync: 252,
+            v2_current_root_sync: 253,
+            v2_restore_epochs_sync: 254,
+            v2_restore_root_sync: 255,
+            v2_rollback_marker_sync: 256,
+            v2_rollback_intent_sync: 257
           },
           operation
         ) || Map.fetch!(@ops, operation)
@@ -528,6 +628,10 @@ defmodule Tay.Storage.Native do
   defp scope(:segments), do: 1
   defp scope(:verify), do: 2
   defp scope(:catalog), do: 2
+  defp scope(:epochs), do: 3
+  defp scope(:candidate), do: 4
+  defp scope(:candidate_segments), do: 5
+  defp scope(:epoch), do: 6
   defp string(bytes), do: <<byte_size(bytes)::16, bytes::binary>>
 
   defp cold_verify(nil), do: <<0>>

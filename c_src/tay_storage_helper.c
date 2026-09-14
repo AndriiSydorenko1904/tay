@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/statvfs.h>
 #ifdef __linux__
 #include <sys/statfs.h>
 #include <sys/syscall.h>
@@ -31,8 +32,14 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   SYNC_READ=16, SHUTDOWN=17, ACQUIRE_EXISTING=18, ENABLE_MUTATIONS=19,
   COLD_TARGET_OPEN=20, COLD_STAGE_CREATE=21, COLD_OPEN_WRITE=22,
   COLD_SYNC_STAGING=23, COLD_PUBLISH=24, COLD_SYNC_CATALOG=25,
-  COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28, FAULT=240 };
+  COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
+  V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31, V2_ADOPT_V1=32,
+  V2_PUBLISH_CURRENT=33, V2_SPACE=34, V2_RESTORE_V1=35,
+  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, FAULT=240 };
 static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
+static int epochs_fd=-1, epoch_fd=-1, candidate_fd=-1, candidate_segments_fd=-1;
+static int segments_parent_fd=-1;
+static char segments_name[256]="segments", epoch_name[256], candidate_name[256];
 static int write_scope, write_kind, read_scope, poisoned, acquired;
 static char root_path[PATH_MAX], write_name[256], read_name[256];
 static struct stat read_identity, write_identity;
@@ -106,6 +113,10 @@ static int basename_ok(const char *s) {
 static int scope_fd(int scope) {
   if (scope==0) return root_fd;
   if (scope==1) return segments_fd;
+  if (scope==3) return epochs_fd;
+  if (scope==4) return candidate_fd;
+  if (scope==5) return candidate_segments_fd;
+  if (scope==6) return epoch_fd;
   return cold_target && scope==2 ? cold_verify_parent_fd : -1;
 }
 static int same(const struct stat *a,const struct stat *b) {
@@ -137,14 +148,23 @@ static int checked_regular(int fd, int directory, const char *name, struct stat 
   if (s->st_nlink!=1 || path.st_nlink!=1) return EMLINK;
   return same(s,&path)?0:ESTALE;
 }
-static int no_replace(int fd,const char *src,const char *dst) {
+static int checked_directory(int fd, int directory, const char *name) {
+  struct stat pinned,path;
+  if (fstat(fd,&pinned)<0 || fstatat(directory,name,&path,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISDIR(pinned.st_mode) || !S_ISDIR(path.st_mode)) return EINVAL;
+  return same(&pinned,&path)?0:ESTALE;
+}
+static int no_replace_between(int from,const char *src,int to,const char *dst) {
 #ifdef __linux__
-  return (int)syscall(SYS_renameat2,fd,src,fd,dst,RENAME_NOREPLACE);
+  return (int)syscall(SYS_renameat2,from,src,to,dst,RENAME_NOREPLACE);
 #elif defined(__APPLE__)
-  return renameatx_np(fd,src,fd,dst,RENAME_EXCL);
+  return renameatx_np(from,src,to,dst,RENAME_EXCL);
 #else
-  (void)fd; (void)src; (void)dst; errno=ENOTSUP; return -1;
+  (void)from; (void)src; (void)to; (void)dst; errno=ENOTSUP; return -1;
 #endif
+}
+static int no_replace(int fd,const char *src,const char *dst) {
+  return no_replace_between(fd,src,fd,dst);
 }
 static int rename_capability(void) {
 #ifdef __APPLE__
@@ -312,9 +332,21 @@ static int check_paths(void) {
   if (!same(&root,&path)) return ESTALE;
   e=checked_regular(lock_fd,root_fd,".tay-owner.lock",&lock);
   if (e) return e;
+  if (epochs_fd>=0) {
+    e=checked_directory(epochs_fd,root_fd,"epochs"); if (e) return e;
+  }
+  if (epoch_fd>=0) {
+    e=checked_directory(epoch_fd,epochs_fd,epoch_name); if (e) return e;
+  }
+  if (candidate_fd>=0) {
+    e=checked_directory(candidate_fd,epochs_fd,candidate_name); if (e) return e;
+  }
+  if (candidate_segments_fd>=0) {
+    e=checked_directory(candidate_segments_fd,candidate_fd,"segments"); if (e) return e;
+  }
   if (segments_fd>=0) {
-    if (fstat(segments_fd,&root)<0 || fstatat(root_fd,"segments",&path,AT_SYMLINK_NOFOLLOW)<0) return errno;
-    if (!S_ISDIR(path.st_mode) || !same(&root,&path)) return ESTALE;
+    e=checked_directory(segments_fd,segments_parent_fd,segments_name);
+    if (e) return e;
   }
   if (write_fd>=0) {
     struct stat now;
@@ -330,6 +362,7 @@ static int open_segments(void) {
   if (segments_fd<0) return errno;
   int e=filesystem(segments_fd);
   if (e) { close(segments_fd); segments_fd=-1; }
+  else { segments_parent_fd=root_fd; strcpy(segments_name,"segments"); }
   return e;
 }
 static int canonical(const char *name) {
@@ -347,12 +380,27 @@ static int nonce(const char *s) {
   for (int i=0;i<32;i++) if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
   return !strcmp(s+32,".tmp");
 }
+static int hex32(const char *s) {
+  if (strlen(s)!=32) return 0;
+  for (int i=0;i<32;i++) if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
+  return 1;
+}
+static int epoch_name_ok(const char *s) { return !strncmp(s,"e-",2) && hex32(s+2); }
+static int legacy_name_ok(const char *s) { return !strncmp(s,"legacy-",7) && hex32(s+7); }
+static int candidate_name_ok(const char *s) {
+  return !strncmp(s,".tay-candidate-",15) && nonce(s+15);
+}
 static int stage_kind(int scope,const char *name) {
   if (scope==0 && strlen(name)==47 && !strncmp(name,".tay-store-",11) && nonce(name+11)) return 3;
+  if (scope==0 && !strncmp(name,".tay-v2-marker-",15) && nonce(name+15)) return 6;
+  if (scope==0 && !strncmp(name,".tay-current-",13) && nonce(name+13)) return 5;
+  if (scope==0 && !strncmp(name,".tay-adoption-",14) && nonce(name+14)) return 7;
   if (scope==1 && strlen(name)==66 && !strncmp(name,".tay-new-",9) && name[29]=='-' && nonce(name+30)) {
     char canon[25]; memcpy(canon,name+9,20); memcpy(canon+20,".tay",5);
     if (canonical(canon)) return 2;
   }
+  if (scope==4 && !strcmp(name,"MANIFEST")) return 4;
+  if (scope==5 && canonical(name)) return 1;
   return 0;
 }
 static int acquire(int existing) {
@@ -420,6 +468,313 @@ static int enable_mutations(void) {
   e=check_paths(); if (e) return e;
   inspection_only=0;
   return 0;
+}
+
+static int open_epochs(int create) {
+  if (epochs_fd>=0) return checked_directory(epochs_fd,root_fd,"epochs");
+  int created=0;
+  epochs_fd=openat(root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (epochs_fd<0 && errno==ENOENT && create) {
+    if (mkdirat(root_fd,"epochs",0700)<0) return errno;
+    created=1;
+    epochs_fd=openat(root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  }
+  if (epochs_fd<0) return errno;
+  int e=checked_directory(epochs_fd,root_fd,"epochs"); if (e) return e;
+  e=filesystem(epochs_fd); if (e) return e;
+  if (created && promotion_sync(root_fd,245)<0) return errno;
+  return 0;
+}
+
+static int v2_select(void) {
+  char name[256];
+  int e=string(name,sizeof(name)); if (e || !epoch_name_ok(name) || read_fd>=0 || write_fd>=0) return e?e:EINVAL;
+  e=open_epochs(0); if (e) return e;
+  int next_epoch=openat(epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (next_epoch<0) return errno;
+  e=checked_directory(next_epoch,epochs_fd,name);
+  if (!e) e=filesystem(next_epoch);
+  int next_segments=-1;
+  if (!e) {
+    next_segments=openat(next_epoch,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (next_segments<0) e=errno;
+  }
+  if (!e) e=checked_directory(next_segments,next_epoch,"segments");
+  if (!e) e=filesystem(next_segments);
+  if (e) { if (next_segments>=0) close(next_segments); close(next_epoch); return e; }
+  if (segments_fd>=0 && close(segments_fd)<0) { close(next_segments); close(next_epoch); return errno; }
+  if (epoch_fd>=0 && close(epoch_fd)<0) { close(next_segments); close(next_epoch); return errno; }
+  segments_fd=next_segments; epoch_fd=next_epoch; segments_parent_fd=epoch_fd;
+  strcpy(segments_name,"segments"); strcpy(epoch_name,name);
+  if (candidate_segments_fd>=0) { if (close(candidate_segments_fd)<0) return errno; candidate_segments_fd=-1; }
+  if (candidate_fd>=0) { if (close(candidate_fd)<0) return errno; candidate_fd=-1; }
+  return check_paths();
+}
+
+static int v2_begin(void) {
+  char name[256];
+  int e=string(name,sizeof(name));
+  if (e || !candidate_name_ok(name) || candidate_fd>=0 || read_fd>=0 || write_fd>=0) return e?e:EBUSY;
+  e=open_epochs(1); if (e) return e;
+  if (mkdirat(epochs_fd,name,0700)<0) return errno;
+  candidate_fd=openat(epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (candidate_fd<0) return errno;
+  strcpy(candidate_name,name);
+  e=checked_directory(candidate_fd,epochs_fd,candidate_name); if (e) return e;
+  e=filesystem(candidate_fd); if (e) return e;
+  if (promotion_sync(epochs_fd,246)<0) return errno;
+  if (mkdirat(candidate_fd,"segments",0700)<0) return errno;
+  candidate_segments_fd=openat(candidate_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (candidate_segments_fd<0) return errno;
+  e=checked_directory(candidate_segments_fd,candidate_fd,"segments"); if (e) return e;
+  e=filesystem(candidate_segments_fd); if (e) return e;
+  if (promotion_sync(candidate_fd,247)<0) return errno;
+  return check_paths();
+}
+
+static int v2_publish_epoch(void) {
+  char name[256];
+  int e=string(name,sizeof(name));
+  if (e || !epoch_name_ok(name) || candidate_fd<0 || write_fd>=0 || read_fd>=0) return e?e:EINVAL;
+  e=checked_directory(candidate_fd,epochs_fd,candidate_name); if (e) return e;
+  if (promotion_sync(candidate_segments_fd,248)<0 ||
+      promotion_sync(candidate_fd,249)<0) return errno;
+  if (no_replace(epochs_fd,candidate_name,name)<0) return errno;
+  strcpy(candidate_name,name);
+  if (promotion_sync(epochs_fd,250)<0) return errno;
+  return checked_directory(candidate_fd,epochs_fd,candidate_name);
+}
+
+static int v2_adopt_v1(void) {
+  char name[256];
+  int e=string(name,sizeof(name));
+  if (e || !legacy_name_ok(name) || segments_fd<0 || segments_parent_fd!=root_fd ||
+      candidate_fd<0 || read_fd>=0 || write_fd>=0) return e?e:EINVAL;
+  e=checked_directory(segments_fd,root_fd,"segments"); if (e) return e;
+  struct stat intent,current;
+  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  if (fstatat(root_fd,"CURRENT",&current,AT_SYMLINK_NOFOLLOW)==0 || errno!=ENOENT) return EEXIST;
+  if (no_replace_between(root_fd,"segments",epochs_fd,name)<0) return errno;
+  segments_parent_fd=epochs_fd; strcpy(segments_name,name);
+  if (promotion_sync(root_fd,251)<0 || promotion_sync(epochs_fd,252)<0) return errno;
+  return check_paths();
+}
+
+static int v2_restore_v1(void) {
+  char name[256];
+  int e=string(name,sizeof(name));
+  if (e || !legacy_name_ok(name) || read_fd>=0 || write_fd>=0) return e?e:EBUSY;
+  struct stat current,intent,root_segments,legacy;
+  if (fstatat(root_fd,"CURRENT",&current,AT_SYMLINK_NOFOLLOW)==0 || errno!=ENOENT) return EEXIST;
+  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  e=open_epochs(0); if (e) return e;
+  int root_exists=fstatat(root_fd,"segments",&root_segments,AT_SYMLINK_NOFOLLOW)==0;
+  if (!root_exists && errno!=ENOENT) return errno;
+  int legacy_exists=fstatat(epochs_fd,name,&legacy,AT_SYMLINK_NOFOLLOW)==0;
+  if (!legacy_exists && errno!=ENOENT) return errno;
+  if (root_exists && legacy_exists) return EEXIST;
+  if (!root_exists && !legacy_exists) return ENOENT;
+  if (!root_exists) {
+    if (!S_ISDIR(legacy.st_mode)) return EINVAL;
+    if (no_replace_between(epochs_fd,name,root_fd,"segments")<0) return errno;
+    if (segments_fd>=0) {
+      segments_parent_fd=root_fd; strcpy(segments_name,"segments");
+    }
+    if (promotion_sync(epochs_fd,254)<0 || promotion_sync(root_fd,255)<0) return errno;
+  }
+  if (segments_fd<0) { e=open_segments(); if (e) return e; }
+  return check_paths();
+}
+
+static int v2_clear_adoption(void) {
+  struct stat current,intent,segments,marker;
+  if (read_fd>=0 || write_fd>=0) return EBUSY;
+  if (fstatat(root_fd,"CURRENT",&current,AT_SYMLINK_NOFOLLOW)==0 || errno!=ENOENT) return EEXIST;
+  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  if (fstatat(root_fd,"segments",&segments,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISDIR(segments.st_mode)) return EINVAL;
+  if (fstatat(root_fd,"STORE-V2",&marker,AT_SYMLINK_NOFOLLOW)==0) {
+    if (!S_ISREG(marker.st_mode) || marker.st_nlink!=1 || marker.st_size!=28) return EINVAL;
+    if (unlinkat(root_fd,"STORE-V2",0)<0 || promotion_sync(root_fd,256)<0) return errno;
+  } else if (errno!=ENOENT) return errno;
+  if (unlinkat(root_fd,"ADOPTION",0)<0 || promotion_sync(root_fd,257)<0) return errno;
+  return check_paths();
+}
+
+static int v2_publish_current(void) {
+  char stage[256];
+  int e=string(stage,sizeof(stage)); if (e || stage_kind(0,stage)!=5 || !need(32) || write_fd>=0) return e?e:EINVAL;
+  uint64_t stage_dev=number(8),stage_ino=number(8),old_dev=number(8),old_ino=number(8);
+  struct stat source,old,after;
+  if (fstatat(root_fd,stage,&source,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (!S_ISREG(source.st_mode) || source.st_nlink!=1 || source.st_size!=76 ||
+      (uint64_t)source.st_dev!=stage_dev || (uint64_t)source.st_ino!=stage_ino) return ESTALE;
+  if (!old_dev && !old_ino) {
+    if (fstatat(root_fd,"CURRENT",&old,AT_SYMLINK_NOFOLLOW)==0 || errno!=ENOENT) return EEXIST;
+    if (no_replace(root_fd,stage,"CURRENT")<0) return errno;
+  } else {
+    if (fstatat(root_fd,"CURRENT",&old,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISREG(old.st_mode) || old.st_nlink!=1 || (uint64_t)old.st_dev!=old_dev ||
+        (uint64_t)old.st_ino!=old_ino) return ESTALE;
+    if (renameat(root_fd,stage,root_fd,"CURRENT")<0) return errno;
+  }
+  if (promotion_sync(root_fd,253)<0) return errno;
+  if (fstatat(root_fd,"CURRENT",&after,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  return S_ISREG(after.st_mode) && after.st_nlink==1 && same(&source,&after) ? 0 : ESTALE;
+}
+
+static int v2_space(void) {
+  struct statvfs info;
+  if (fstatvfs(root_fd,&info)<0) return errno;
+  if (info.f_frsize && info.f_bavail>UINT64_MAX/info.f_frsize) return EOVERFLOW;
+  put((uint64_t)info.f_bavail*(uint64_t)info.f_frsize,8);
+  return 0;
+}
+
+static int exact_metadata(int directory,const char *name,const unsigned char *expected,size_t n) {
+  int fd=openat(directory,name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+  if (fd<0) return errno;
+  struct stat s;
+  int e=checked_regular(fd,directory,name,&s);
+  if (!e && (uint64_t)s.st_size!=n) e=ESTALE;
+  unsigned char bytes[76];
+  if (!e) {
+    ssize_t got=pread(fd,bytes,n,0);
+    if (got<0) e=errno;
+    else if ((size_t)got!=n || memcmp(bytes,expected,n)) e=ESTALE;
+  }
+  if (close(fd)<0 && !e) e=errno;
+  return e;
+}
+
+static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
+  int fd=legacy?dup(directory):openat(directory,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (fd<0) return errno==ENOENT?0:errno;
+  int e=legacy?0:checked_directory(fd,directory,"segments");
+  if (e) { close(fd); return e; }
+  int copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (copy<0) { e=errno; close(fd); return e; }
+  DIR *dir=fdopendir(copy);
+  if (!dir) { e=errno; close(copy); close(fd); return e; }
+  struct dirent *ent; uint32_t count=0;
+  errno=0;
+  while ((ent=readdir(dir))) {
+    if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
+    struct stat s;
+    if (++count>directory_limit) { e=EFBIG; break; }
+    if (!canonical(ent->d_name) || fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0 ||
+        !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
+    errno=0;
+  }
+  if (!e && errno) e=errno;
+  if (closedir(dir)<0 && !e) e=errno;
+  if (e) { close(fd); return e; }
+  copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (copy<0) { e=errno; close(fd); return e; }
+  dir=fdopendir(copy);
+  if (!dir) { e=errno; close(copy); close(fd); return e; }
+  errno=0;
+  while ((ent=readdir(dir))) {
+    if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
+    struct stat s;
+    if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
+    if (unlinkat(fd,ent->d_name,0)<0 || fsync(fd)<0) { e=errno; break; }
+    *bytes+=(uint64_t)s.st_size;
+    errno=0;
+  }
+  if (!e && errno) e=errno;
+  if (closedir(dir)<0 && !e) e=errno;
+  if (close(fd)<0 && !e) e=errno;
+  if (e) return e;
+  if (!legacy && (unlinkat(directory,"segments",AT_REMOVEDIR)<0 || fsync(directory)<0)) return errno;
+  return 0;
+}
+
+static int v2_reclaim(void) {
+  char target[256];
+  int e=string(target,sizeof(target));
+  if (e || !need(77)) return e?e:EPROTO;
+  int legacy=legacy_name_ok(target);
+  if (!legacy && !epoch_name_ok(target)) return EINVAL;
+  const unsigned char *expected_current=input+pos; pos+=76;
+  int has_intent=(int)number(1);
+  const unsigned char *expected_intent=NULL;
+  if (has_intent) { if (!need(28)) return EPROTO; expected_intent=input+pos; pos+=28; }
+  if (legacy!=has_intent || pos!=input_n) return EINVAL;
+  e=exact_metadata(root_fd,"CURRENT",expected_current,76); if (e) return e;
+  if (memcmp(expected_current,"TAYC\001\0\0\0",8)) return EINVAL;
+  char current_name[35]="e-";
+  static const char hex[]="0123456789abcdef";
+  for (int i=0;i<16;i++) {
+    current_name[2+i*2]=hex[expected_current[24+i]>>4];
+    current_name[3+i*2]=hex[expected_current[24+i]&15];
+  }
+  current_name[34]=0;
+  if (!strcmp(target,current_name)) return EBUSY;
+  if (legacy) {
+    e=exact_metadata(root_fd,"ADOPTION",expected_intent,28); if (e) return e;
+    if (memcmp(expected_intent,"TAYA\001\0\0\0",8)) return EINVAL;
+    for (int i=0;i<16;i++)
+      if (target[7+i*2]!=hex[expected_intent[8+i]>>4] ||
+          target[8+i*2]!=hex[expected_intent[8+i]&15]) return ESTALE;
+  }
+  e=open_epochs(0); if (e) return e;
+  int target_fd=openat(epochs_fd,target,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (target_fd<0 && errno!=ENOENT) return errno;
+  uint64_t bytes=0;
+  if (target_fd>=0) {
+    e=checked_directory(target_fd,epochs_fd,target); if (e) { close(target_fd); return e; }
+    int copy=openat(target_fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (copy<0) { e=errno; close(target_fd); return e; }
+    DIR *dir=fdopendir(copy);
+    if (!dir) { e=errno; close(copy); close(target_fd); return e; }
+    struct dirent *ent; int manifest=0,segments_present=0; uint32_t count=0;
+    errno=0;
+    while ((ent=readdir(dir))) {
+      if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
+      if (++count>directory_limit) { e=EFBIG; break; }
+      if (legacy) {
+        struct stat s;
+        if (!canonical(ent->d_name) ||
+            fstatat(target_fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0 ||
+            !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
+      } else if (!strcmp(ent->d_name,"MANIFEST")) {
+        struct stat s;
+        if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0 ||
+            !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
+        manifest=1;
+      } else if (!strcmp(ent->d_name,"segments")) {
+        struct stat s;
+        if (fstatat(target_fd,"segments",&s,AT_SYMLINK_NOFOLLOW)<0 || !S_ISDIR(s.st_mode)) { e=EINVAL; break; }
+        segments_present=1;
+      } else { e=EINVAL; break; }
+      errno=0;
+    }
+    if (!e && errno) e=errno;
+    if (closedir(dir)<0 && !e) e=errno;
+    /* A previous attempt may already have unlinked the manifest after all
+     * segments, then lost the directory-fsync/rmdir reply. Resume that exact
+     * empty predecessor, but never accept segments without its manifest. */
+    if (!legacy && !manifest && segments_present && !e) e=EINVAL;
+    if (e) { close(target_fd); return e; }
+    e=reclaim_segments(target_fd,legacy,&bytes);
+    if (!e && !legacy && manifest) {
+      struct stat s;
+      if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0) e=errno;
+      else if (unlinkat(target_fd,"MANIFEST",0)<0 || fsync(target_fd)<0) e=errno;
+      else bytes+=(uint64_t)s.st_size;
+    }
+    if (close(target_fd)<0 && !e) e=errno;
+    if (e) return e;
+    if (unlinkat(epochs_fd,target,AT_REMOVEDIR)<0 || fsync(epochs_fd)<0) return errno;
+  } else if (fsync(epochs_fd)<0) return errno;
+  if (legacy) {
+    if (unlinkat(root_fd,"ADOPTION",0)<0 || fsync(root_fd)<0) return errno;
+  }
+  put(bytes,8); return 0;
 }
 
 /* The cold target opens only caller-supplied, already-existing parent
@@ -637,7 +992,8 @@ static int write_at(void) {
   if (fstat(write_fd,&s)<0) return errno;
   if (!n || n>16777244u || off!=(uint64_t)s.st_size || off>INT64_MAX || n>(uint64_t)INT64_MAX-off ||
       (write_kind!=4 && (off>SEGMENT_MAX || n>SEGMENT_MAX-off))) return EINVAL;
-  if (write_kind>1 && write_kind!=4 && (off!=0 || n!=(write_kind==2?44u:28u))) return EINVAL;
+  if (write_kind>1 && write_kind!=4 &&
+      (off!=0 || n!=(write_kind==2?44u:write_kind==5?76u:28u))) return EINVAL;
   size_t requested=n;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==2) n=(size_t)(fault_short<n?fault_short:n-1);
@@ -676,7 +1032,10 @@ static int publish(void) {
   e=string(target,sizeof(target)); if (e || !need(16)) return e?e:EPROTO;
   uint64_t dev=number(8), ino=number(8);
   int kind=stage_kind(scope,source);
-  if (fd<0 || !kind || (scope==0 && strcmp(target,"STORE")) ||
+  if (fd<0 || !kind || (scope!=0 && scope!=1) ||
+      (scope==0 && !((kind==3 && !strcmp(target,"STORE")) ||
+                     (kind==6 && !strcmp(target,"STORE-V2")) ||
+                     (kind==7 && !strcmp(target,"ADOPTION")))) ||
       (scope==1 && (!canonical(target) || strncmp(source+9,target,20)))) return EINVAL;
   struct stat s, after;
   if (fstatat(fd,source,&s,AT_SYMLINK_NOFOLLOW)<0) return errno;
@@ -697,11 +1056,13 @@ static int dispatch(unsigned op) {
     return cold_target_open();
   }
   if (op==SHUTDOWN) {
-    int descriptors[]={write_fd,read_fd,segments_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_segments_fd,cold_lock_fd};
+    int descriptors[]={write_fd,read_fd,segments_fd,candidate_segments_fd,candidate_fd,
+      epoch_fd,epochs_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_segments_fd,cold_lock_fd};
     for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
       if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(94);
     }
-    write_fd=read_fd=segments_fd=root_fd=lock_fd=-1; acquired=0;
+    write_fd=read_fd=segments_fd=candidate_segments_fd=candidate_fd=epoch_fd=epochs_fd=root_fd=lock_fd=-1;
+    segments_parent_fd=-1; acquired=0;
     cold_stage_fd=cold_stage_segments_fd=cold_lock_fd=-1;
     cold_chain_close(&cold_parent_chain); cold_chain_close(&cold_catalog_chain); cold_chain_close(&cold_verify_chain);
     cold_parent_fd=cold_catalog_parent_fd=cold_verify_parent_fd=-1; cold_target=0;
@@ -746,8 +1107,18 @@ static int dispatch(unsigned op) {
   }
   if (op==ENABLE_MUTATIONS) return enable_mutations();
   if (!cold_target && inspection_only && op!=LIST && op!=OPEN_READ && op!=READ_AT &&
-      op!=CLOSE_READ && op!=CHECK && op!=INFO) return EPERM;
+      op!=CLOSE_READ && op!=CHECK && op!=INFO && op!=V2_SELECT && op!=V2_SPACE &&
+      op!=V2_RESTORE_V1 && op!=V2_CLEAR_ADOPTION) return EPERM;
   switch (op) {
+    case V2_SELECT: return v2_select();
+    case V2_BEGIN: return v2_begin();
+    case V2_PUBLISH_EPOCH: return v2_publish_epoch();
+    case V2_ADOPT_V1: return v2_adopt_v1();
+    case V2_PUBLISH_CURRENT: return v2_publish_current();
+    case V2_SPACE: return v2_space();
+    case V2_RECLAIM: return v2_reclaim();
+    case V2_RESTORE_V1: return v2_restore_v1();
+    case V2_CLEAR_ADOPTION: return v2_clear_adoption();
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
       if (segments_fd>=0) return EEXIST;
@@ -804,6 +1175,17 @@ static int validate_request(unsigned op) {
     case OPEN_READ: case CREATE_STAGE:
       if (!need(1)) return EPROTO;
       pos++; e=string(name,256); break;
+    case V2_SELECT: case V2_BEGIN: case V2_PUBLISH_EPOCH: case V2_ADOPT_V1:
+    case V2_RESTORE_V1:
+      e=string(name,256); break;
+    case V2_PUBLISH_CURRENT:
+      e=string(name,256); if (e || !need(32)) return e?e:EPROTO;
+      pos+=32; break;
+    case V2_RECLAIM:
+      e=string(name,256); if (e || !need(77)) return e?e:EPROTO;
+      pos+=76;
+      if (number(1)) { if (!need(28)) return EPROTO; pos+=28; }
+      break;
     case COLD_STAGE_CREATE:
       e=string(name,256); break;
     case COLD_OPEN_WRITE:
@@ -842,7 +1224,8 @@ static int validate_request(unsigned op) {
       if (!need(16)) return EPROTO;
       pos+=16; break;
     case MKDIR_SEGMENTS: case CLOSE_READ: case SYNC_FILE: case CLOSE_WRITE:
-    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS:
+    case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS: case V2_SPACE:
+    case V2_CLEAR_ADOPTION:
     case COLD_SYNC_STAGING: case COLD_PUBLISH: case COLD_SYNC_CATALOG:
     case COLD_CHECK: case COLD_SOURCE: break;
 #ifdef TAY_TEST_FAULTS
@@ -903,7 +1286,8 @@ int main(void) {
     if (!e) { pos=10; e=dispatch(op); }
     if (!e && pos!=input_n) e=EPROTO;
     if (!e && acquired) e=check_paths();
-    if (e && op!=LIST && op!=OPEN_READ && op!=READ_AT && op!=CLOSE_READ) poisoned=1;
+    if (e && op!=LIST && op!=OPEN_READ && op!=READ_AT && op!=CLOSE_READ &&
+        op!=V2_RECLAIM) poisoned=1;
 #ifdef TAY_TEST_FAULTS
     if (fault_now && fault_action==3) _exit(93);
     if (fault_now && fault_action==4) { free(packet); continue; }

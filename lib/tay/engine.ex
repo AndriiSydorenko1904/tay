@@ -12,6 +12,8 @@ defmodule Tay.Engine do
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
   alias Tay.Storage.{Writer, Segment}
+  alias Tay.Storage.V2.{Codec, V1Migration}
+  alias Tay.Storage.V2.Reducer, as: V2Reducer
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, timeout: :infinity)
 
@@ -70,6 +72,8 @@ defmodule Tay.Engine do
           projection: projection,
           budget: budget,
           store_id: summary.store_id,
+          epoch_id: Map.get(summary, :epoch_id),
+          next_availability_order: Map.get(candidate, :next_availability_order, 1),
           next_sequence: summary.arithmetic_next_sequence,
           segment: Map.take(summary.highest, [:id, :bytes, :count, :state]),
           runtime: GenServer.call(guardian, :runtime),
@@ -191,6 +195,16 @@ defmodule Tay.Engine do
     else
       {:noreply, s}
     end
+  end
+
+  def handle_info(
+        {:lifecycle_compact, generation, token, guardian, deadline},
+        %{generation: generation, guardian: guardian, lifecycle_fenced: token, mode: :drained} =
+          s
+      ) do
+    result = Writer.compact(s.writer, s.admission, deadline)
+    send(guardian, {:compaction_result, self(), token, result})
+    {:noreply, s}
   end
 
   # Protocol v1 connections and their capabilities are intentionally
@@ -1055,7 +1069,13 @@ defmodule Tay.Engine do
 
   # One commit path for every producer. All semantic/capacity checks precede
   # Writer I/O; any failure after it may have committed revokes the generation.
-  defp commit(s, previous, event, encoded \\ nil) do
+  defp commit(s, previous, event, encoded \\ nil)
+
+  defp commit(%{epoch_id: epoch_id} = s, previous, event, _encoded)
+       when is_binary(epoch_id),
+       do: commit_v2(s, previous, event)
+
+  defp commit(s, previous, event, encoded) do
     ensure_generation_live!(s)
 
     with {:ok, {type, schema, payload}} <- encoded_event(s, event, encoded),
@@ -1100,6 +1120,69 @@ defmodule Tay.Engine do
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, type, :post_projection})
+          {:ok, job, next}
+
+        {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
+          {:error, reason}
+
+        _ ->
+          exit(:writer_commit_unknown)
+      end
+    end
+  end
+
+  defp commit_v2(s, previous, event) do
+    ensure_generation_live!(s)
+
+    with {:ok, mutation} <-
+           V1Migration.translate_event(event, previous, s.next_availability_order),
+         {:ok, payload} <- Codec.encode_mutation(mutation, s.config.value_limits),
+         {:ok, predicted, next_order} <-
+           V2Reducer.apply_one(
+             previous,
+             mutation,
+             s.next_availability_order,
+             s.config.candidate_limits,
+             s.config.value_limits
+           ),
+         reserve = reservation_after(s, previous, event.record_type),
+         :ok <- headroom(s, byte_size(payload), reserve),
+         {:ok, job, budget} <- Transition.account(s.budget, previous, predicted) do
+      hook(s.config, {:execution, 8, :pre_append})
+      hook(s.config, :pre_append)
+
+      case Writer.append(s.writer, s.admission, 8, 1, payload) do
+        {:ok, receipt} ->
+          expected = expected_position(s, byte_size(payload))
+
+          if receipt != Map.put(expected, :durability, s.config.durability),
+            do: exit(:invalid_writer_receipt)
+
+          hook(s.config, :post_append)
+          hook(s.config, {:execution, 8, :post_append})
+          :ok = Projection.replace(s.projection, previous, job)
+
+          next = %{
+            s
+            | budget: budget,
+              next_sequence: s.next_sequence + 1,
+              next_availability_order: next_order,
+              settlement_reserve: reserve,
+              history_bytes: s.history_bytes + history_delta(s, byte_size(payload)),
+              segment_count: s.segment_count + receipt.segment_id - s.segment.id,
+              definition_bytes:
+                s.definition_bytes +
+                  if(is_nil(previous), do: byte_size(job.definition_bytes), else: 0),
+              segment: %{
+                id: receipt.segment_id,
+                state: :active,
+                bytes: receipt.offset + byte_size(payload) + 28,
+                count: if(receipt.segment_id == s.segment.id, do: s.segment.count + 1, else: 1)
+              }
+          }
+
+          hook(s.config, :post_projection)
+          hook(s.config, {:execution, 8, :post_projection})
           {:ok, job, next}
 
         {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
@@ -1202,7 +1285,7 @@ defmodule Tay.Engine do
     do: {{:error, Error.new(kind, reason, JobID.encode(raw), :insert)}, s}
 
   defp view(s, job),
-    do: Job.view(job, s.config.workers, s.config.queues, s.store_id, s.generation)
+    do: Job.view(job, s.config.workers, s.config.queues, s.store_id, s.generation, s.epoch_id)
 
   defp snapshot(s),
     do: %{

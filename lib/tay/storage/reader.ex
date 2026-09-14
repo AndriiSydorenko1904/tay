@@ -117,6 +117,7 @@ defmodule Tay.Storage.Reader do
     with {:ok, root_entries} <- Native.list(native, :root),
          {:ok, root_entries} <- bounded_entries(root_entries, native, opts),
          {:ok, root} <- classify_entries(root_entries, :root),
+         :ok <- refuse_v2_root(root),
          {:ok, segment_entries} <- segment_entries(native),
          {:ok, segment_entries} <- bounded_entries(segment_entries, native, opts),
          {:ok, files} <- classify_entries(segment_entries, :segments) do
@@ -256,6 +257,7 @@ defmodule Tay.Storage.Reader do
     with :ok <- Native.check(native),
          {:ok, root_entries} <- Native.list(native, :root),
          {:ok, root} <- classify_entries(root_entries, :root),
+         :ok <- refuse_v2_root(root),
          {:ok, segment_entries} <- segment_entries(native),
          {:ok, files} <- classify_entries(segment_entries, :segments) do
       case Map.get(root.entries, "STORE") do
@@ -291,6 +293,14 @@ defmodule Tay.Storage.Reader do
       {:error, %{reason: "enoent"}} -> {:ok, []}
       other -> other
     end
+  end
+
+  # The V1 physical path must never treat an adopted or partially adopted V2
+  # root as ordinary V1 history. V2 recovery selects CURRENT separately.
+  defp refuse_v2_root(root) do
+    if Map.has_key?(root.entries, "STORE-V2") or Map.has_key?(root.entries, "CURRENT"),
+      do: discovery(:store_v2_requires_v2_recovery),
+      else: :ok
   end
 
   defp uninitialized(native, root, files) do
@@ -424,10 +434,17 @@ defmodule Tay.Storage.Reader do
       scope == :root and name == "segments" and type == :directory ->
         {:ok, :directory, entry}
 
+      scope == :root and name == "epochs" and type == :directory ->
+        {:ok, :directory, entry}
+
       scope == :root and name in ["STORE", ".tay-owner.lock"] and type == :regular ->
         {:ok, :metadata, entry}
 
-      String.starts_with?(name, ".tay-new-") or String.starts_with?(name, ".tay-store-") ->
+      String.starts_with?(name, ".tay-new-") or String.starts_with?(name, ".tay-store-") or
+          (scope == :root and
+             (String.starts_with?(name, ".tay-adoption-") or
+                String.starts_with?(name, ".tay-v2-marker-") or
+                String.starts_with?(name, ".tay-current-"))) ->
         stage(entry, scope)
 
       scope == :segments and match?({:ok, _}, Segment.filename_id(name)) and type == :regular ->
@@ -454,7 +471,14 @@ defmodule Tay.Storage.Reader do
     valid =
       case scope do
         :root ->
-          Regex.match?(~r/\A\.tay-store-[0-9a-f]{32}\.tmp\z/, entry.name) and entry.size <= 28
+          (Regex.match?(~r/\A\.tay-store-[0-9a-f]{32}\.tmp\z/, entry.name) and
+             entry.size <= 28) or
+            (Regex.match?(~r/\A\.tay-adoption-[0-9a-f]{32}\.tmp\z/, entry.name) and
+               entry.size <= 28) or
+            (Regex.match?(~r/\A\.tay-v2-marker-[0-9a-f]{32}\.tmp\z/, entry.name) and
+               entry.size <= 28) or
+            (Regex.match?(~r/\A\.tay-current-[0-9a-f]{32}\.tmp\z/, entry.name) and
+               entry.size <= 76)
 
         :segments ->
           case Regex.run(~r/\A\.tay-new-([0-9]{20})-[0-9a-f]{32}\.tmp\z/, entry.name) do

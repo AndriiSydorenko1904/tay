@@ -7,9 +7,9 @@ defmodule Tay.Engine.Operations do
   # permits. No unbounded public operational waiting queue is created.
   def call(name, operation, force, timeout)
       when is_atom(name) and name not in [nil, false, true] and
-             operation in [:stop, :restart] and is_boolean(force) do
+             operation in [:stop, :restart, :compact] and is_boolean(force) do
     with {:ok, meta} <- Admission.metadata(name),
-         timeout = timeout || meta.timeout,
+         timeout = timeout || if(operation == :compact, do: 900_000, else: meta.timeout),
          true <- is_integer(timeout) and timeout in 1..4_294_967_295,
          token = make_ref(),
          deadline = System.monotonic_time(:millisecond) + timeout,
@@ -62,8 +62,11 @@ defmodule Tay.Engine.Operations do
            :ok <- wait_dead([old.engine, old.writer, old.runtime]),
            :ok <- wait_retired(old.fence) do
         case operation do
-          :stop -> stop_probe(config)
-          :restart -> restart(guardian, root, config, token)
+          :stop ->
+            stop_probe(config)
+
+          operation when operation in [:restart, :compact] ->
+            restart(guardian, root, config, token)
         end
       end
 

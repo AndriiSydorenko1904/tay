@@ -1,7 +1,12 @@
 defmodule Tay.State.QueueIndex do
   @moduledoc false
   def new, do: :ets.new(__MODULE__, [:ordered_set, :private])
-  def key(job), do: {job.definition["queue_key"], job.eligible_at, job.available_sequence, job.id}
+
+  def key(job),
+    do:
+      {job.definition["queue_key"], job.eligible_at,
+       Map.get(job, :availability_order, Map.get(job, :available_sequence)), job.id}
+
   def put(table, job), do: :ets.insert(table, {key(job), job.id})
   def delete(table, job), do: :ets.delete(table, key(job))
 

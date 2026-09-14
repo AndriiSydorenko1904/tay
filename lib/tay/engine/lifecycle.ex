@@ -141,7 +141,7 @@ defmodule Tay.Engine.Lifecycle do
   def handle_call({:reserve, generation, {slot, token}}, {owner, _}, s) do
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, ^owner, :claimed, expires} = old] ->
-        if ready?(s, generation) and System.monotonic_time(:millisecond) < expires do
+        if admission_ready?(s, generation) and System.monotonic_time(:millisecond) < expires do
           monitor = Process.monitor(owner)
           true = Admission.cas(s.table, old, {slot, token, owner, :reserved, expires})
           permits = Map.put(s.permits, {slot, token}, monitor)
@@ -161,7 +161,7 @@ defmodule Tay.Engine.Lifecycle do
   def handle_call({:submit, generation, {slot, token}, payload}, {owner, _} = from, s) do
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, ^owner, :reserved, expires} = old] ->
-        if ready?(s, generation) do
+        if admission_ready?(s, generation) do
           true = Admission.cas(s.table, old, {slot, token, owner, :submitted, expires})
           send(s.engine, {:command, generation, {slot, token}, payload, from})
           {:noreply, s}
@@ -175,12 +175,16 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   def handle_call({:operation, generation, token, kind, force, deadline}, {owner, _} = from, s)
-      when kind in [:stop, :restart] and is_boolean(force) and is_integer(deadline) do
+      when kind in [:stop, :restart, :compact] and is_boolean(force) and is_integer(deadline) do
     case :ets.lookup(s.table, :operation) do
       [{:operation, ^token, ^owner, :claimed, ^deadline} = old] ->
         if s.operation == nil and generation == s.meta.generation and
              System.monotonic_time(:millisecond) < deadline and
-             (s.meta.status.state in [:ready, :draining, :drained, :stopped, :failed] or force) do
+             if(kind == :compact,
+               do: s.meta.status.state == :ready and not force,
+               else:
+                 s.meta.status.state in [:ready, :draining, :drained, :stopped, :failed] or force
+             ) do
           true = Admission.cas(s.table, old, {:operation, token, owner, :submitted, deadline})
 
           timer =
@@ -200,12 +204,20 @@ defmodule Tay.Engine.Lifecycle do
             driver: nil,
             monitor: nil,
             owner: owner,
-            deadline: deadline
+            deadline: deadline,
+            stats: nil
           }
 
-          s = %{s | operation: operation}
+          close_now = force or s.meta.status.state in [:stopped, :failed]
 
-          if force or s.meta.status.state in [:stopped, :failed] do
+          s =
+            if close_now,
+              do: %{s | operation: operation},
+              else:
+                %{s | operation: operation}
+                |> publish(Map.merge(s.meta.status, %{state: :draining}))
+
+          if close_now do
             {:noreply, begin_closing(s)}
           else
             send(s.engine, {:lifecycle_drain, generation, token, self()})
@@ -320,7 +332,12 @@ defmodule Tay.Engine.Lifecycle do
     # A delayed timer delivery is not extra authorization to start shutdown
     # after the graceful request's monotonic deadline.
     if System.monotonic_time(:millisecond) < operation.deadline do
-      {:noreply, begin_closing(s)}
+      if operation.kind == :compact do
+        send(engine, {:lifecycle_compact, s.meta.generation, token, self(), operation.deadline})
+        {:noreply, %{s | operation: %{operation | phase: :compacting}}}
+      else
+        {:noreply, begin_closing(s)}
+      end
     else
       {:noreply,
        finish_operation(
@@ -328,6 +345,27 @@ defmodule Tay.Engine.Lifecycle do
          {:error, Error.new(:timeout, :draining, nil, operation.kind)}
        )}
     end
+  end
+
+  def handle_info(
+        {:compaction_result, engine, token, {:ok, stats}},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
+      ) do
+    {:noreply, begin_closing(%{s | operation: %{op | stats: stats}})}
+  end
+
+  def handle_info(
+        {:compaction_result, engine, token, {:error, reason}},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+      ) do
+    {:noreply,
+     revoke(
+       finish_operation(
+         s,
+         {:error, Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)}
+       ),
+       :compaction_failed
+     )}
   end
 
   def handle_info({:operation_deadline, token}, %{operation: %{token: token} = operation} = s) do
@@ -382,6 +420,15 @@ defmodule Tay.Engine.Lifecycle do
              {:error, Error.new(:unavailable, :restart_failed, nil, :restart)}}
           end
 
+        {:compact, :ok} ->
+          if s.meta.status.state == :ready and Process.alive?(s.engine) and
+               Process.alive?(s.writer) and runtime_live?(s) do
+            {s, {:ok, operation.stats}}
+          else
+            {revoke(s, :compaction_restart_failed),
+             {:error, Error.new(:unknown_outcome, :compaction_restart_failed, nil, :compact)}}
+          end
+
         _ ->
           {revoke(s, :lifecycle_failed),
            {:error, Error.new(:unavailable, :lifecycle_failed, nil, operation.kind)}}
@@ -421,6 +468,9 @@ defmodule Tay.Engine.Lifecycle do
 
   defp ready?(s, generation),
     do: s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
+
+  defp admission_ready?(s, generation),
+    do: s.operation == nil and s.meta.generation == generation and s.meta.status.state == :ready
 
   defp runtime_live?(%{config: %{execution: false}, runtime: nil, fence: nil}), do: true
 
@@ -502,9 +552,9 @@ defmodule Tay.Engine.Lifecycle do
   defp finish_operation(s, reply) do
     operation = s.operation
     if operation.timer, do: Process.cancel_timer(operation.timer)
+    :ets.insert(s.table, {:operation, nil, nil, :free, 0})
     if operation.from, do: GenServer.reply(operation.from, reply)
     if operation.monitor, do: Process.demonitor(operation.monitor, [:flush])
-    :ets.insert(s.table, {:operation, nil, nil, :free, 0})
     %{s | operation: nil, monitors: Map.delete(s.monitors, operation.monitor)}
   end
 

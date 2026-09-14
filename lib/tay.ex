@@ -148,6 +148,22 @@ defmodule Tay do
   """
   def restart(options \\ []), do: lifecycle_control(:restart, options)
 
+  @doc "Stop-the-world Store-v2 compaction through the same drain and storage owner."
+  def compact(options \\ []) do
+    with true <-
+           Config.keyword?(options, [:name, :timeout, :terminal_retention]) ||
+             {:error, :invalid_options},
+         true <-
+           Keyword.get(options, :terminal_retention, :infinity) == :infinity ||
+             {:error, :unsupported_retention},
+         {:ok, name, timeout} <-
+           request_options(Keyword.delete(options, :terminal_retention)) do
+      Tay.Engine.Operations.call(name, :compact, false, timeout)
+    else
+      {:error, reason} -> public_error(reason, :compact, nil)
+    end
+  end
+
   defp lifecycle_control(operation, options) do
     with true <- Config.keyword?(options, [:name, :timeout, :force]) || {:error, :invalid_options},
          force = Keyword.get(options, :force, false),
@@ -251,6 +267,12 @@ defmodule Tay do
     do:
       is_binary(store) and byte_size(store) == 16 and is_binary(id) and byte_size(id) == 16 and
         is_reference(generation) and V1.sequence?(sequence)
+
+  defp revision_context?({:tay_revision_v2, store, epoch, id, generation, revision}),
+    do:
+      is_binary(store) and byte_size(store) == 16 and is_binary(epoch) and
+        byte_size(epoch) == 16 and is_binary(id) and byte_size(id) == 16 and
+        is_reference(generation) and V1.sequence?(revision)
 
   defp revision_context?(_), do: false
 

@@ -12,7 +12,7 @@ defmodule Tay.State.TaskIndex do
   def key(job),
     do:
       {job.definition["queue_key"], job.definition["worker_key"], job.eligible_at,
-       job.available_sequence, job.id}
+       Map.get(job, :availability_order, Map.get(job, :available_sequence)), job.id}
 
   def put(table, job), do: :ets.insert(table, {key(job), job.id})
   def delete(table, job), do: :ets.delete(table, key(job))
