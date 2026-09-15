@@ -148,17 +148,25 @@ defmodule Tay do
   """
   def restart(options \\ []), do: lifecycle_control(:restart, options)
 
-  @doc "Stop-the-world Store-v2 compaction through the same drain and storage owner."
+  @doc """
+  Stop-the-world Store-v2 compaction through the same drain and storage owner.
+  Uses the Engine's bounded terminal retention by default. Administrative
+  `terminal_retention: :infinity` retains all jobs; `{:hours, n}` overrides the
+  bounded duration. No override bypasses drain, headroom or exact validation.
+  """
   def compact(options \\ []) do
     with true <-
            Config.keyword?(options, [:name, :timeout, :terminal_retention]) ||
              {:error, :invalid_options},
-         true <-
-           Keyword.get(options, :terminal_retention, :infinity) == :infinity ||
-             {:error, :unsupported_retention},
+         retention = Keyword.get(options, :terminal_retention),
+         :ok <-
+           (case Keyword.fetch(options, :terminal_retention) do
+              :error -> :ok
+              {:ok, policy} -> Tay.Storage.V2.Retention.validate(policy)
+            end),
          {:ok, name, timeout} <-
            request_options(Keyword.delete(options, :terminal_retention)) do
-      Tay.Engine.Operations.call(name, :compact, false, timeout)
+      Tay.Engine.Operations.call(name, :compact, false, timeout, retention)
     else
       {:error, reason} -> public_error(reason, :compact, nil)
     end

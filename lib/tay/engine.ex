@@ -7,7 +7,7 @@ defmodule Tay.Engine do
   use GenServer, restart: :temporary
   alias Tay.{Event, Error, Job, JobID}
   alias Tay.Event.{V1, Value}
-  alias Tay.Engine.{Admission, Config}
+  alias Tay.Engine.{Admission, Config, CompactionEstimate, CompactionReplay}
   alias Tay.State.{Transition, Projection, JobIndex, SchedulerIndex, TaskIndex}
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
@@ -28,7 +28,7 @@ defmodule Tay.Engine do
              %{
                codec: Event,
                initial_acc: Transition.candidate(config.candidate_limits, config.value_limits),
-               reducer: &Transition.reduce/3,
+               reducer: &CompactionReplay.reduce/3,
                options: config.recovery
              }
            ),
@@ -71,6 +71,18 @@ defmodule Tay.Engine do
           admission: summary.admission_ref,
           projection: projection,
           budget: budget,
+          compaction_estimate:
+            Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
+              CompactionEstimate.replace(acc, nil, job)
+            end),
+          # Capture precedes construction, not publication. Recovered activation
+          # is a conservative post-publication cooldown anchor; a restart may
+          # extend cooldown but must never shorten it by construction time.
+          last_compaction_at:
+            case Map.get(summary, :compaction_captured_at) do
+              nil -> nil
+              captured -> max(captured, Clock.wall(config.clock))
+            end,
           store_id: summary.store_id,
           epoch_id: Map.get(summary, :epoch_id),
           next_availability_order: Map.get(candidate, :next_availability_order, 1),
@@ -185,26 +197,95 @@ defmodule Tay.Engine do
     do: {:stop, :guardian_lost, s}
 
   def handle_info(
-        {:lifecycle_drain, generation, token, guardian},
+        {:lifecycle_drain, generation, token, guardian, expected_source},
         %{generation: generation, guardian: guardian} = s
       ) do
     if Tay.Engine.Operations.draining?(s.config.name, generation, token, guardian) do
-      next = %{s | mode: :draining, lifecycle_operation: token}
-      hook(s.config, {:operations, :draining})
-      {:noreply, publish(complete_drains(next))}
+      cond do
+        not is_nil(expected_source) and s.mode != :ready ->
+          send(guardian, {:operation_policy_draining, self(), token})
+          {:noreply, s}
+
+        not is_nil(expected_source) and expected_source != {s.epoch_id, s.next_sequence} ->
+          send(guardian, {:operation_source_changed, self(), token})
+          {:noreply, s}
+
+        true ->
+          next = %{s | mode: :draining, lifecycle_operation: token}
+          hook(s.config, {:operations, :draining})
+          {:noreply, publish(complete_drains(next))}
+      end
     else
       {:noreply, s}
     end
   end
 
   def handle_info(
-        {:lifecycle_compact, generation, token, guardian, deadline},
+        {:lifecycle_compact, generation, token, guardian, deadline, retention, expected_source,
+         cancel_flag},
         %{generation: generation, guardian: guardian, lifecycle_fenced: token, mode: :drained} =
           s
       ) do
-    result = Writer.compact(s.writer, s.admission, deadline)
+    # Check estimates before drain, then allow legitimate settlement mutations.
+    # Writer pins and replays the final frontier under its existing owner lock.
+    result =
+      if is_nil(expected_source) or elem(expected_source, 0) == s.epoch_id,
+        do:
+          Writer.compact(
+            s.writer,
+            s.admission,
+            deadline,
+            retention,
+            Clock.wall(s.config.clock),
+            cancel_flag
+          ),
+        else: {:error, :compaction_source_changed}
+
     send(guardian, {:compaction_result, self(), token, result})
     {:noreply, s}
+  end
+
+  def handle_info({:policy_estimate, guardian, policy, token}, %{guardian: guardian} = s) do
+    sealed_bytes = s.history_bytes - if(s.segment.state == :active, do: s.segment.bytes, else: 0)
+    sealed_segments = s.segment_count - if(s.segment.state == :active, do: 1, else: 0)
+
+    result =
+      CompactionEstimate.summarize(
+        s.compaction_estimate,
+        sealed_bytes,
+        sealed_segments,
+        s.config.compaction.terminal_retention,
+        Clock.wall(s.config.clock)
+      )
+
+    result =
+      case result do
+        {:ok, estimate} ->
+          {:ok,
+           Map.merge(estimate, %{
+             last_compaction_at: s.last_compaction_at,
+             generation: s.generation,
+             source: {s.epoch_id, s.next_sequence}
+           })}
+
+        error ->
+          error
+      end
+
+    send(guardian, {:policy_estimate_result, self(), policy, token, result})
+    {:noreply, s}
+  end
+
+  def handle_info(
+        {:policy_drain_cancel, generation, token, guardian},
+        %{guardian: guardian, generation: generation} = s
+      ) do
+    if s.lifecycle_operation == token or s.lifecycle_fenced == token do
+      {:noreply,
+       wake_controls(%{s | mode: :ready, lifecycle_operation: nil, lifecycle_fenced: nil})}
+    else
+      {:noreply, s}
+    end
   end
 
   # Protocol v1 connections and their capabilities are intentionally
@@ -671,10 +752,9 @@ defmodule Tay.Engine do
 
     with {:ok, dispatch} <- dispatch_for(s, job),
          true <- not MapSet.member?(s.projection.held, job.id),
-         {:ok, prepared} <- Transition.prepare(job, started, s.config.value_limits),
-         {:ok, predicted} <- Transition.apply(prepared, %{sequence: s.next_sequence}),
+         {:ok, predicted} <- predict_execution(s, job, started),
          :ok <- settlement_fits(s, predicted, at),
-         {:ok, {_, _, payload}} <- encoded_event(s, started, nil),
+         {:ok, {_, _, payload}} <- execution_encoding(s, job, started),
          :ok <- headroom(s, byte_size(payload), s.settlement_reserve + 1) do
       case dispatch do
         {:local, worker} ->
@@ -723,14 +803,46 @@ defmodule Tay.Engine do
   defp settlement_fits(s, executing, at) do
     Enum.reduce_while([:success, {:failure, 1}, :timeout, :interrupted], :ok, fn outcome, _ ->
       with {:ok, finished} <- Outcome.event(executing, outcome, at, fn 2 -> <<0, 0>> end),
-           {:ok, _} <- encoded_event(s, finished, nil),
-           {:ok, _} <- Transition.prepare(executing, finished, s.config.value_limits) do
+           {:ok, _} <- execution_encoding(s, executing, finished),
+           {:ok, _} <- prepare_settlement(s, executing, finished) do
         {:cont, :ok}
       else
         _ -> {:halt, {:error, :settlement_budget}}
       end
     end)
   end
+
+  defp predict_execution(%{epoch_id: epoch} = s, job, event) when is_binary(epoch),
+    do: prepare_settlement(s, job, event)
+
+  defp predict_execution(s, job, event) do
+    with {:ok, prepared} <- Transition.prepare(job, event, s.config.value_limits),
+         do: Transition.apply(prepared, %{sequence: s.next_sequence})
+  end
+
+  defp execution_encoding(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
+    with {:ok, mutation} <- V1Migration.translate_event(event, job, s.next_availability_order),
+         {:ok, payload} <- Codec.encode_mutation(mutation, s.config.value_limits),
+         do: {:ok, {8, 1, payload}}
+  end
+
+  defp execution_encoding(s, _job, event), do: encoded_event(s, event, nil)
+
+  defp prepare_settlement(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
+    with {:ok, mutation} <- V1Migration.translate_event(event, job, s.next_availability_order),
+         {:ok, predicted, _} <-
+           V2Reducer.apply_one(
+             job,
+             mutation,
+             s.next_availability_order,
+             s.config.candidate_limits,
+             s.config.value_limits
+           ),
+         do: {:ok, predicted}
+  end
+
+  defp prepare_settlement(s, job, event),
+    do: Transition.prepare(job, event, s.config.value_limits)
 
   defp start_waiting(s, job, queue, identity) do
     monitor = Process.monitor(identity.relay)
@@ -1098,11 +1210,17 @@ defmodule Tay.Engine do
           hook(s.config, {:execution, type, :post_append})
           {:ok, job} = Transition.apply(effect, receipt)
           {:ok, job, ^budget} = Transition.account(s.budget, previous, job)
+
+          job =
+            Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
+
           :ok = Projection.replace(s.projection, previous, job)
 
           next = %{
             s
             | budget: budget,
+              compaction_estimate:
+                CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
               settlement_reserve: reserve,
               history_bytes: s.history_bytes + history_delta(s, byte_size(payload)),
@@ -1165,6 +1283,8 @@ defmodule Tay.Engine do
           next = %{
             s
             | budget: budget,
+              compaction_estimate:
+                CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
               next_availability_order: next_order,
               settlement_reserve: reserve,

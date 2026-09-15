@@ -668,6 +668,9 @@ defmodule Tay.Storage.Native do
       byte_size(body) > 16_777_244 + 4096 ->
         {:error, %{kind: :native_argument, reason: :packet_too_large}}
 
+      Tay.Storage.V2.CompactionControl.cancelled?() ->
+        {:error, %{kind: :resource_limit, reason: :compaction_cancelled}}
+
       is_integer(native.deadline) and System.monotonic_time(:millisecond) >= native.deadline ->
         {:error, %{kind: :resource_limit, reason: :deadline}}
 

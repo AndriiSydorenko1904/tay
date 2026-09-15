@@ -1,5 +1,15 @@
 # Compatibility and limits
 
+Store-v2 Phase C adds exactly one schema-1 MANIFEST value variant: the existing
+`terminal_retention` key may contain the canonical one-key Value map
+`{"hours" => N}`, where integer `N` is in `1..2_562_047_788_015`. Existing
+`"infinity"` bytes remain identical. Framing versions, keys, CRC32C and CURRENT's
+manifest digest are unchanged. Phase-C readers accept qualified Phase-B infinite
+manifests. Pre-Phase-C readers may fail closed on bounded manifests; do not use
+an older binary to open an epoch published with bounded retention. Unknown forms
+are not converted to infinity or repaired. Store-v1 and released fixtures remain
+unchanged.
+
 Tay v0.5.0 is a single-node public preview. Record v1, STORE v1, Segment v1,
 and Event v1 are fixed compatibility contracts described in [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
@@ -34,7 +44,7 @@ restart-durable, while job completion remains durable.
   unvalidated production filesystems are unsupported. Production builds do
   not silently downgrade to `:write`.
 - External effects are at-least-once, not exactly-once. There is no live
-  backup, automatic torn-tail repair, history retention/compaction, durable
+  backup, automatic torn-tail repair, online compaction, durable
   successful-result backend, cron/interval scheduling, or multi-host executor
   protocol. The local Unix socket is a same-host trust boundary.
 
@@ -60,7 +70,9 @@ These values are explicit configuration policy, not source defaults or a
 Cartesian combination of independent stress tests. The history ceiling is
 only 4,956 bytes above the completed reference cohort before additional
 retries and interruptions; it is not a sustainable unbounded workload. No
-terminal job or ID is evicted. Monitor admission, free disk, backup space,
+terminal job or ID was evicted in that historical reference workload. Current
+bounded compaction can expire terminal jobs/IDs; see [operations](operations.md).
+Monitor admission, free disk, backup space,
 restart resources, and retained staging. A larger or different workload needs
 new target-specific measurement, not deletion of individual segments.
 

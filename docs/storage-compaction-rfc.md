@@ -1,6 +1,6 @@
 # Storage compaction RFC
 
-Status: Store-v2 Phase A/B implementation approved; Phase C remains proposed.
+Status: Store-v2 Phase A/B qualified; Phase C implementation and the bounded-retention manifest amendment approved.
 
 ## Recommendation
 
@@ -131,12 +131,39 @@ epoch_id[16] || SHA256(manifest bytes)[32] || CRC32C[4]`. The manifest is
 `"TAYM"[4] || version=1[1] || reserved=0[3] || Value-body-length[4] ||
 canonical Value map || CRC32C[4]`. Its exact schema-1 keys are `store_id`,
 `epoch_id`, `source_epoch_id` (nil for V1), `source_frontier`, `captured_at`,
-`terminal_retention` (`"infinity"` in Phase B), `source_segments` (ordered ID
+`terminal_retention` (`"infinity"` OR canonical Value map `{"hours" => N}`), `source_segments` (ordered ID
 and SHA256 digest), `base_segments` (ordered ID, first/last physical sequence,
 byte length and SHA256 digest), `tail_segment_id`, and
 `tail_first_sequence`. IDs/digests are Value byte strings, not arbitrary text.
 The decoder checks CRC, length, exact keys, topology, identity and pointer
 digest before this metadata can select authority.
+
+### Approved Phase-C schema-1 retention value amendment
+
+The existing `terminal_retention` field has exactly two canonical Value forms:
+`"infinity"` maps to Elixir `:infinity` (the Phase-B bootstrap representation);
+the exact one-key map `%{"hours" => N}` maps to `{:hours, N}` (the Phase-C
+bounded extension). `N` MUST be an integer in `1..2_562_047_788_015`, derived as
+`floor(9_223_372_036_854_775_807 / 3_600_000)` from `Tay.Event.V1.max_time/0`.
+Accepted duration multiplication cannot exceed the existing durable timestamp
+bound. Expiry uses `captured_at >= duration` AND
+`terminal_at <= captured_at - duration`, including equality, rather than adding
+duration to terminal time. Only completed/cancelled/discarded may expire after
+execution drain/settlement; protected or live states never expire.
+
+Unknown forms, additional/missing map keys, alternate units, strings other than
+`"infinity"`, floats, zero, negatives, nil, and maximum+1 fail closed; no fallback
+to infinity is permitted. Config and manifest use the shared normative retention
+validator. Practical policy/timer bounds, if stricter, must be documented separately.
+The manifest records the exact policy and the single captured clock used to
+construct retained state; bounded expiry cannot be labelled infinity.
+
+This is an additive value extension of an existing schema-1 key, not a new
+authority layout. TAYM framing/version=1, the exact manifest key set, STORE-V2,
+CURRENT, CRC32C and manifest SHA256 binding remain unchanged. Existing infinite
+bytes/fixtures MUST remain unchanged. Phase-C readers read Phase-B manifests;
+pre-Phase-C readers may refuse bounded manifests and MUST NOT repair/migrate
+them. New Phase-C literal fixtures are added separately.
 
 ## Store v2 mutation and logical revision model (normative)
 

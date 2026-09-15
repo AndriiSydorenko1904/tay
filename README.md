@@ -96,8 +96,9 @@ request types, and result retention.
 
 Production `:sync` requires Linux, an explicitly validated supported local
 filesystem, and `validated_filesystem: true`. macOS supports explicit
-development `:write` only. Tay has no automatic tail repair, live backup,
-history compaction, or exactly-once external effects. A corrupt or unsupported
+development `:write` only. Tay evaluates obsolete history automatically through
+bounded-retention, stop-the-world Store-v2 compaction. It has no automatic tail
+repair, live backup, online compaction, or exactly-once external effects. A corrupt or unsupported
 history refuses writable startup and preserves the evidence. Do not delete
 individual log files to recover capacity.
 

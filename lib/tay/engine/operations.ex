@@ -5,7 +5,9 @@ defmodule Tay.Engine.Operations do
 
   # One fixed metadata-only permit is independent of saturated client/drain
   # permits. No unbounded public operational waiting queue is created.
-  def call(name, operation, force, timeout)
+  def call(name, operation, force, timeout, retention \\ nil)
+
+  def call(name, operation, force, timeout, retention)
       when is_atom(name) and name not in [nil, false, true] and
              operation in [:stop, :restart, :compact] and is_boolean(force) do
     with {:ok, meta} <- Admission.metadata(name),
@@ -22,7 +24,7 @@ defmodule Tay.Engine.Operations do
       try do
         GenServer.call(
           meta.guardian,
-          {:operation, meta.generation, token, operation, force, deadline},
+          {:operation, meta.generation, token, operation, force, deadline, retention},
           timeout
         )
       catch
@@ -38,7 +40,7 @@ defmodule Tay.Engine.Operations do
     ArgumentError -> {:error, Error.new(:unavailable, :generation_unavailable, nil, operation)}
   end
 
-  def call(_, operation, _, _),
+  def call(_, operation, _, _, _),
     do: {:error, Error.new(:invalid, :invalid_options, nil, operation)}
 
   def draining?(name, generation, token, guardian) do

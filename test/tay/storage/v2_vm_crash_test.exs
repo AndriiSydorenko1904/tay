@@ -81,6 +81,82 @@ defmodule Tay.Storage.V2VMCrashTest do
     end
   end
 
+  test "bounded expiry whole-VM crashes preserve old terminals or exactly the published retained state" do
+    for site <- [
+          :v2_publish_epoch,
+          :v2_epoch_parent_sync,
+          :v2_publish_current,
+          :v2_current_root_sync,
+          :v2_reclaim_segment_unlink,
+          :v2_reclaim_manifest_unlink,
+          :v2_reclaim_epoch_unlink,
+          :v2_reclaim_epochs_sync
+        ] do
+      path = NativeHelpers.path()
+      RecoveryHelpers.store(path)
+      {:ok, native} = RecoveryHelpers.open(path)
+      assert :ok = Native.enable_mutations(native)
+      {:ok, store_id} = path |> Path.join("STORE") |> File.read!() |> Segment.decode_store()
+      definition = Tay.Test.EventHelpers.definition()
+
+      {:ok, candidate} =
+        Reducer.apply(Reducer.candidate(), %{
+          job_id: <<1::128>>,
+          kind: :inserted,
+          expected_revision: 0,
+          new_revision: 1,
+          at: 0,
+          body: %{
+            "definition" => definition,
+            "eligible_at" => definition["scheduled_at"],
+            "availability_order" => nil
+          }
+        })
+
+      {:ok, candidate} =
+        Reducer.apply(candidate, %{
+          job_id: <<1::128>>,
+          kind: :cancelled,
+          expected_revision: 1,
+          new_revision: 2,
+          at: 100,
+          body: %{"execution_token" => nil}
+        })
+
+      assert {:ok, first} =
+               Publisher.publish(native, Map.put(empty_source(store_id), :jobs, candidate.jobs))
+
+      assert {:ok, %{reclamation: :complete}} = Reclaimer.predecessor(native, first.recovered)
+      assert :ok = Native.shutdown(native)
+
+      {output, status} =
+        NativeHelpers.child_elixir(bounded_script(), [path, Atom.to_string(site)])
+
+      assert status != 0
+      assert output =~ "ARMED:#{site}", output
+      refute output =~ "UNREACHED"
+      {:ok, reopened} = RecoveryHelpers.after_release(fn -> RecoveryHelpers.open(path) end)
+      assert {:ok, recovered} = V2Reader.recover(reopened, Reducer.candidate())
+
+      if recovered.epoch_id == first.epoch_id do
+        assert recovered.candidate.jobs == first.recovered.candidate.jobs
+        assert recovered.manifest.terminal_retention == :infinity
+      else
+        assert recovered.manifest.source_epoch_id == first.epoch_id
+        assert recovered.manifest.terminal_retention == {:hours, 1}
+        assert recovered.manifest.captured_at == 3_600_100
+        assert recovered.candidate.jobs == %{}
+      end
+
+      assert :ok = Native.enable_mutations(reopened)
+      assert {:ok, %{reclamation: :complete}} = Reclaimer.predecessor(reopened, recovered)
+      assert {:ok, again} = V2Reader.recover(reopened, Reducer.candidate())
+      assert again.candidate.jobs == recovered.candidate.jobs
+      assert :ok = Native.shutdown(reopened)
+      File.rm_rf!(path)
+    end
+  end
+
   defp empty_source(store_id) do
     %{
       store_id: store_id,
@@ -99,7 +175,10 @@ defmodule Tay.Storage.V2VMCrashTest do
     {:ok, _} = Application.ensure_all_started(:tay)
     [path, site] = System.argv()
     site = String.to_existing_atom(site)
-    {:ok, native} = Tay.Storage.Native.open_existing(path, durability: :write, test_helper: true)
+    strict = System.get_env("TAY_TEST_SYNC") == "1"
+    {:ok, native} = Tay.Storage.Native.open_existing(path,
+      durability: if(strict, do: :sync, else: :write), validated_filesystem: strict,
+      test_helper: true)
     """
   end
 
@@ -133,6 +212,24 @@ defmodule Tay.Storage.V2VMCrashTest do
       })
       :ok = Tay.Storage.Native.fault(native, site, 1, :vm_crash_after)
       IO.puts("ARMED:" <> Atom.to_string(site))
+      Tay.Storage.V2.Reclaimer.predecessor(native, second.recovered)
+      IO.puts("UNREACHED")
+      """
+  end
+
+  defp bounded_script do
+    prelude() <>
+      """
+      {:ok, recovered} = Tay.Storage.V2.Reader.recover(native, Tay.Storage.V2.Reducer.candidate())
+      :ok = Tay.Storage.Native.enable_mutations(native)
+      :ok = Tay.Storage.Native.fault(native, site, 1, :vm_crash_after)
+      IO.puts("ARMED:" <> Atom.to_string(site))
+      {:ok, second} = Tay.Storage.V2.Publisher.publish(native, %{
+        store_id: recovered.store_id, epoch_id: recovered.epoch_id, current: recovered.current,
+        jobs: recovered.candidate.jobs, frontier: recovered.next_sequence - 1,
+        terminal_retention: {:hours, 1}, captured_at: 3_600_100,
+        rotation_target_bytes: 67_108_864, candidate_limits: %{}, value_limits: Tay.Event.Value.defaults()
+      })
       Tay.Storage.V2.Reclaimer.predecessor(native, second.recovered)
       IO.puts("UNREACHED")
       """

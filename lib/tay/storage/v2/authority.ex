@@ -7,6 +7,7 @@ defmodule Tay.Storage.V2.Authority do
   alias Tay.Event.V1
   alias Tay.Event.Value
   alias Tay.Storage.CRC32C
+  alias Tay.Storage.V2.Retention
 
   @max 18_446_744_073_709_551_615
   @manifest_keys ~w(store_id epoch_id source_epoch_id source_frontier captured_at terminal_retention source_segments base_segments tail_segment_id tail_first_sequence)
@@ -117,7 +118,7 @@ defmodule Tay.Storage.V2.Authority do
           source_epoch_id: source_epoch_id,
           source_frontier: frontier,
           captured_at: captured_at,
-          terminal_retention: :infinity,
+          terminal_retention: retention,
           source_segments: source,
           base_segments: base,
           tail_segment_id: tail_id,
@@ -139,6 +140,9 @@ defmodule Tay.Storage.V2.Authority do
 
       not V1.time?(captured_at) ->
         {:error, :captured_at}
+
+      Retention.validate(retention) != :ok ->
+        {:error, :terminal_retention}
 
       not valid_source?(source) ->
         {:error, :source_segments}
@@ -190,7 +194,7 @@ defmodule Tay.Storage.V2.Authority do
       "source_epoch_id" => if(m.source_epoch_id, do: {:bytes, m.source_epoch_id}),
       "source_frontier" => m.source_frontier,
       "captured_at" => m.captured_at,
-      "terminal_retention" => "infinity",
+      "terminal_retention" => Retention.to_value(m.terminal_retention),
       "source_segments" =>
         Enum.map(m.source_segments, &%{"id" => &1.id, "digest" => {:bytes, &1.digest}}),
       "base_segments" =>
@@ -209,7 +213,8 @@ defmodule Tay.Storage.V2.Authority do
   end
 
   defp manifest_from_body(body) do
-    with {:ok, source} <- entries(body["source_segments"], @source_keys, [:id, :digest]),
+    with {:ok, retention} <- Retention.from_value(body["terminal_retention"]),
+         {:ok, source} <- entries(body["source_segments"], @source_keys, [:id, :digest]),
          {:ok, base} <-
            entries(body["base_segments"], @base_keys, [
              :id,
@@ -225,7 +230,7 @@ defmodule Tay.Storage.V2.Authority do
          source_epoch_id: unbytes(body["source_epoch_id"]),
          source_frontier: body["source_frontier"],
          captured_at: body["captured_at"],
-         terminal_retention: if(body["terminal_retention"] == "infinity", do: :infinity),
+         terminal_retention: retention,
          source_segments: source,
          base_segments: base,
          tail_segment_id: body["tail_segment_id"],

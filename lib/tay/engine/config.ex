@@ -36,7 +36,8 @@ defmodule Tay.Engine.Config do
     executor_max_results: 10_000,
     start_paused: false,
     max_history_bytes: :infinity,
-    max_segments: :infinity
+    max_segments: :infinity,
+    compaction: []
   }
 
   def new(options) do
@@ -59,6 +60,7 @@ defmodule Tay.Engine.Config do
            |> Map.put(:executor_socket, socket.path)
            |> Map.put(:executor_socket_private_directory, socket.private_directory),
          {:ok, recovery} <- Recovery.options(config.recovery),
+         {:ok, compaction} <- Tay.Engine.CompactionConfig.new(config.compaction),
          :ok <- validate(config, recovery) do
       queues = Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
       queue_limits = Map.new(base.queues, fn {name, limit} -> {Atom.to_string(name), limit} end)
@@ -71,6 +73,7 @@ defmodule Tay.Engine.Config do
          execution: execution_enabled(config),
          clock: execution_clock(config),
          recovery: Map.to_list(recovery),
+         compaction: compaction,
          value_limits: recovery.event_limits,
          slot_bytes: div(config.client_bytes, config.client_slots),
          candidate_limits: %{

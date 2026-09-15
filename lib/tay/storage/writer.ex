@@ -74,8 +74,20 @@ defmodule Tay.Storage.Writer do
     do: GenServer.call(writer, {:admitted, admission_ref, :rotate}, :infinity)
 
   @doc "Runs the exclusive, drained-generation Store-v2 publisher in this native owner."
-  def compact(writer, admission_ref, deadline \\ System.monotonic_time(:millisecond) + 900_000),
-    do: GenServer.call(writer, {:compact, admission_ref, deadline}, :infinity)
+  def compact(
+        writer,
+        admission_ref,
+        deadline \\ System.monotonic_time(:millisecond) + 900_000,
+        retention \\ :infinity,
+        captured_at \\ nil,
+        cancel_flag \\ nil
+      ),
+      do:
+        GenServer.call(
+          writer,
+          {:compact, admission_ref, deadline, retention, captured_at, cancel_flag},
+          :infinity
+        )
 
   def status(writer), do: GenServer.call(writer, :status, :infinity)
   @doc "Appends opaque physical bytes supplied by an upstream semantic validator."
@@ -289,23 +301,34 @@ defmodule Tay.Storage.Writer do
        else: {:reply, {:error, :mutation_not_admitted}, state}
   end
 
-  def handle_call({:compact, reference, deadline}, {caller, _}, %{recovery: recovery} = state)
+  def handle_call(
+        {:compact, reference, deadline, retention, captured_at, cancel_flag},
+        {caller, _},
+        %{recovery: recovery} = state
+      )
       when is_map(recovery) do
     if recovery.status == :ready and caller == recovery.caller and
          reference == recovery.admission_ref and is_integer(deadline) and
-         deadline > System.monotonic_time(:millisecond) do
+         deadline > System.monotonic_time(:millisecond) and
+         Tay.Storage.V2.Retention.validate(retention) == :ok do
       state = %{state | native: %{state.native | deadline: deadline}}
 
-      case compact_source(state) do
-        {:ok, next, stats} -> {:reply, {:ok, stats}, %{next | compacted: true}}
-        {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
+      Tay.Storage.V2.CompactionControl.install(cancel_flag)
+
+      try do
+        case compact_source(state, retention, captured_at) do
+          {:ok, next, stats} -> {:reply, {:ok, stats}, %{next | compacted: true}}
+          {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
+        end
+      after
+        Tay.Storage.V2.CompactionControl.clear()
       end
     else
       {:reply, {:error, :compaction_not_admitted}, state}
     end
   end
 
-  def handle_call({:compact, _, _}, _, state),
+  def handle_call({:compact, _, _, _, _, _}, _, state),
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call({:admitted, _, _}, _, state),
@@ -478,6 +501,7 @@ defmodule Tay.Storage.Writer do
             scope: :candidate,
             store_id: store.store_id,
             epoch_id: view.epoch_id,
+            compaction_captured_at: view.manifest.captured_at,
             segments: store.segments,
             highest: store.highest,
             exhausted: store.exhausted,
@@ -513,7 +537,7 @@ defmodule Tay.Storage.Writer do
   defp revalidate_recovered(native, recovery),
     do: Recovery.revalidate(native, recovery.view, recovery.provider, recovery.options)
 
-  defp compact_source(state) do
+  defp compact_source(state, retention, captured_at) do
     with {:ok, state} <- seal_compaction_frontier(state),
          {:ok, jobs, current} <- replay_compaction_source(state) do
       source = %{
@@ -524,8 +548,13 @@ defmodule Tay.Storage.Writer do
         frontier: state.next_sequence - 1,
         rotation_target_bytes: state.options.rotation_target_bytes,
         candidate_limits: state.candidate_limits,
-        value_limits: state.value_limits
+        value_limits: state.value_limits,
+        terminal_retention: retention,
+        captured_at:
+          if(is_nil(captured_at), do: System.system_time(:millisecond), else: captured_at)
       }
+
+      source = with_compaction_hook(source, state)
 
       result =
         case Publisher.publish(state.native, source) do
@@ -541,7 +570,7 @@ defmodule Tay.Storage.Writer do
           native = Map.get(stats, :native, state.native)
 
           reclaimed =
-            if Map.has_key?(stats, :native) do
+            if Map.has_key?(stats, :native) or Tay.Storage.V2.CompactionControl.requested?() do
               %{reclamation: :deferred, reclaimed_bytes: 0}
             else
               case Reclaimer.predecessor(native, recovered) do
@@ -595,8 +624,10 @@ defmodule Tay.Storage.Writer do
                ),
              true <- recovered.epoch_id == publication.epoch_id || {:error, :old_current},
              true <- recovered.current == publication.current || {:error, :current_changed},
+             {:ok, retained, _, _} <-
+               Snapshot.prepare(jobs, publication.terminal_retention, publication.captured_at),
              true <-
-               Snapshot.equivalent?(jobs, recovered.candidate.jobs) ||
+               Snapshot.equivalent?(retained, recovered.candidate.jobs) ||
                  {:error, :reconciled_candidate_mismatch} do
           {:ok,
            publication
@@ -1227,11 +1258,15 @@ defmodule Tay.Storage.Writer do
   end
 
   if @test do
+    defp with_compaction_hook(source, state),
+      do: Map.put(source, :on_boundary, fn tag -> hook(state, {:compaction, tag}) end)
+
     defp test_option_keys, do: [:test_helper, :on_transition]
 
     defp hook(%{options: %{on_transition: fun}, native: native}, tag) when is_function(fun, 2),
       do: fun.(tag, native)
   else
+    defp with_compaction_hook(source, _state), do: source
     defp test_option_keys, do: []
   end
 

@@ -75,5 +75,20 @@ jobs:
           TAY_PACKAGE_TEST: "1"
         run: mix test test/tay/system/package_test.exs --warnings-as-errors
 
+      - name: Phase-C bounded automatic compaction default workloads
+        env:
+          TAY_PHASE_C_WORKLOAD: "1"
+        run: >-
+          mix test test/tay/engine/compaction_runtime_test.exs
+          --only phase_c_workload --warnings-as-errors
+
+      - name: Phase-C 10000-job automatic retention and headroom qualification
+        env:
+          TAY_PHASE_C_10000: "1"
+          TAY_PHASE_C_HEADROOM: ${{ runner.os == 'Linux' && '1' || '0' }}
+        run: >-
+          mix test test/tay/engine/compaction_runtime_test.exs
+          --only phase_c_10000 --warnings-as-errors
+
 # These disposable hosted-runner tests are software evidence, not hardware
 # power-loss certification or release approval. No publish credentials/actions.

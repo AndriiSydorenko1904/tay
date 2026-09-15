@@ -2,20 +2,24 @@ defmodule Tay.Storage.V2.Snapshot do
   @moduledoc "Pure canonical snapshot planning. No storage operation occurs here."
 
   alias Tay.Storage.V2.Codec
+  alias Tay.Storage.V2.Retention
 
   @terminal [:completed, :cancelled, :discarded]
 
   def classify(job, :infinity, _now) when is_map(job), do: {:ok, :retain}
 
   def classify(%{state: state, terminal_at: at}, {:hours, hours}, now)
-      when state in @terminal and is_integer(hours) and hours > 0 and
-             is_integer(now) and now >= 0 and is_integer(at) and at >= 0,
-      do: {:ok, if(at + hours * 3_600_000 <= now, do: :expire, else: :retain)}
+      when state in @terminal do
+    with {:ok, expired} <- Retention.expired?(at, {:hours, hours}, now),
+         do: {:ok, if(expired, do: :expire, else: :retain)}
+  end
 
   def classify(%{state: state}, {:hours, hours}, now)
-      when state not in @terminal and is_integer(hours) and hours > 0 and
-             is_integer(now) and now >= 0,
-      do: {:ok, :retain}
+      when state not in @terminal do
+    with :ok <- Retention.validate({:hours, hours}),
+         true <- Tay.Event.V1.time?(now) || {:error, :retention_timestamp_unavailable},
+         do: {:ok, :retain}
+  end
 
   def classify(_, _, _), do: {:error, :retention_timestamp_unavailable}
 
@@ -36,6 +40,40 @@ defmodule Tay.Storage.V2.Snapshot do
   end
 
   def prepare_infinity(_), do: {:error, :invalid_jobs}
+
+  @doc "Plans retained canonical state without materializing whole-store payloads."
+  def prepare(jobs, retention, captured_at) when is_map(jobs) do
+    with :ok <- Retention.validate(retention),
+         true <- Tay.Event.V1.time?(captured_at) || {:error, :retention_timestamp_unavailable},
+         :ok <- validate_source(jobs) do
+      Enum.reduce_while(jobs, {:ok, %{}, 0, 0}, fn {id, job}, {:ok, kept, expired, terminals} ->
+        case classify(job, retention, captured_at) do
+          {:ok, :expire} ->
+            {:cont, {:ok, kept, expired + 1, terminals}}
+
+          {:ok, :retain} ->
+            {:cont,
+             {:ok, Map.put(kept, id, job), expired,
+              terminals + if(job.state in @terminal, do: 1, else: 0)}}
+
+          error ->
+            {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, kept, expired, terminals} ->
+          normalized = normalize_availability(kept)
+
+          {:ok, normalized, Enum.sort(Map.keys(normalized)),
+           %{expired_jobs: expired, retained_terminal_jobs: terminals}}
+
+        error ->
+          error
+      end
+    end
+  end
+
+  def prepare(_, _, _), do: {:error, :invalid_jobs}
 
   defp plan_validated(jobs, retention, now) do
     jobs

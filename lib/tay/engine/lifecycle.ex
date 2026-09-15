@@ -33,6 +33,8 @@ defmodule Tay.Engine.Lifecycle do
        config: config,
        root: hd(Process.get(:"$ancestors")),
        operation: nil,
+       policy: nil,
+       shutdown_waiter: nil,
        meta: meta,
        engine: nil,
        writer: nil,
@@ -53,6 +55,19 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   def handle_call(:runtime, {engine, _}, %{engine: engine} = s), do: {:reply, s.runtime, s}
+
+  def handle_call({:attach_policy, policy}, {policy, _}, %{policy: nil} = s) do
+    {:reply, :ok, %{s | policy: policy}}
+  end
+
+  def handle_call(:policy_shutdown, {policy, _} = from, %{policy: policy} = s) do
+    if match?(%{kind: :compact}, s.operation), do: :atomics.put(s.operation.cancel_flag, 1, 1)
+
+    if match?(%{kind: :compact, phase: :compacting}, s.operation),
+      do: {:noreply, %{s | shutdown_waiter: from}},
+      else: {:reply, :ok, s}
+  end
+
   def handle_call(:fence, {engine, _}, %{engine: engine} = s), do: {:reply, s.fence, s}
 
   def handle_call({:attach_fence, lease}, {engine, _}, %{engine: engine, fence: nil} = s) do
@@ -116,6 +131,7 @@ defmodule Tay.Engine.Lifecycle do
 
     if s.meta.status.state == :recovering and Process.alive?(s.writer) and fence_live do
       s = publish(s, Map.merge(snapshot, %{state: :ready, durability: s.meta.status.durability}))
+      if s.policy, do: send(s.policy, {:policy_generation, self()})
       {:reply, :ok, s}
     else
       {:reply, {:error, :revoked}, s}
@@ -174,12 +190,32 @@ defmodule Tay.Engine.Lifecycle do
     end
   end
 
-  def handle_call({:operation, generation, token, kind, force, deadline}, {owner, _} = from, s)
+  def handle_call({:operation, generation, token, kind, force, deadline}, from, s)
+      when kind in [:stop, :restart, :compact] do
+    handle_call({:operation, generation, token, kind, force, deadline, nil}, from, s)
+  end
+
+  def handle_call(
+        {:operation, generation, token, kind, force, deadline, retention},
+        from,
+        s
+      ) do
+    handle_call({:operation, generation, token, kind, force, deadline, retention, nil}, from, s)
+  end
+
+  def handle_call(
+        {:operation, generation, token, kind, force, deadline, retention, expected_source},
+        {owner, _} = from,
+        s
+      )
       when kind in [:stop, :restart, :compact] and is_boolean(force) and is_integer(deadline) do
+    retention = if is_nil(retention), do: s.config.compaction.terminal_retention, else: retention
+
     case :ets.lookup(s.table, :operation) do
       [{:operation, ^token, ^owner, :claimed, ^deadline} = old] ->
         if s.operation == nil and generation == s.meta.generation and
              System.monotonic_time(:millisecond) < deadline and
+             Tay.Storage.V2.Retention.validate(retention) == :ok and
              if(kind == :compact,
                do: s.meta.status.state == :ready and not force,
                else:
@@ -205,7 +241,10 @@ defmodule Tay.Engine.Lifecycle do
             monitor: nil,
             owner: owner,
             deadline: deadline,
-            stats: nil
+            stats: nil,
+            terminal_retention: retention,
+            expected_source: expected_source,
+            cancel_flag: :atomics.new(1, [])
           }
 
           close_now = force or s.meta.status.state in [:stopped, :failed]
@@ -220,7 +259,7 @@ defmodule Tay.Engine.Lifecycle do
           if close_now do
             {:noreply, begin_closing(s)}
           else
-            send(s.engine, {:lifecycle_drain, generation, token, self()})
+            send(s.engine, {:lifecycle_drain, generation, token, self(), expected_source})
             {:noreply, s}
           end
         else
@@ -245,6 +284,70 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   def handle_call(_, _, s), do: {:reply, {:error, :invalid_lifecycle_request}, s}
+
+  def handle_cast({:policy_evaluate, policy, token}, %{policy: policy} = s) do
+    case policy_ready(s) do
+      :ok -> send(s.engine, {:policy_estimate, self(), policy, token})
+      {:error, reason} -> send(policy, {:policy_estimate, token, {:error, reason}})
+    end
+
+    {:noreply, s}
+  end
+
+  def handle_cast(
+        {:automatic_compaction, policy, token, generation, source},
+        %{policy: policy} = s
+      ) do
+    deadline = System.monotonic_time(:millisecond) + 900_000
+    from = {policy, {:compaction_policy, token}}
+
+    with :ok <- policy_ready(s),
+         true <- generation == s.meta.generation,
+         true <-
+           Admission.cas(
+             s.table,
+             {:operation, nil, nil, :free, 0},
+             {:operation, token, policy, :claimed, deadline}
+           ) do
+      case handle_call(
+             {:operation, generation, token, :compact, false, deadline, nil, source},
+             from,
+             s
+           ) do
+        {:noreply, next} ->
+          Tay.Engine.CompactionEvents.emit(:automatic_compaction_started, :eligible)
+          {:noreply, next}
+
+        {:reply, reply, next} ->
+          GenServer.reply(from, reply)
+          {:noreply, next}
+      end
+    else
+      {:error, reason} ->
+        GenServer.reply(from, {:deferred, reason})
+        {:noreply, s}
+
+      false ->
+        GenServer.reply(from, {:deferred, :busy})
+        {:noreply, s}
+    end
+  end
+
+  def handle_cast(_, s), do: {:noreply, s}
+
+  def handle_info(
+        {:policy_estimate_result, engine, policy, token, result},
+        %{engine: engine, policy: policy} = s
+      ) do
+    result =
+      case policy_ready(s) do
+        :ok -> result
+        error -> error
+      end
+
+    send(policy, {:policy_estimate, token, result})
+    {:noreply, s}
+  end
 
   def handle_info({:completed, engine, slot, token, snapshot}, %{engine: engine} = s) do
     s =
@@ -287,6 +390,22 @@ defmodule Tay.Engine.Lifecycle do
       _ ->
         {:noreply, s}
     end
+  end
+
+  def handle_info(
+        {:operation_source_changed, engine, token},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :draining}} = s
+      ) do
+    s = publish(s, Map.put(s.meta.status, :state, :ready))
+    {:noreply, finish_operation(s, {:deferred, :source_changed})}
+  end
+
+  def handle_info(
+        {:operation_policy_draining, engine, token},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :draining}} = s
+      ) do
+    s = publish(s, Map.put(s.meta.status, :state, :draining))
+    {:noreply, finish_operation(s, {:deferred, :draining})}
   end
 
   def handle_info({Writer, writer, event}, %{writer: writer, operation: %{phase: :closing}} = s)
@@ -352,7 +471,12 @@ defmodule Tay.Engine.Lifecycle do
     # after the graceful request's monotonic deadline.
     if System.monotonic_time(:millisecond) < operation.deadline do
       if operation.kind == :compact do
-        send(engine, {:lifecycle_compact, s.meta.generation, token, self(), operation.deadline})
+        send(
+          engine,
+          {:lifecycle_compact, s.meta.generation, token, self(), operation.deadline,
+           operation.terminal_retention, operation.expected_source, operation.cancel_flag}
+        )
+
         {:noreply, %{s | operation: %{operation | phase: :compacting}}}
       else
         {:noreply, begin_closing(s)}
@@ -370,7 +494,7 @@ defmodule Tay.Engine.Lifecycle do
         {:compaction_result, engine, token, {:ok, stats}},
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
       ) do
-    {:noreply, begin_closing(%{s | operation: %{op | stats: stats}})}
+    {:noreply, begin_closing(%{settled_shutdown(s) | operation: %{op | stats: stats}})}
   end
 
   def handle_info(
@@ -381,11 +505,19 @@ defmodule Tay.Engine.Lifecycle do
     # intent, but it does not justify retiring the authoritative source. Close
     # this Writer and restart through the same locked recovery/rollback gate.
     # If that recovery fails, the normal restart failure path remains closed.
-    {:noreply, begin_closing(%{s | operation: %{op | stats: {:error, reason}}})}
+    {:noreply, begin_closing(%{settled_shutdown(s) | operation: %{op | stats: {:error, reason}}})}
   end
 
   def handle_info({:operation_deadline, token}, %{operation: %{token: token} = operation} = s) do
     if operation.phase == :draining do
+      s =
+        if operation.owner == s.policy do
+          send(s.engine, {:policy_drain_cancel, s.meta.generation, token, self()})
+          publish(s, Map.put(s.meta.status, :state, :ready))
+        else
+          s
+        end
+
       {:noreply,
        finish_operation(
          s,
@@ -495,6 +627,31 @@ defmodule Tay.Engine.Lifecycle do
   defp ready?(s, generation),
     do: s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
 
+  defp policy_ready(s) do
+    cond do
+      s.operation != nil and s.operation.kind == :compact ->
+        {:error, :busy}
+
+      s.meta.status.state in [:recovering, :draining, :drained, :stopping, :stopped] ->
+        {:error, s.meta.status.state}
+
+      s.meta.status.state != :ready ->
+        {:error, :unhealthy}
+
+      s.operation != nil ->
+        {:error, :busy}
+
+      not is_pid(s.engine) or not is_pid(s.writer) ->
+        {:error, :unhealthy}
+
+      not Process.alive?(s.engine) or not Process.alive?(s.writer) or not runtime_live?(s) ->
+        {:error, :unhealthy}
+
+      true ->
+        :ok
+    end
+  end
+
   defp admission_ready?(s, generation),
     do:
       (s.operation == nil or s.operation.kind != :compact) and
@@ -549,6 +706,8 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp clear_generation(s) do
+    if s.policy, do: send(s.policy, {:policy_generation, self()})
+
     Enum.each(s.monitors, fn {ref, kind} ->
       if kind != :operation_driver, do: Process.demonitor(ref, [:flush])
     end)
@@ -578,15 +737,26 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp finish_operation(s, reply) do
+    s = settled_shutdown(s)
     operation = s.operation
     if operation.timer, do: Process.cancel_timer(operation.timer)
     :ets.insert(s.table, {:operation, nil, nil, :free, 0})
+
+    reply =
+      if operation.owner == s.policy, do: Tay.Engine.CompactionEvents.result(reply), else: reply
+
     if operation.from, do: GenServer.reply(operation.from, reply)
     if operation.monitor, do: Process.demonitor(operation.monitor, [:flush])
     %{s | operation: nil, monitors: Map.delete(s.monitors, operation.monitor)}
   end
 
+  defp settled_shutdown(s) do
+    if s.shutdown_waiter, do: GenServer.reply(s.shutdown_waiter, :ok)
+    %{s | shutdown_waiter: nil}
+  end
+
   defp revoke(s, reason) do
+    if s.policy, do: send(s.policy, {:policy_generation, self()})
     already_failed = s.meta.status.state == :failed
     s = publish(s, Map.merge(s.meta.status, %{state: :failed, reason: reason}))
 

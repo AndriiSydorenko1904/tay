@@ -20,11 +20,17 @@ defmodule Tay.Storage.V2.Publisher do
     limits = Map.fetch!(source, :candidate_limits)
     value_limits = Map.fetch!(source, :value_limits)
 
+    source =
+      source
+      |> Map.put_new(:terminal_retention, :infinity)
+      |> Map.put_new_lazy(:captured_at, fn -> System.system_time(:millisecond) end)
+
     with true <- V1.id?(source.store_id) || {:error, :store_id},
          true <-
            (is_nil(source.epoch_id) or V1.id?(source.epoch_id)) ||
              {:error, :source_epoch},
-         {:ok, normalized, ids} <- Snapshot.prepare_infinity(source.jobs),
+         {:ok, normalized, ids, retention_stats} <-
+           Snapshot.prepare(source.jobs, source.terminal_retention, source.captured_at),
          {:ok, inventory} <- source_inventory(native, source.store_id),
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
@@ -32,11 +38,19 @@ defmodule Tay.Storage.V2.Publisher do
          {:ok, admitted_candidate_bytes} <-
            admit_space(native, estimate, length(inventory.sealed), source),
          :ok <- deadline_ok(native.deadline),
+         :ok <- boundary(source, :before_candidate),
          epoch_id <- new_id(),
          nonce <- new_id(),
          :ok <- Native.v2_begin(native, nonce),
          {:ok, base, base_bytes, peak_memory} <-
-           write_base(native, normalized, ids, source.store_id, source.rotation_target_bytes),
+           write_base(
+             native,
+             normalized,
+             ids,
+             source.store_id,
+             source.rotation_target_bytes,
+             source
+           ),
          tail_id <- length(base) + 1,
          tail_first <- length(ids) + 1,
          {:ok, tail_bytes} <- write_tail(native, source.store_id, tail_id, tail_first),
@@ -50,6 +64,7 @@ defmodule Tay.Storage.V2.Publisher do
            Snapshot.equivalent?(normalized, candidate.candidate.jobs) ||
              {:error, :candidate_mismatch},
          :ok <- Native.v2_publish_epoch(native, epoch_id),
+         :ok <- boundary(source, :epoch_published),
          {:ok, renamed} <-
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
@@ -63,22 +78,32 @@ defmodule Tay.Storage.V2.Publisher do
              manifest_digest: Authority.manifest_digest(manifest_bytes)
            }),
          {:ok, stage, identity, previous} <- stage_current(native, source, current_bytes),
-         :ok <- deadline_ok(native.deadline) do
-      publication = %{
-        epoch_id: epoch_id,
-        current: current_bytes,
-        source_bytes: inventory.total_bytes,
-        admitted_candidate_bytes: admitted_candidate_bytes,
-        candidate_bytes:
-          base_bytes + tail_bytes + byte_size(manifest_bytes) + byte_size(current_bytes) +
-            if(is_nil(source.epoch_id), do: 56, else: 0),
-        peak_writer_process_bytes: peak_memory,
-        started: started,
-        previous_epoch_id: source.epoch_id
-      }
+         :ok <- boundary(source, :before_current),
+         :ok <- deadline_ok(native.deadline),
+         :ok <- Tay.Storage.V2.CompactionControl.begin_current() do
+      publication =
+        %{
+          epoch_id: epoch_id,
+          current: current_bytes,
+          source_bytes: inventory.total_bytes,
+          admitted_candidate_bytes: admitted_candidate_bytes,
+          candidate_bytes:
+            base_bytes + tail_bytes + byte_size(manifest_bytes) + byte_size(current_bytes) +
+              if(is_nil(source.epoch_id), do: 56, else: 0),
+          peak_writer_process_bytes: peak_memory,
+          started: started,
+          previous_epoch_id: source.epoch_id
+        }
+        |> Map.merge(retention_stats)
+        |> Map.merge(%{
+          terminal_retention: source.terminal_retention,
+          captured_at: source.captured_at
+        })
 
       case Native.v2_publish_current(native, stage, identity, previous) do
         :ok ->
+          :ok = boundary(source, :current_published)
+
           case verify_published(native, source, normalized, limits, value_limits, publication) do
             {:ok, _} = result ->
               result
@@ -251,7 +276,7 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp write_base(native, jobs, ids, store_id, target) do
+  defp write_base(native, jobs, ids, store_id, target, source) do
     Enum.with_index(ids, 1)
     |> Enum.reduce_while({:ok, nil, [], 0, process_memory()}, fn {id, sequence},
                                                                  {:ok, current, sealed, bytes,
@@ -267,7 +292,8 @@ defmodule Tay.Storage.V2.Publisher do
              }),
            {:ok, current, sealed, bytes} <-
              room(native, current, sealed, bytes, byte_size(record), sequence, store_id, target),
-           {:ok, next} <- append_record(native, current, record) do
+           {:ok, next} <- append_record(native, current, record),
+           :ok <- boundary(source, :base_write) do
         {:cont, {:ok, next, sealed, bytes, max(peak, process_memory())}}
       else
         error -> {:halt, error}
@@ -390,8 +416,8 @@ defmodule Tay.Storage.V2.Publisher do
       epoch_id: epoch_id,
       source_epoch_id: source.epoch_id,
       source_frontier: inventory.frontier,
-      captured_at: System.system_time(:millisecond),
-      terminal_retention: :infinity,
+      captured_at: source.captured_at,
+      terminal_retention: source.terminal_retention,
       source_segments: inventory.sealed,
       base_segments: base,
       tail_segment_id: tail_id,
@@ -484,6 +510,7 @@ defmodule Tay.Storage.V2.Publisher do
          publication
        ) do
     epoch_id = publication.epoch_id
+    native = %{native | deadline: nil}
 
     result =
       with :ok <- Native.v2_select(native, epoch_id),
@@ -504,6 +531,10 @@ defmodule Tay.Storage.V2.Publisher do
            pause_ms: System.monotonic_time(:millisecond) - publication.started,
            reclamation: :deferred,
            previous_epoch_id: source.epoch_id,
+           terminal_retention: publication.terminal_retention,
+           captured_at: publication.captured_at,
+           expired_jobs: publication.expired_jobs,
+           retained_terminal_jobs: publication.retained_terminal_jobs,
            reclaimed_bytes: 0
          }}
       end
@@ -518,11 +549,24 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp deadline_ok(nil), do: :ok
+  if Mix.env() == :test do
+    defp boundary(%{on_boundary: fun}, tag), do: fun.(tag)
+    defp boundary(_, _), do: :ok
+  else
+    defp boundary(_, _), do: :ok
+  end
+
+  defp deadline_ok(nil),
+    do:
+      if(Tay.Storage.V2.CompactionControl.cancelled?(),
+        do: {:error, :compaction_cancelled},
+        else: :ok
+      )
 
   defp deadline_ok(deadline) do
-    if System.monotonic_time(:millisecond) < deadline,
-      do: :ok,
-      else: {:error, :compaction_deadline}
+    if not Tay.Storage.V2.CompactionControl.cancelled?() and
+         System.monotonic_time(:millisecond) < deadline,
+       do: :ok,
+       else: {:error, :compaction_deadline}
   end
 end

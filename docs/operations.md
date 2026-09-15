@@ -64,6 +64,69 @@ explicit control decision; do not automatically allocate another job ID.
 Worker effects are at-least-once. Cancellation fences the durable execution
 token before best-effort termination but cannot undo an effect already made.
 
+## Store-v2 automatic compaction
+
+The per-Engine policy is enabled when `compaction:` is omitted. It uses finite
+terminal retention and conservative sealed-history estimates, not periodic full
+replay. Compaction closes admission, settles execution and uses the sole Writer's
+qualified candidate / validation / CURRENT / deferred-reclamation path.
+It does not run online. All thresholds are conjunctive; a timer alone never
+authorizes a rewrite. Cooldown uses the later of the verified manifest capture
+time and post-publication recovered activation time. Restart conservatively
+extends cooldown rather than shortening it by construction time. Backward clocks
+conservatively defer.
+
+Configuration (milliseconds except the explicit retention unit):
+
+```elixir
+compaction: [
+  enabled: true,
+  terminal_retention: {:hours, 24},
+  check_interval: 60_000,
+  min_interval: 3_600_000,
+  min_sealed_segments: 1,
+  min_reclaimable_bytes: 16_777_216,
+  dead_ratio_threshold: 0.25
+]
+```
+
+Unknown/duplicate keys, unbounded/nonpositive timers or byte/count limits and
+invalid ratios fail configuration. Timers/counts fit unsigned 32 bits; bytes fit
+signed durable time/integer range. Bounded hours use the shared manifest rule
+`1..2_562_047_788_015`, not a separate configuration duration syntax. Ratios are
+positive finite numbers at most one. Automatic configuration rejects infinity.
+
+Retention is eligibility, not an exact-time deletion guarantee: terminal jobs
+expire at `terminal_at <= captured_at - duration`, but actual work waits for
+sealed-history thresholds, cooldown, healthy ownership, successful execution
+drain and sufficient additional disk. The estimator retains at most 128 oldest
+hour buckets, conservatively counting only fully expired hours (up to one extra
+hour of estimation delay). Small/idle stores may retain terminals indefinitely
+below thresholds. Live, scheduled, available, executing, retryable and unsettled
+jobs are protected. Expired IDs are not remembered: get/retry/cancel return
+not-found, and a later submission with that ID is a new job.
+
+`compaction: false` disables the policy child/timer; reclaimable history may then
+grow indefinitely and the operator assumes storage management. Manual work
+remains available:
+
+```elixir
+{:ok, stats} = Tay.compact(timeout: 900_000)
+{:ok, stats} = Tay.compact(terminal_retention: {:hours, 48})
+{:ok, stats} = Tay.compact(terminal_retention: :infinity)
+```
+
+Manual/automatic/stop/restart share one fixed operation slot; a concurrent
+administrative operation returns capacity/busy rather than queuing or forcing a
+switch. Supervisor shutdown cancels the evaluator's timer and asks the owner
+to cancel construction before CURRENT. Once CURRENT is in flight, it waits for
+verification/reconciliation before retiring Engine and defers reclamation.
+No source bytes are deleted to obtain candidate headroom. Payload-free aggregate
+events are structured Logger debug metadata under `:tay_compaction`; enable
+debug logging to observe evaluation/gate/defer/start/completion/failure events.
+See the checkout's Phase-C implementation report for the
+qualification status, finite workload measurements and limitations.
+
 ## Cold backup and restore
 
 Stop and fence every Engine using the source before copying. The native tools
