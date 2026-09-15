@@ -21,12 +21,7 @@ defmodule Tay.Storage.V2.Reclaimer do
         {:ok, %{reclamation: :complete, reclaimed_bytes: 0}}
 
       %{type: :regular, size: 28, links: 1} = entry ->
-        with {:ok, opened} <- Native.open_read(native, :root, "ADOPTION"),
-             true <-
-               (opened.device == entry.device and opened.inode == entry.inode) ||
-                 {:error, :adoption_identity},
-             {:ok, bytes} <- Native.read(native, 0, 28),
-             :ok <- Native.close_read(native),
+        with {:ok, bytes} <- read_intent(native, entry),
              {:ok, nonce} <- Authority.decode_adoption(bytes) do
           reclaim(
             native,
@@ -38,6 +33,20 @@ defmodule Tay.Storage.V2.Reclaimer do
 
       _ ->
         {:error, :invalid_adoption_intent}
+    end
+  end
+
+  defp read_intent(native, entry) do
+    with {:ok, opened} <- Native.open_read(native, :root, "ADOPTION") do
+      result =
+        if opened.device == entry.device and opened.inode == entry.inode,
+          do: Native.read(native, 0, 28),
+          else: {:error, :adoption_identity}
+
+      case Native.close_read(native) do
+        :ok -> result
+        error -> error
+      end
     end
   end
 

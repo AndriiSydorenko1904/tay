@@ -29,7 +29,8 @@ defmodule Tay.Storage.V2.Publisher do
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
            estimate(normalized, ids, source.rotation_target_bytes, native.deadline),
-         :ok <- admit_space(native, estimate, length(inventory.sealed), source),
+         {:ok, admitted_candidate_bytes} <-
+           admit_space(native, estimate, length(inventory.sealed), source),
          :ok <- deadline_ok(native.deadline),
          epoch_id <- new_id(),
          nonce <- new_id(),
@@ -67,6 +68,7 @@ defmodule Tay.Storage.V2.Publisher do
         epoch_id: epoch_id,
         current: current_bytes,
         source_bytes: inventory.total_bytes,
+        admitted_candidate_bytes: admitted_candidate_bytes,
         candidate_bytes:
           base_bytes + tail_bytes + byte_size(manifest_bytes) + byte_size(current_bytes) +
             if(is_nil(source.epoch_id), do: 56, else: 0),
@@ -244,7 +246,7 @@ defmodule Tay.Storage.V2.Publisher do
         not is_integer(limit) or limit <= 0 -> {:error, :candidate_limit}
         estimate.bytes + metadata_allowance > limit -> {:error, :candidate_limit}
         free < required -> {:error, :insufficient_headroom}
-        true -> :ok
+        true -> {:ok, estimate.bytes + metadata_allowance}
       end
     end
   end
@@ -496,6 +498,7 @@ defmodule Tay.Storage.V2.Publisher do
            recovered: recovered,
            source_bytes: publication.source_bytes,
            candidate_bytes: publication.candidate_bytes,
+           admitted_candidate_bytes: publication.admitted_candidate_bytes,
            peak_writer_process_bytes:
              max(publication.peak_writer_process_bytes, process_memory()),
            pause_ms: System.monotonic_time(:millisecond) - publication.started,

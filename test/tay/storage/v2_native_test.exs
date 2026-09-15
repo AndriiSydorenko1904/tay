@@ -357,4 +357,103 @@ defmodule Tay.Storage.V2NativeTest do
     assert {:tay_revision_v2, ^store_id, ^epoch_id, _, _, 1} = recovered.revision
     Tay.Test.EngineHelpers.stop(restarted)
   end
+
+  test "independent BEAM cannot acquire the selected V2 epoch while its Writer owns the lock", %{
+    path: path,
+    store_id: store_id
+  } do
+    {:ok, native} = open(path)
+    assert :ok = Native.enable_mutations(native)
+
+    assert {:ok, _} =
+             Publisher.publish(native, %{
+               store_id: store_id,
+               epoch_id: nil,
+               jobs: %{},
+               frontier: 0,
+               rotation_target_bytes: 67_108_864,
+               candidate_limits: %{},
+               value_limits: Tay.Event.Value.defaults()
+             })
+
+    script =
+      "case Tay.Storage.Native.open_existing(hd(System.argv()), durability: :write) do " <>
+        "{:ok, n} -> IO.puts(\"acquired\"); Tay.Storage.Native.close(n); " <>
+        "{:error, e} -> IO.puts(e.reason) end"
+
+    assert {"store_busy\n", 0} = Tay.Test.NativeHelpers.child_elixir(script, [path])
+    assert :ok = Native.shutdown(native)
+    assert {"acquired\n", 0} = Tay.Test.NativeHelpers.child_elixir(script, [path])
+  end
+
+  test "V2 activation refuses an independently mutated frozen tail without repair", %{
+    path: path,
+    store_id: store_id
+  } do
+    {:ok, native} = open(path)
+    assert :ok = Native.enable_mutations(native)
+
+    assert {:ok, published} =
+             Publisher.publish(native, %{
+               store_id: store_id,
+               epoch_id: nil,
+               jobs: %{},
+               frontier: 0,
+               rotation_target_bytes: 67_108_864,
+               candidate_limits: %{},
+               value_limits: Tay.Event.Value.defaults()
+             })
+
+    assert :ok = Native.shutdown(native)
+    {:ok, tail_name} = Segment.filename(1)
+
+    tail =
+      Path.join([
+        path,
+        "epochs",
+        "e-" <> Base.encode16(published.epoch_id, case: :lower),
+        "segments",
+        tail_name
+      ])
+
+    hook = fn
+      :recovery_revalidating, _native ->
+        caller = self()
+
+        spawn(fn ->
+          File.write!(tail, File.read!(tail) <> <<0>>)
+          send(caller, :tail_mutated)
+        end)
+
+        receive do
+          :tail_mutated -> :ok
+        after
+          5_000 -> {:error, :mutation_timeout}
+        end
+
+      _, _ ->
+        :ok
+    end
+
+    spec = %{
+      codec: Tay.Event,
+      initial_acc: Tay.State.Transition.candidate(%{}, Tay.Event.Value.defaults()),
+      reducer: &Tay.State.Transition.reduce/3,
+      options: []
+    }
+
+    assert {:ok, writer} =
+             Writer.start_recovered_link(
+               [data_dir: path, durability: :write, on_transition: hook],
+               spec
+             )
+
+    status = Writer.status(writer)
+
+    assert {:error, %{stage: :revalidation, action: :preserve_and_stop, mutation: :none}} =
+             Writer.activate_recovered(writer, status.session_ref)
+
+    assert binary_part(File.read!(tail), 44, 1) == <<0>>
+    GenServer.stop(writer)
+  end
 end

@@ -128,7 +128,7 @@ defmodule Tay.System.PackageTest do
     # Release shell launchers may use basic OS utilities, but neither compiler,
     # Mix nor a system Erlang/Elixir executable is admitted to the runtime PATH.
     for name <-
-          ~w(basename dirname readlink sed cut cat ls awk tr expr getconf uname mkdir realpath grep) do
+          ~w(basename dirname readlink sed cut cat ls awk tr expr getconf uname mkdir realpath grep id) do
       if executable = System.find_executable(name),
         do: File.ln_s!(executable, Path.join(path, name))
     end

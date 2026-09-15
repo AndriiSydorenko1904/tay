@@ -259,6 +259,10 @@ defmodule Tay.Storage.Native do
 
   def close(%__MODULE__{}), do: {:error, %{kind: :native_owner, reason: :not_port_owner}}
 
+  @doc false
+  def closed_by_owner?(port) when is_port(port),
+    do: Process.get({__MODULE__, port}) == :closed
+
   def shutdown(native) do
     if self() == native.owner and Process.get({__MODULE__, native.port}) == nil and
          Port.info(native.port) != nil do
@@ -520,7 +524,19 @@ defmodule Tay.Storage.Native do
             v2_restore_epochs_sync: 254,
             v2_restore_root_sync: 255,
             v2_rollback_marker_sync: 256,
-            v2_rollback_intent_sync: 257
+            v2_rollback_intent_sync: 257,
+            v2_reclaim_segment_unlink: 258,
+            v2_reclaim_segment_sync: 259,
+            v2_reclaim_segments_unlink: 260,
+            v2_reclaim_epoch_sync: 261,
+            v2_reclaim_manifest_unlink: 262,
+            v2_reclaim_manifest_sync: 263,
+            v2_reclaim_epoch_unlink: 264,
+            v2_reclaim_epochs_sync: 265,
+            v2_reclaim_adoption_unlink: 266,
+            v2_reclaim_root_sync: 267,
+            v2_rollback_marker_unlink: 268,
+            v2_rollback_intent_unlink: 269
           },
           operation
         ) || Map.fetch!(@ops, operation)
@@ -534,7 +550,9 @@ defmodule Tay.Storage.Native do
           crash_before: 5,
           lose_lock: 6,
           invalid_reply: 7,
-          syscall_error: 8
+          syscall_error: 8,
+          vm_crash_after: 9,
+          vm_crash_before: 10
         }[
           action
         ]
@@ -542,7 +560,7 @@ defmodule Tay.Storage.Native do
       empty(
         native,
         :fault,
-        <<target, occurrence::32, code, errno::32, count::64>>
+        <<target::16, occurrence::32, code, errno::32, count::64>>
       )
     end
   end

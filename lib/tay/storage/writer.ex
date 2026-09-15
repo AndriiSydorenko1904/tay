@@ -418,14 +418,18 @@ defmodule Tay.Storage.Writer do
     do: {:noreply, poison(state, {:helper_exit, code})}
 
   def handle_info({port, {:exit_status, _}}, %{retired_ports: ports} = state) do
-    if MapSet.member?(ports, port), do: {:noreply, state}, else: {:stop, :unexpected_port, state}
+    if MapSet.member?(ports, port) or Native.closed_by_owner?(port),
+      do: {:noreply, state},
+      else: {:stop, :unexpected_port, state}
   end
 
   def handle_info({:EXIT, port, reason}, %{native: %{port: port}} = state),
     do: {:noreply, poison(state, {:port_exit, reason})}
 
   def handle_info({:EXIT, port, _}, %{retired_ports: ports} = state) when is_port(port) do
-    if MapSet.member?(ports, port), do: {:noreply, state}, else: {:stop, :unexpected_port, state}
+    if MapSet.member?(ports, port) or Native.closed_by_owner?(port),
+      do: {:noreply, state},
+      else: {:stop, :unexpected_port, state}
   end
 
   def handle_info({port, {:data, _}}, %{native: %{port: port}} = state),
@@ -582,7 +586,7 @@ defmodule Tay.Storage.Writer do
       timeout: state.options.timeout
     ]
 
-    with {:ok, native} <- Native.open_existing(state.options.data_dir, options) do
+    with {:ok, native} <- reacquire_after_close(state.options.data_dir, options) do
       result =
         with {:ok, recovered} <-
                V2Reader.recover(
@@ -614,6 +618,26 @@ defmodule Tay.Storage.Writer do
             Native.shutdown(native)
             {:error, result}
           )
+    end
+  end
+
+  defp reacquire_after_close(path, options) do
+    deadline = System.monotonic_time(:millisecond) + 5_000
+    do_reacquire_after_close(path, options, deadline)
+  end
+
+  defp do_reacquire_after_close(path, options, deadline) do
+    case Native.open_existing(path, options) do
+      {:error, %{reason: "store_busy"}} = busy ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(10)
+          do_reacquire_after_close(path, options, deadline)
+        else
+          busy
+        end
+
+      result ->
+        result
     end
   end
 

@@ -292,12 +292,31 @@ defmodule Tay.Engine.Lifecycle do
   def handle_info({Writer, writer, event}, %{writer: writer, operation: %{phase: :closing}} = s)
       when event in [:poisoned, :closed], do: {:noreply, s}
 
+  def handle_info(
+        {Writer, writer, :poisoned},
+        %{writer: writer, operation: %{kind: :compact, phase: :compacting}} = s
+      ),
+      do: {:noreply, s}
+
   def handle_info({Writer, writer, event}, %{writer: writer} = s)
       when event in [:poisoned, :closed],
       do: {:noreply, revoke(s, :writer_unavailable)}
 
   def handle_info({:DOWN, ref, :process, _, _}, s) do
     case Map.get(s.monitors, ref) do
+      component
+      when component in [:engine, :writer, :runtime, :fence] and
+             is_map(s.operation) and s.operation.phase == :compacting ->
+        kind = s.operation.kind
+
+        next =
+          finish_operation(
+            s,
+            {:error, Error.new(:unknown_outcome, {:generation_lost, component}, nil, kind)}
+          )
+
+        {:noreply, revoke(next, :generation_lost)}
+
       component when component in [:engine, :writer, :runtime, :fence] ->
         if match?(%{phase: :closing}, s.operation),
           do: {:noreply, s},
@@ -356,16 +375,13 @@ defmodule Tay.Engine.Lifecycle do
 
   def handle_info(
         {:compaction_result, engine, token, {:error, reason}},
-        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
       ) do
-    {:noreply,
-     revoke(
-       finish_operation(
-         s,
-         {:error, Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)}
-       ),
-       :compaction_failed
-     )}
+    # A pre-CURRENT failure may leave a candidate or first-adoption rollback
+    # intent, but it does not justify retiring the authoritative source. Close
+    # this Writer and restart through the same locked recovery/rollback gate.
+    # If that recovery fails, the normal restart failure path remains closed.
+    {:noreply, begin_closing(%{s | operation: %{op | stats: {:error, reason}}})}
   end
 
   def handle_info({:operation_deadline, token}, %{operation: %{token: token} = operation} = s) do
@@ -423,7 +439,17 @@ defmodule Tay.Engine.Lifecycle do
         {:compact, :ok} ->
           if s.meta.status.state == :ready and Process.alive?(s.engine) and
                Process.alive?(s.writer) and runtime_live?(s) do
-            {s, {:ok, operation.stats}}
+            reply =
+              case operation.stats do
+                {:error, reason} ->
+                  {:error,
+                   Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)}
+
+                stats ->
+                  {:ok, stats}
+              end
+
+            {s, reply}
           else
             {revoke(s, :compaction_restart_failed),
              {:error, Error.new(:unknown_outcome, :compaction_restart_failed, nil, :compact)}}
@@ -470,7 +496,9 @@ defmodule Tay.Engine.Lifecycle do
     do: s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
 
   defp admission_ready?(s, generation),
-    do: s.operation == nil and s.meta.generation == generation and s.meta.status.state == :ready
+    do:
+      (s.operation == nil or s.operation.kind != :compact) and
+        s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
 
   defp runtime_live?(%{config: %{execution: false}, runtime: nil, fence: nil}), do: true
 

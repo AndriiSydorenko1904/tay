@@ -51,12 +51,14 @@ defmodule Tay.Storage.V2.Reader do
          true <- pointer.store_id == store_id || {:error, :store_id_mismatch},
          :ok <- maybe_select(native, pointer.epoch_id, options),
          {:ok, epoch_entries} <- Native.list(native, :epoch),
+         :ok <- epoch?(epoch_entries),
          {:ok, manifest_bytes} <-
            metadata(native, :epoch, epoch_entries, "MANIFEST", @max_metadata),
          {:ok, manifest} <- Authority.verify_selection(marker, current, manifest_bytes),
          true <- manifest.store_id == store_id || {:error, :store_id_mismatch},
          {:ok, segment_entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
+         true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
          {:ok, result} <- replay(native, :segments, candidate, classified.canonical, manifest),
          :ok <- revalidate_root(native, root, store_bytes, marker, current),
          :ok <- Native.check(native) do
@@ -79,11 +81,13 @@ defmodule Tay.Storage.V2.Reader do
   def recover_candidate(native, candidate, manifest) do
     with :ok <- Native.check(native),
          {:ok, epoch_entries} <- Native.list(native, :candidate),
+         :ok <- epoch?(epoch_entries),
          {:ok, manifest_bytes} <-
            metadata(native, :candidate, epoch_entries, "MANIFEST", @max_metadata),
          {:ok, ^manifest} <- Authority.decode_manifest(manifest_bytes),
          {:ok, segment_entries} <- Native.list(native, :candidate_segments),
          {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
+         true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
          {:ok, result} <-
            replay(native, :candidate_segments, candidate, classified.canonical, manifest),
          :ok <- Native.check(native) do
@@ -118,6 +122,20 @@ defmodule Tay.Storage.V2.Reader do
 
       true ->
         :ok
+    end
+  end
+
+  defp epoch?(entries) do
+    case Map.new(entries, &{&1.name, &1}) do
+      %{
+        "MANIFEST" => %{type: :regular, links: 1},
+        "segments" => %{type: :directory}
+      } = named
+      when map_size(named) == 2 ->
+        :ok
+
+      _ ->
+        {:error, :unexpected_epoch_topology}
     end
   end
 

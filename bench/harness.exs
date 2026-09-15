@@ -899,9 +899,9 @@ defmodule Tay.Bench.Harness do
   end
 
   defp untrace(engine) do
-    if is_pid(engine) and Process.alive?(engine), do: :erlang.trace(engine, false, [:all])
+    safe_untrace(engine)
     writer = Process.delete({__MODULE__, :traced_writer})
-    if is_pid(writer) and Process.alive?(writer), do: :erlang.trace(writer, false, [:all])
+    safe_untrace(writer)
 
     for module <- [
           Tay.Engine,
@@ -913,6 +913,16 @@ defmodule Tay.Bench.Harness do
         ],
         do: :erlang.trace_pattern({module, :_, :_}, false, [:local])
   end
+
+  defp safe_untrace(pid) when is_pid(pid) do
+    # A traced process may exit between Process.alive?/1 and trace/3 during
+    # cleanup; that death is not a benchmark or storage failure.
+    :erlang.trace(pid, false, [:all])
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp safe_untrace(_), do: :ok
 
   defp flush_trace(engine) do
     for pid <- [engine, Process.get({__MODULE__, :traced_writer})], is_pid(pid) do

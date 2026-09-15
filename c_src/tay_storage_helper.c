@@ -70,6 +70,12 @@ static unsigned char output[PACKET_MAX];
 static size_t output_n;
 
 #ifdef TAY_TEST_FAULTS
+static void kill_owner_vm(void) {
+  pid_t owner=getppid();
+  if (owner>1) kill(owner,SIGKILL);
+  _exit(96);
+}
+
 static int fault_op, fault_n, fault_action, fault_errno;
 static uint64_t fault_short;
 static int fault_now;
@@ -82,6 +88,7 @@ static int promotion_sync(int fd, unsigned target) {
   if (hit) {
     fault_now=1;
     if (fault_action==5) _exit(95);
+    if (fault_action==10) kill_owner_vm();
     if (fault_action==1 || fault_action==8) { errno=fault_errno?fault_errno:EIO; return -1; }
   }
 #else
@@ -90,6 +97,29 @@ static int promotion_sync(int fd, unsigned target) {
   int result=fsync(fd);
 #ifdef TAY_TEST_FAULTS
   if (hit && fault_action==3) _exit(93);
+  if (hit && fault_action==9) kill_owner_vm();
+#endif
+  return result;
+}
+
+/* Reclamation is resumable only if an interruption at each unlink can be
+ * distinguished from one at the subsequent parent-directory sync. */
+static int reclamation_unlink(int fd,const char *name,int flags,unsigned target) {
+#ifdef TAY_TEST_FAULTS
+  int hit=fault_op==(int)target && fault_n>0 && --fault_n==0;
+  if (hit) {
+    fault_now=1;
+    if (fault_action==5) _exit(95);
+    if (fault_action==10) kill_owner_vm();
+    if (fault_action==1 || fault_action==8) { errno=fault_errno?fault_errno:EIO; return -1; }
+  }
+#else
+  (void)target;
+#endif
+  int result=unlinkat(fd,name,flags);
+#ifdef TAY_TEST_FAULTS
+  if (hit && fault_action==3) _exit(93);
+  if (hit && fault_action==9) kill_owner_vm();
 #endif
   return result;
 }
@@ -598,9 +628,11 @@ static int v2_clear_adoption(void) {
   if (!S_ISDIR(segments.st_mode)) return EINVAL;
   if (fstatat(root_fd,"STORE-V2",&marker,AT_SYMLINK_NOFOLLOW)==0) {
     if (!S_ISREG(marker.st_mode) || marker.st_nlink!=1 || marker.st_size!=28) return EINVAL;
-    if (unlinkat(root_fd,"STORE-V2",0)<0 || promotion_sync(root_fd,256)<0) return errno;
+    if (reclamation_unlink(root_fd,"STORE-V2",0,268)<0 ||
+        promotion_sync(root_fd,256)<0) return errno;
   } else if (errno!=ENOENT) return errno;
-  if (unlinkat(root_fd,"ADOPTION",0)<0 || promotion_sync(root_fd,257)<0) return errno;
+  if (reclamation_unlink(root_fd,"ADOPTION",0,269)<0 ||
+      promotion_sync(root_fd,257)<0) return errno;
   return check_paths();
 }
 
@@ -681,7 +713,7 @@ static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
     struct stat s;
     if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
-    if (unlinkat(fd,ent->d_name,0)<0 || fsync(fd)<0) { e=errno; break; }
+    if (reclamation_unlink(fd,ent->d_name,0,258)<0 || promotion_sync(fd,259)<0) { e=errno; break; }
     *bytes+=(uint64_t)s.st_size;
     errno=0;
   }
@@ -689,7 +721,8 @@ static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
   if (closedir(dir)<0 && !e) e=errno;
   if (close(fd)<0 && !e) e=errno;
   if (e) return e;
-  if (!legacy && (unlinkat(directory,"segments",AT_REMOVEDIR)<0 || fsync(directory)<0)) return errno;
+  if (!legacy && (reclamation_unlink(directory,"segments",AT_REMOVEDIR,260)<0 ||
+                  promotion_sync(directory,261)<0)) return errno;
   return 0;
 }
 
@@ -764,15 +797,18 @@ static int v2_reclaim(void) {
     if (!e && !legacy && manifest) {
       struct stat s;
       if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0) e=errno;
-      else if (unlinkat(target_fd,"MANIFEST",0)<0 || fsync(target_fd)<0) e=errno;
+      else if (reclamation_unlink(target_fd,"MANIFEST",0,262)<0 ||
+               promotion_sync(target_fd,263)<0) e=errno;
       else bytes+=(uint64_t)s.st_size;
     }
     if (close(target_fd)<0 && !e) e=errno;
     if (e) return e;
-    if (unlinkat(epochs_fd,target,AT_REMOVEDIR)<0 || fsync(epochs_fd)<0) return errno;
-  } else if (fsync(epochs_fd)<0) return errno;
+    if (reclamation_unlink(epochs_fd,target,AT_REMOVEDIR,264)<0 ||
+        promotion_sync(epochs_fd,265)<0) return errno;
+  } else if (promotion_sync(epochs_fd,265)<0) return errno;
   if (legacy) {
-    if (unlinkat(root_fd,"ADOPTION",0)<0 || fsync(root_fd)<0) return errno;
+    if (reclamation_unlink(root_fd,"ADOPTION",0,266)<0 ||
+        promotion_sync(root_fd,267)<0) return errno;
   }
   put(bytes,8); return 0;
 }
@@ -1070,8 +1106,8 @@ static int dispatch(unsigned op) {
   }
 #ifdef TAY_TEST_FAULTS
   if (op==FAULT) {
-    if (!need(18)) return EPROTO;
-    fault_op=(int)number(1); fault_n=(int)number(4); fault_action=(int)number(1);
+    if (!need(19)) return EPROTO;
+    fault_op=(int)number(2); fault_n=(int)number(4); fault_action=(int)number(1);
     fault_errno=(int)number(4); fault_short=number(8); return 0;
   }
 #endif
@@ -1230,8 +1266,8 @@ static int validate_request(unsigned op) {
     case COLD_CHECK: case COLD_SOURCE: break;
 #ifdef TAY_TEST_FAULTS
     case FAULT:
-      if (!need(18)) return EPROTO;
-      pos+=18; break;
+      if (!need(19)) return EPROTO;
+      pos+=19; break;
 #endif
     default:return EPROTO;
   }
@@ -1280,6 +1316,7 @@ int main(void) {
     fault_now=(op==(unsigned)fault_op && fault_n>0 && --fault_n==0);
     if (fault_now && fault_action==1) e=fault_errno?fault_errno:EIO;
     else if (fault_now && fault_action==5) _exit(95);
+    else if (fault_now && fault_action==10) kill_owner_vm();
     else if (fault_now && fault_action==6) { if (lock_fd>=0) close(lock_fd); lock_fd=-1; }
 #endif
     if (!e) e=version==1?validate_request(op):EPROTO;
@@ -1290,6 +1327,7 @@ int main(void) {
         op!=V2_RECLAIM) poisoned=1;
 #ifdef TAY_TEST_FAULTS
     if (fault_now && fault_action==3) _exit(93);
+    if (fault_now && fault_action==9) kill_owner_vm();
     if (fault_now && fault_action==4) { free(packet); continue; }
     if (fault_now && fault_action==7) id^=1;
 #endif
