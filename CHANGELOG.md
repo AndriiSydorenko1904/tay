@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.7.1 — 2026-09-22
+
+- Fixed a circular `GenServer.call` deadlock between executor dispatch and
+  completion on connections with capacity greater than one. Outbound delivery
+  is now mailbox-ordered without synchronously blocking the executor server;
+  durable-start ordering, completion acknowledgements, disconnect recovery,
+  reservation cleanup and at-least-once execution semantics are preserved.
+- Added a deterministic capacity-two dispatch/completion overlap regression
+  test and a concurrent multi-capacity stress test.
+
 ## 0.7.0 — 2026-09-21
 
 - Executor Protocol v1 now has automatic, cross-language local socket discovery:

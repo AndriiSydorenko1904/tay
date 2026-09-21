@@ -307,21 +307,21 @@ defmodule Tay.Executor.Server do
         "timeout_ms" => job.timeout_ms
       }
 
-      case Connection.deliver(connection, message) do
-        :ok ->
-          reservation_value = %{
-            value
-            | status: :inflight,
-              execution_id: execution,
-              job_id: job.id
-          }
+      reservation_value = %{
+        value
+        | status: :inflight,
+          execution_id: execution,
+          job_id: job.id
+      }
 
-          {:reply, :ok,
-           %{s | reservations: Map.put(s.reservations, reservation, reservation_value)}}
+      # Delivery is ordered in the connection mailbox but must not wait for
+      # that GenServer. It can be processing a completion which synchronously
+      # asks this server to validate the same connection. A send failure stops
+      # the monitored connection; drop_connection/2 then reports every active
+      # reservation as lost so the durable execution can be retried.
+      :ok = Connection.deliver(connection, message)
 
-        _ ->
-          {:reply, {:error, :connection_closed}, drop_connection(s, connection)}
-      end
+      {:reply, :ok, %{s | reservations: Map.put(s.reservations, reservation, reservation_value)}}
     else
       {:error, _} = error -> {:reply, error, s}
     end

@@ -9,7 +9,7 @@ constrained, target-validated operating profile.
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
-building. Add `{:tay, "~> 0.7.0"}` to your application's Mix dependencies, or
+building. Add `{:tay, "~> 0.7.1"}` to your application's Mix dependencies, or
 `{:tay, path: "../tay"}` for this checkout. Run `mix deps.get` and `mix compile`.
 
 For a development run, choose a dedicated absolute directory and initialize it

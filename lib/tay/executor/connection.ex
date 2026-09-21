@@ -12,7 +12,7 @@ defmodule Tay.Executor.Connection do
   def start_link(options), do: GenServer.start(__MODULE__, options)
 
   def deliver(connection, message),
-    do: GenServer.call(connection, {:deliver, message}, @send_timeout)
+    do: GenServer.cast(connection, {:deliver, message})
 
   def reply(connection, request_id, type, fields \\ %{}) do
     try do
@@ -125,13 +125,16 @@ defmodule Tay.Executor.Connection do
   def handle_info(_, s), do: {:noreply, s}
 
   @impl true
-  def handle_call({:deliver, message}, _from, s) do
+  def handle_cast({:deliver, message}, s) do
     case send_wire(s, message) do
-      {:ok, next} -> {:reply, :ok, next}
-      {:error, next} -> {:stop, :normal, {:error, :connection_closed}, next}
+      {:ok, next} -> {:noreply, next}
+      {:error, next} -> {:stop, :normal, next}
     end
   end
 
+  def handle_cast(:close, s), do: {:stop, :normal, s}
+
+  @impl true
   def handle_call({:reply, request_id, type, fields}, _from, s) do
     case take_pending(s, request_id) do
       {:ok, next} ->
@@ -157,9 +160,6 @@ defmodule Tay.Executor.Connection do
       {:error, sent} -> {:stop, :normal, {:error, :connection_closed}, sent}
     end
   end
-
-  @impl true
-  def handle_cast(:close, s), do: {:stop, :normal, s}
 
   @impl true
   def terminate(_reason, s) do
