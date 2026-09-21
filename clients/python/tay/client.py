@@ -419,7 +419,7 @@ class Tay:
             return
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             detail = (
                 f": {self._last_connection_error}"
                 if self._last_connection_error
@@ -619,7 +619,7 @@ class Tay:
             return await asyncio.wait_for(
                 asyncio.shield(future), timeout=self.request_timeout
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise ConnectionLost(
                 f"Tay did not reply to {message_type!r} within {self.request_timeout:g}s"
             ) from exc

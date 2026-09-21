@@ -7,8 +7,10 @@ contract as the Elixir Engine (explicit path, `TAY_SOCKET_PATH`, XDG runtime,
 package:
 
 ```sh
-python -m pip install ./clients/python
+python -m pip install tay-client
 ```
+
+From a Tay source checkout, use `python -m pip install ./clients/python`.
 
 Create a `Tay(mode="client")` producer, or a `Tay(mode="worker")` process that
 only executes registered tasks. The SDK sends JSON-object arguments and bounded
@@ -74,3 +76,8 @@ The imported module must create exactly one `Tay(mode="worker")` instance and
 register its tasks. Pass `socket_path=` or set `TAY_SOCKET_PATH` only to override
 automatic discovery. See the repository README for the current durable-result/
 scheduling compatibility boundary.
+
+## License
+
+The `tay-client` Python package is licensed under the MIT License. The Tay
+engine is distributed separately under the Elastic License 2.0.

@@ -54,21 +54,26 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
+  @version "0.7.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
     [
       app: :tay,
-      version: "0.5.0",
+      version: @version,
       description: "Public-preview single-node durable job engine with fail-closed recovery",
       source_url: @source_url,
       package: package(),
+      docs: docs(),
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       compilers: [:tay_native] ++ Mix.compilers(),
       elixirc_paths: elixirc_paths(Mix.env()),
       test_ignore_filters: [&String.starts_with?(&1, "test/fixtures/")],
-      deps: [{:stream_data, "~> 1.2", only: :test}]
+      deps: [
+        {:stream_data, "~> 1.2", only: :test},
+        {:ex_doc, "~> 0.40.4", only: :dev, runtime: false}
+      ]
     ]
   end
 
@@ -96,6 +101,7 @@ defmodule Tay.MixProject do
         "README.md",
         "CHANGELOG.md",
         "LICENSE",
+        "COMMERCIAL-LICENSING.md",
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
@@ -104,9 +110,25 @@ defmodule Tay.MixProject do
       build_tools: ["mix"],
       links: %{
         "Source" => @source_url,
-        "Documentation" => @source_url <> "/tree/v0.5.0/docs"
+        "Documentation" => @source_url <> "/tree/v#{@version}/docs"
       },
       licenses: ["Elastic-2.0"]
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "COMMERCIAL-LICENSING.md",
+        "docs/protocol.md",
+        "docs/storage.md",
+        "docs/operations.md",
+        "docs/compatibility.md"
+      ]
     ]
   end
 end

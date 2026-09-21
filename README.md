@@ -9,9 +9,8 @@ constrained, target-validated operating profile.
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
-building. Add `{:tay, "~> 0.5.0"}` to your application's Mix dependencies when
-the package is available, or `{:tay, path: "../tay"}` for this checkout. Run
-`mix deps.get` and `mix compile`.
+building. Add `{:tay, "~> 0.7.0"}` to your application's Mix dependencies, or
+`{:tay, path: "../tay"}` for this checkout. Run `mix deps.get` and `mix compile`.
 
 For a development run, choose a dedicated absolute directory and initialize it
 once. Initialization refuses existing history and is never a repair command:
@@ -70,8 +69,8 @@ crash, so make them idempotent or reconcile them in the application.
 
 The Engine starts a local Unix-domain socket automatically. The separate Python
 SDK discovers the same path; neither side needs a socket setting for normal
-local use. Install the SDK from this checkout with
-`python -m pip install ./clients/python`, then:
+local use. Install the SDK with `python -m pip install tay-client` (or
+`python -m pip install ./clients/python` from this checkout), then:
 
 ```python
 from tay import Tay
@@ -111,6 +110,17 @@ restart catch-up, and enforced overlap policies are not yet implemented.
 The socket is local only; there is no TCP listener or multi-host worker
 protocol. See the [protocol contract](docs/protocol.md) for discovery, security,
 request types, and result retention.
+
+## License
+
+The Tay engine is source-available under the Elastic License 2.0. Internal use,
+including use inside an ordinary commercial SaaS product, is free. The license
+does not permit offering Tay itself, or a substantial set of its functionality,
+to third parties as a hosted or managed service. Commercial terms for that use
+are available separately; see
+[commercial licensing](COMMERCIAL-LICENSING.md).
+
+The separately distributed Python client is licensed under MIT.
 
 ## Operate safely
 

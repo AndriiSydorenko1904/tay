@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-09-21
+
 - Executor Protocol v1 now has automatic, cross-language local socket discovery:
   explicit path, `TAY_SOCKET_PATH`, XDG runtime, `TMPDIR`, then per-UID `/tmp`.
   Normal Engines and `Tay()` therefore connect without socket configuration;
@@ -19,7 +21,8 @@
 - Preserved the frozen Record/Segment/Event v1 format. Result values are not
   invented as Event-v1 fields: only completion is durable, while successful
   values are retained up to `executor_max_results` in the current listener
-  generation. Periodic scheduling and custom retry policies remain deferred.
+  generation. Durable periodic scheduling and custom retry policies remain
+  deferred.
 - Centralized the immutable Event-v1 retry delay/jitter constants so all retry
   producers and interval checks use the same frozen policy.
 
