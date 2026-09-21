@@ -4,6 +4,7 @@ defmodule Tay.Executor.Server do
   import Bitwise
 
   alias Tay.Executor.{Connection, Protocol}
+  alias Tay.Schedule
 
   @call_timeout 5_000
   @request_timeout 30_000
@@ -83,6 +84,7 @@ defmodule Tay.Executor.Server do
           connections: %{},
           monitors: %{},
           reservations: %{},
+          schedules: %{},
           results: %{},
           result_order: :queue.new()
         })
@@ -149,6 +151,25 @@ defmodule Tay.Executor.Server do
     end
   end
 
+  def handle_info({:schedule_due, id, due}, s) do
+    case Map.get(s.schedules, id) do
+      %{schedule: %{next_at: ^due} = schedule, options: options} ->
+        enqueue_schedule(s.engine_name, schedule, options)
+
+        case Schedule.advance(schedule, due) do
+          {:ok, advanced} ->
+            entry = arm_schedule(advanced, options, System.system_time(:millisecond))
+            {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
+
+          {:error, _} ->
+            {:noreply, drop_schedule(s, id)}
+        end
+
+      _ ->
+        {:noreply, s}
+    end
+  end
+
   def handle_info(_, s), do: {:noreply, s}
 
   @impl true
@@ -206,6 +227,33 @@ defmodule Tay.Executor.Server do
       {:reply, :ok, state}
     else
       {:error, code} -> {:reply, {:error, code}, s}
+    end
+  end
+
+  def handle_call({:put_schedule, fields}, _from, s) do
+    id = Map.get(fields, "declaration_id") || schedule_id()
+    now = System.system_time(:millisecond)
+
+    case Schedule.new(id, fields, now) do
+      {:ok, schedule} ->
+        state = drop_schedule(s, id)
+        entry = arm_schedule(schedule, Map.get(fields, "options", %{}), now)
+        next = %{state | schedules: Map.put(state.schedules, id, entry)}
+        {:reply, {:ok, public_schedule(schedule)}, next}
+
+      {:error, _} ->
+        {:reply, {:error, "invalid_schedule"}, s}
+    end
+  end
+
+  def handle_call({:cancel_schedule, id}, _from, s) do
+    case Map.fetch(s.schedules, id) do
+      {:ok, %{schedule: schedule}} ->
+        cancelled = Schedule.cancel(schedule, System.system_time(:millisecond))
+        {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
+
+      :error ->
+        {:reply, {:error, "schedule_not_found"}, s}
     end
   end
 
@@ -666,6 +714,8 @@ defmodule Tay.Executor.Server do
         "status" -> status(engine_name, message)
         "cancel" -> cancel_job(engine_name, message)
         "result" -> result(server, engine_name, message)
+        "schedule" -> schedule(server, message)
+        "cancel_schedule" -> cancel_schedule(server, message)
         _ -> {:error, "unsupported_request"}
       end
 
@@ -739,6 +789,71 @@ defmodule Tay.Executor.Server do
         {:error, "unavailable"}
     end
   end
+
+  defp schedule(server, message) do
+    fields = Map.drop(message, ["version", "type", "request_id"])
+
+    case GenServer.call(server, {:put_schedule, fields}, @call_timeout) do
+      {:ok, value} ->
+        {:ok, "scheduled", %{"schedule_id" => value["id"], "schedule" => value}}
+
+      {:error, code} ->
+        {:error, code}
+    end
+  end
+
+  defp cancel_schedule(server, %{"schedule_id" => id}) when is_binary(id) do
+    case GenServer.call(server, {:cancel_schedule, id}, @call_timeout) do
+      {:ok, value} ->
+        {:ok, "schedule_cancelled", %{"schedule_id" => id, "schedule" => value}}
+
+      {:error, code} ->
+        {:error, code}
+    end
+  end
+
+  defp cancel_schedule(_, _), do: {:error, "invalid_schedule_id"}
+
+  defp arm_schedule(schedule, options, now) do
+    delay = max(schedule.next_at - now, 0)
+    timer = Process.send_after(self(), {:schedule_due, schedule.id, schedule.next_at}, delay)
+    %{schedule: schedule, options: options, timer: timer}
+  end
+
+  defp drop_schedule(s, id) do
+    case Map.pop(s.schedules, id) do
+      {nil, _} ->
+        s
+
+      {%{timer: timer}, schedules} ->
+        Process.cancel_timer(timer)
+        %{s | schedules: schedules}
+    end
+  end
+
+  defp enqueue_schedule(engine_name, schedule, raw_options) do
+    Task.start(fn ->
+      with {:ok, options} <- enqueue_options(raw_options) do
+        _ = Tay.enqueue(schedule.task, schedule.args, [name: engine_name] ++ options)
+      end
+    end)
+  end
+
+  defp public_schedule(schedule) do
+    %{
+      "id" => schedule.id,
+      "task" => schedule.task,
+      "kind" => Atom.to_string(schedule.kind),
+      "timezone" => schedule.timezone,
+      "overlap" => schedule.overlap,
+      "catch_up" => schedule.catch_up,
+      "next_at" => schedule.next_at,
+      "last_at" => schedule.last_at,
+      "cancelled_at" => schedule.cancelled_at
+    }
+  end
+
+  defp schedule_id, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
 
   defp enqueue_options(options) when is_map(options) and not is_struct(options) do
     allowed = ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue)

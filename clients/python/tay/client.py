@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import os
+import re
 import traceback
 import uuid
 import weakref
@@ -44,6 +45,8 @@ _MODES = frozenset({"client", "embedded", "worker"})
 # aligned with the listener rather than accepting values it cannot represent.
 _BACKOFF_MODES = frozenset({"exponential"})
 _OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
+_CATCH_UP_POLICIES = frozenset({"latest", "all"})
+_TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,7 @@ class ScheduleHandle:
 
     async def cancel(self) -> Any:
         reply = await self._tay._request("cancel_schedule", {"schedule_id": self.id})
-        return reply.get("status", reply)
+        return reply.get("schedule", reply.get("status", reply))
 
 
 def _server_error_from_payload(payload: Any) -> ServerError:
@@ -165,6 +168,11 @@ class Tay:
         self.include_traceback = bool(include_traceback)
 
         self._tasks: dict[str, Task] = {}
+        # These are the capabilities we intend to advertise, rather than just
+        # every callable that happens to be retained locally.  Keeping them
+        # separate lets an executor withdraw a task without losing its Python
+        # wrapper, and makes reconnect replay deterministic.
+        self._registered_task_names: set[str] = set()
         self._running = False
         self._closing = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -239,6 +247,7 @@ class Tay:
                 )
             task = Task(self, candidate, name=task_name, config=config)
             self._tasks[task_name] = task
+            self._registered_task_names.add(task_name)
             return task
 
         if function is None:
@@ -461,8 +470,10 @@ class Tay:
                 "max_concurrency": self.capacity if self.mode != "client" else 0,
             },
         )
-        if self.mode != "client" and self._tasks:
-            await self._exchange("register_tasks", {"tasks": list(self._tasks)})
+        if self.mode != "client" and self._registered_task_names:
+            await self._exchange(
+                "register_tasks", {"tasks": sorted(self._registered_task_names)}
+            )
 
     async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -589,8 +600,55 @@ class Tay:
 
     def _task_name(self, task: str | Task) -> str:
         if isinstance(task, Task):
+            if task.tay is not self:
+                raise ValidationError(
+                    "a Task can only be used with the Tay instance that created it"
+                )
             return task.name
         return validate_task_name(task)
+
+    def _registered_task_name(self, task: str | Task) -> str:
+        name = self._task_name(task)
+        if self._tasks.get(name) is None:
+            raise TaskRegistrationError(f"task {name!r} is not registered on this Tay instance")
+        return name
+
+    async def register_tasks(self, *tasks: str | Task) -> tuple[Task, ...]:
+        """Advertise locally registered tasks to a running executor.
+
+        Tasks declared before :meth:`start` are registered during the initial
+        handshake.  Use this method after declaring tasks at runtime; the
+        desired registrations are also replayed after a reconnect.
+        """
+
+        if self.mode == "client":
+            raise ModeError("client mode cannot register execution tasks")
+        if not tasks:
+            return ()
+        names = tuple(dict.fromkeys(self._registered_task_name(task) for task in tasks))
+        self._registered_task_names.update(names)
+        await self._request("register_tasks", {"tasks": list(names)})
+        return tuple(self._tasks[name] for name in names)
+
+    async def unregister_tasks(self, *tasks: str | Task) -> tuple[str, ...]:
+        """Withdraw task capabilities without discarding their local wrappers.
+
+        The withdrawal is remembered across reconnects.  Running executions
+        remain fenced by Tay and may still settle according to the server's
+        cancellation semantics.
+        """
+
+        if self.mode == "client":
+            raise ModeError("client mode cannot unregister execution tasks")
+        if not tasks:
+            return ()
+        names = tuple(dict.fromkeys(self._registered_task_name(task) for task in tasks))
+        self._registered_task_names.difference_update(names)
+        # Keep the desired state withdrawn even when this RPC has an unknown
+        # transport outcome. Registrations are connection-scoped, and a later
+        # bootstrap must not accidentally resurrect the capability.
+        await self._request("unregister_tasks", {"tasks": list(names)})
+        return names
 
     async def enqueue(
         self,
@@ -640,7 +698,11 @@ class Tay:
         kwargs: Mapping[str, Any] | None = None,
         args: Mapping[str, Any] | None = None,
         declaration_id: str | None = None,
+        timezone: str = "+00",
+        catch_up: str = "latest",
         overlap: str | None = None,
+        delay: float | int | None = None,
+        start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:
         """Create or reconcile a cron schedule for a task."""
@@ -651,20 +713,30 @@ class Tay:
             raise ValidationError("pass either kwargs or args to schedule, not both")
         if type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256:
             raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
-        if overlap is not None and overlap not in _OVERLAP_POLICIES:
-            raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
-        if declaration_id is not None and (type(declaration_id) is not str or not declaration_id):
-            raise ValidationError("declaration_id must be a non-empty string")
+        self._validate_schedule_options(
+            declaration_id=declaration_id,
+            timezone=timezone,
+            catch_up=catch_up,
+            overlap=overlap,
+            delay=delay,
+            start_at=start_at,
+        )
         payload: dict[str, Any] = {
             "task": self._task_name(task),
             "args": normalize_json(kwargs if kwargs is not None else args or {}),
             "cron": cron,
+            "timezone": timezone,
+            "catch_up": catch_up,
             "options": normalize_json(options),
         }
         if declaration_id is not None:
             payload["declaration_id"] = declaration_id
         if overlap is not None:
             payload["overlap"] = overlap
+        if delay is not None:
+            payload["delay"] = delay
+        if start_at is not None:
+            payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
         return ScheduleHandle(_extract_identifier(reply, "schedule_id", "schedule"), self)
 
@@ -679,7 +751,10 @@ class Tay:
         kwargs: Mapping[str, Any] | None = None,
         args: Mapping[str, Any] | None = None,
         declaration_id: str | None = None,
+        catch_up: str = "latest",
         overlap: str | None = None,
+        delay: float | int | None = None,
+        start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:
         """Create or reconcile an interval schedule using exactly one unit."""
@@ -696,22 +771,59 @@ class Tay:
             raise ModeError("worker mode only executes tasks; use embedded or client to schedule")
         if kwargs is not None and args is not None:
             raise ValidationError("pass either kwargs or args to every, not both")
-        if overlap is not None and overlap not in _OVERLAP_POLICIES:
-            raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
-        if declaration_id is not None and (type(declaration_id) is not str or not declaration_id):
-            raise ValidationError("declaration_id must be a non-empty string")
+        self._validate_schedule_options(
+            declaration_id=declaration_id,
+            timezone="+00",
+            catch_up=catch_up,
+            overlap=overlap,
+            delay=delay,
+            start_at=start_at,
+        )
         payload: dict[str, Any] = {
             "task": self._task_name(task),
             "args": normalize_json(kwargs if kwargs is not None else args or {}),
             "every": every,
+            "catch_up": catch_up,
             "options": normalize_json(options),
         }
         if declaration_id is not None:
             payload["declaration_id"] = declaration_id
         if overlap is not None:
             payload["overlap"] = overlap
+        if delay is not None:
+            payload["delay"] = delay
+        if start_at is not None:
+            payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
         return ScheduleHandle(_extract_identifier(reply, "schedule_id", "schedule"), self)
+
+    @staticmethod
+    def _validate_schedule_options(
+        *,
+        declaration_id: str | None,
+        timezone: str,
+        catch_up: str,
+        overlap: str | None,
+        delay: float | int | None,
+        start_at: int | None,
+    ) -> None:
+        if declaration_id is not None and (type(declaration_id) is not str or not declaration_id):
+            raise ValidationError("declaration_id must be a non-empty string")
+        if type(timezone) is not str or not _TIMEZONE_OFFSET.fullmatch(timezone):
+            raise ValidationError("timezone must be UTC, Z, or an offset such as +01 or -02:30")
+        if catch_up not in _CATCH_UP_POLICIES:
+            raise ValidationError(f"catch_up must be one of {sorted(_CATCH_UP_POLICIES)}")
+        if overlap is not None and overlap not in _OVERLAP_POLICIES:
+            raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
+        if delay is not None:
+            if type(delay) not in {int, float} or delay < 0 or (
+                type(delay) is float and not float(delay) < float("inf")
+            ):
+                raise ValidationError("delay must be a finite non-negative number of seconds")
+        if start_at is not None and (type(start_at) is not int or start_at < 0):
+            raise ValidationError("start_at must be a non-negative UTC millisecond timestamp")
+        if delay is not None and start_at is not None:
+            raise ValidationError("pass either delay or start_at, not both")
 
     async def _accept_execution(self, message: Mapping[str, Any]) -> None:
         if self.mode == "client":

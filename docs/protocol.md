@@ -74,7 +74,9 @@ definition, never with a fresh submission ID.
 Completion state is durable; a successful return value is retained only in the
 bounded current listener generation (`executor_result_bytes` and
 `executor_max_results`). After restart, `result` may be JSON `null` for a
-completed job. Protocol v1 is not a durable result backend. Periodic cron or
-interval scheduling, custom retry curves, multi-host leases, and exactly-once
-external effects are unsupported. Schedule-related requests receive a
-correlated `scheduling_unsupported` error.
+completed job. Protocol v1 is not a durable result backend. Cron and interval
+schedules can be created and cancelled through `schedule` and
+`cancel_schedule`; their registry currently belongs to the live listener
+generation, so durable recovery, restart catch-up, and overlap enforcement are
+not yet available. Custom retry curves, multi-host leases, and exactly-once
+external effects are unsupported.

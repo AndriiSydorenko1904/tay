@@ -53,19 +53,26 @@ defmodule Tay.Executor.PythonInteropTest do
 
     async def main():
         client = Tay(mode="embedded", socket_path=sys.argv[1], client_id="python-interop")
+        executions = []
 
         @client.task(name="python.interop.v1")
         def add(left, right):
+            executions.append((left, right))
             return {"sum": left + right}
 
         await client.start()
         try:
-            try:
-                await client.every("python.interop.v1", seconds=1)
-            except ServerError as error:
-                assert error.code == "scheduling_unsupported"
-            else:
-                raise RuntimeError("unsupported periodic schedule was accepted")
+            schedule = await client.every(
+                "python.interop.v1", seconds=0.05, kwargs={"left": 1, "right": 2}
+            )
+            assert schedule.id
+            for _ in range(100):
+                if executions:
+                    break
+                await asyncio.sleep(0.01)
+            assert executions
+            cancelled = await schedule.cancel()
+            assert cancelled["cancelled_at"] is not None
 
             job = await client.enqueue(
                 "python.interop.v1",

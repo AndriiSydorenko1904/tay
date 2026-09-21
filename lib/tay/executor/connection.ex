@@ -251,12 +251,12 @@ defmodule Tay.Executor.Connection do
          else: (_ -> protocol_reply(s, message, "invalid_job_id"))
   end
 
-  # Keep request correlation intact for SDK methods that predate the durable
-  # periodic-schedule event design. An explicit feature error is safer than a
-  # disconnect that looks like a transport outage.
   defp request(%{"type" => type} = message, s)
-       when type in ["schedule", "cancel_schedule", "register_schedules"],
-       do: protocol_reply(s, message, "scheduling_unsupported")
+       when type in ["schedule", "cancel_schedule"],
+       do: forward(s, message)
+
+  defp request(%{"type" => "register_schedules"} = message, s),
+    do: protocol_reply(s, message, "bulk_scheduling_unsupported")
 
   defp request(%{"type" => "started"} = message, s) do
     with {:ok, reservation_id, execution} <- execution_context(message),

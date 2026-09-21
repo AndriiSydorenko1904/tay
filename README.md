@@ -88,6 +88,26 @@ async def submit() -> None:
     print(await job.status())
 ```
 
+### Python schedules
+
+The Python client accepts standard five-field Unix cron expressions. Schedules
+use UTC by default; pass a fixed numeric offset when needed. The API accepts
+`catch_up="latest"` (default) or `catch_up="all"`, and defaults to
+`overlap="skip"`.
+
+```python
+# At 08:00 on weekdays in UTC+02.
+await tay.schedule("billing.capture.v1", cron="0 8 * * 1-5", timezone="+02")
+
+# Start in ten minutes, then repeat every fifteen minutes.
+await tay.every("billing.capture.v1", minutes=15, delay=600)
+```
+
+Use `start_at=<UTC milliseconds>` for an absolute first run instead of
+`delay`; those options cannot be combined. The current listener schedule
+registry belongs to the live execution generation. Durable schedule recovery,
+restart catch-up, and enforced overlap policies are not yet implemented.
+
 The socket is local only; there is no TCP listener or multi-host worker
 protocol. See the [protocol contract](docs/protocol.md) for discovery, security,
 request types, and result retention.

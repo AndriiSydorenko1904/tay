@@ -177,18 +177,60 @@ class Task:
         return await self.tay.enqueue(self.name, serialized_args, options=options)
 
     async def schedule(
-        self, *, cron: str, kwargs: Mapping[str, Any] | None = None, **options: Any
+        self,
+        *,
+        cron: str,
+        kwargs: Mapping[str, Any] | None = None,
+        timezone: str = "+00",
+        catch_up: str = "latest",
+        overlap: str | None = None,
+        delay: float | int | None = None,
+        start_at: int | None = None,
+        **options: Any,
     ) -> ScheduleHandle:
         """Create or update a cron schedule for this task."""
 
-        return await self.tay.schedule(self, cron=cron, kwargs=kwargs, **options)
+        return await self.tay.schedule(
+            self,
+            cron=cron,
+            kwargs=kwargs,
+            timezone=timezone,
+            catch_up=catch_up,
+            overlap=overlap,
+            delay=delay,
+            start_at=start_at,
+            **options,
+        )
 
     async def every(
-        self, *, kwargs: Mapping[str, Any] | None = None, **units: Any
+        self,
+        *,
+        seconds: float | None = None,
+        minutes: float | None = None,
+        hours: float | None = None,
+        days: float | None = None,
+        kwargs: Mapping[str, Any] | None = None,
+        catch_up: str = "latest",
+        overlap: str | None = None,
+        delay: float | int | None = None,
+        start_at: int | None = None,
+        **options: Any,
     ) -> ScheduleHandle:
         """Create or update an interval schedule for this task."""
 
-        return await self.tay.every(self, kwargs=kwargs, **units)
+        return await self.tay.every(
+            self,
+            seconds=seconds,
+            minutes=minutes,
+            hours=hours,
+            days=days,
+            kwargs=kwargs,
+            catch_up=catch_up,
+            overlap=overlap,
+            delay=delay,
+            start_at=start_at,
+            **options,
+        )
 
     def static_schedule_declaration(self) -> dict[str, Any] | None:
         """Return the idempotent declaration reconciled at startup, if any."""

@@ -96,6 +96,96 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_task_capabilities_can_be_changed_after_startup(self) -> None:
+        client = Tay(mode="worker", client_id="worker-1")
+
+        @client.task(name="tests.first")
+        def first() -> None:
+            return None
+
+        @client.task(name="tests.second")
+        def second() -> None:
+            return None
+
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def request(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            calls.append((kind, dict(fields)))
+            return {"type": "tasks_changed"}
+
+        client._request = request  # type: ignore[method-assign]
+        self.assertEqual(await client.unregister_tasks(first), ("tests.first",))
+        self.assertEqual(await client.register_tasks("tests.first"), (first,))
+        self.assertEqual(
+            calls,
+            [
+                ("unregister_tasks", {"tasks": ["tests.first"]}),
+                ("register_tasks", {"tasks": ["tests.first"]}),
+            ],
+        )
+
+        bootstrap_calls: list[tuple[str, dict[str, object]]] = []
+
+        async def exchange(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            bootstrap_calls.append((kind, dict(fields)))
+            return {"type": "ok"}
+
+        client._exchange = exchange  # type: ignore[method-assign]
+        await client._bootstrap()
+        self.assertEqual(
+            bootstrap_calls[-1],
+            ("register_tasks", {"tasks": ["tests.first", "tests.second"]}),
+        )
+
+    async def test_client_mode_rejects_task_capability_changes(self) -> None:
+        client = Tay(mode="client")
+
+        @client.task(name="tests.local")
+        def local() -> None:
+            return None
+
+        with self.assertRaisesRegex(Exception, "client mode"):
+            await client.register_tasks(local)
+        with self.assertRaisesRegex(Exception, "client mode"):
+            await client.unregister_tasks(local)
+
+    async def test_schedule_payload_supports_timezone_catch_up_and_delayed_start(self) -> None:
+        client = Tay(mode="client")
+        requests: list[tuple[str, dict[str, object]]] = []
+
+        async def request(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            requests.append((kind, dict(fields)))
+            return {"schedule_id": "schedule-1"}
+
+        client._request = request  # type: ignore[method-assign]
+        handle = await client.schedule(
+            "tests.report",
+            cron="*/15 * * * *",
+            timezone="+02",
+            catch_up="all",
+            delay=30,
+        )
+        self.assertEqual(handle.id, "schedule-1")
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "schedule",
+                    {
+                        "task": "tests.report",
+                        "args": {},
+                        "cron": "*/15 * * * *",
+                        "timezone": "+02",
+                        "catch_up": "all",
+                        "delay": 30,
+                        "options": {},
+                    },
+                )
+            ],
+        )
+        with self.assertRaisesRegex(ValidationError, "either delay or start_at"):
+            await client.every("tests.report", minutes=5, delay=1, start_at=2)
+
     async def test_execution_events_keep_the_reservation_fence(self) -> None:
         client = Tay(mode="embedded", client_id="worker-1")
         events: list[tuple[str, dict[str, object]]] = []
