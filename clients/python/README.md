@@ -28,6 +28,7 @@ sync the change:
 def rebuild(report_id: str) -> dict:
     return {"report_id": report_id}
 
+
 await tay.register_tasks(rebuild)
 # ... stop accepting new work for this task
 await tay.unregister_tasks(rebuild)

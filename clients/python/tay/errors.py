@@ -29,7 +29,9 @@ class ConnectionLost(TayError, ConnectionError):
 class ServerError(TayError):
     """Tay rejected a request."""
 
-    def __init__(self, message: str, *, code: str | None = None, details: Any = None) -> None:
+    def __init__(
+        self, message: str, *, code: str | None = None, details: Any = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.details = details

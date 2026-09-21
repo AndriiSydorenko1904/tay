@@ -44,7 +44,9 @@ def resolve_socket_path(
 
     user_id = os.getuid() if uid is None else uid
     if type(user_id) is not int or user_id < 0:
-        raise ValidationError("a non-negative Unix UID is required for socket discovery")
+        raise ValidationError(
+            "a non-negative Unix UID is required for socket discovery"
+        )
 
     xdg = environment.get("XDG_RUNTIME_DIR")
     if xdg and usable(xdg):
@@ -67,15 +69,24 @@ def _candidate(parent: str, *parts: str) -> str:
 
 def _validated_path(path: str) -> str:
     if not _valid_path(path):
-        raise ValidationError("socket_path must be an absolute UTF-8 path of at most 100 bytes")
+        raise ValidationError(
+            "socket_path must be an absolute UTF-8 path of at most 100 bytes"
+        )
     normalized = os.path.abspath(path)
     if not _valid_path(normalized):
-        raise ValidationError("socket_path must be an absolute UTF-8 path of at most 100 bytes")
+        raise ValidationError(
+            "socket_path must be an absolute UTF-8 path of at most 100 bytes"
+        )
     return normalized
 
 
 def _valid_path(path: str) -> bool:
-    if not isinstance(path, str) or not path or not os.path.isabs(path) or "\x00" in path:
+    if (
+        not isinstance(path, str)
+        or not path
+        or not os.path.isabs(path)
+        or "\x00" in path
+    ):
         return False
     try:
         return len(path.encode("utf-8")) <= MAX_SOCKET_PATH_BYTES

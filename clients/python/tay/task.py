@@ -106,7 +106,9 @@ class Task:
         else:
             raise ValidationError("enqueue options must be a mapping")
 
-        parameter_names = set(self.signature.parameters) if self.signature is not None else set()
+        parameter_names = (
+            set(self.signature.parameters) if self.signature is not None else set()
+        )
         for key in tuple(task_keywords):
             if key in _ENQUEUE_OPTION_NAMES and key not in parameter_names:
                 options[key] = task_keywords.pop(key)
@@ -126,7 +128,9 @@ class Task:
         try:
             bound = self.signature.bind(*args, **kwargs)
         except TypeError as exc:
-            raise ValidationError(f"invalid arguments for task {self.name!r}: {exc}") from exc
+            raise ValidationError(
+                f"invalid arguments for task {self.name!r}: {exc}"
+            ) from exc
         bound.apply_defaults()
 
         arguments: dict[str, Any] = {}
@@ -163,7 +167,9 @@ class Task:
                 positional.extend(value)
             elif parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 if not isinstance(value, Mapping):
-                    raise ValidationError("serialized keyword varargs must be an object")
+                    raise ValidationError(
+                        "serialized keyword varargs must be an object"
+                    )
                 keyword.update(value)
             else:
                 keyword[parameter.name] = value
@@ -184,7 +190,7 @@ class Task:
         timezone: str = "+00",
         catch_up: str = "latest",
         overlap: str | None = None,
-        delay: float | int | None = None,
+        delay: float | None = None,
         start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:
@@ -212,7 +218,7 @@ class Task:
         kwargs: Mapping[str, Any] | None = None,
         catch_up: str = "latest",
         overlap: str | None = None,
-        delay: float | int | None = None,
+        delay: float | None = None,
         start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:

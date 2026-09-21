@@ -40,7 +40,9 @@ async def _serve(instance: Tay) -> None:
     for current in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(current, stopped.set)
-        except NotImplementedError:  # pragma: no cover - Windows has no UDS support here
+        except (
+            NotImplementedError
+        ):  # pragma: no cover - Windows has no UDS support here
             pass
 
     await instance.start()

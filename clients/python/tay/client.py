@@ -92,13 +92,19 @@ class ScheduleHandle:
 
 def _server_error_from_payload(payload: Any) -> ServerError:
     if isinstance(payload, Mapping):
-        message = payload.get("message") or payload.get("reason") or "Tay rejected the request"
+        message = (
+            payload.get("message")
+            or payload.get("reason")
+            or "Tay rejected the request"
+        )
         code = payload.get("code") or payload.get("type")
         if payload.get("remote_task") or code in {"task_failed", "TaskFailed"}:
             return RemoteTaskError(
                 str(message), code=str(code) if code else None, details=dict(payload)
             )
-        return ServerError(str(message), code=str(code) if code else None, details=dict(payload))
+        return ServerError(
+            str(message), code=str(code) if code else None, details=dict(payload)
+        )
     return ServerError(str(payload))
 
 
@@ -143,8 +149,13 @@ class Tay:
         if type(max_error_bytes) is not int or max_error_bytes < 128:
             raise ValidationError("max_error_bytes must be an integer of at least 128")
         if request_timeout <= 0 or connect_timeout <= 0:
-            raise ValidationError("request_timeout and connect_timeout must be positive")
-        if reconnect_initial_delay <= 0 or reconnect_max_delay < reconnect_initial_delay:
+            raise ValidationError(
+                "request_timeout and connect_timeout must be positive"
+            )
+        if (
+            reconnect_initial_delay <= 0
+            or reconnect_max_delay < reconnect_initial_delay
+        ):
             raise ValidationError("invalid reconnect delay configuration")
 
         self.mode = mode
@@ -157,7 +168,9 @@ class Tay:
             or "\x00" in self.client_id
             or len(self.client_id.encode("utf-8")) > 128
         ):
-            raise ValidationError("client_id must be a non-empty UTF-8 string of at most 128 bytes")
+            raise ValidationError(
+                "client_id must be a non-empty UTF-8 string of at most 128 bytes"
+            )
         self.max_frame_bytes = max_frame_bytes
         self.max_result_bytes = max_result_bytes
         self.max_error_bytes = max_error_bytes
@@ -262,7 +275,9 @@ class Tay:
         backoff = raw["backoff"]
         if isinstance(backoff, str):
             if backoff not in _BACKOFF_MODES:
-                raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
+                raise ValidationError(
+                    f"backoff must be one of {sorted(_BACKOFF_MODES)}"
+                )
         elif backoff is not None:
             raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
 
@@ -273,7 +288,9 @@ class Tay:
         if cron is not None and (
             type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256
         ):
-            raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
+            raise ValidationError(
+                "cron must be a non-empty string no longer than 256 bytes"
+            )
         if every is not None:
             every = self._validate_every_mapping(every)
 
@@ -393,7 +410,9 @@ class Tay:
         if self._loop is None:
             self._loop = loop
         elif self._loop is not loop:
-            raise RuntimeError("a Tay instance must be used from one asyncio event loop")
+            raise RuntimeError(
+                "a Tay instance must be used from one asyncio event loop"
+            )
 
     async def _wait_until_connected(self) -> None:
         if self.connected:
@@ -401,7 +420,11 @@ class Tay:
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
         except asyncio.TimeoutError as exc:
-            detail = f": {self._last_connection_error}" if self._last_connection_error else ""
+            detail = (
+                f": {self._last_connection_error}"
+                if self._last_connection_error
+                else ""
+            )
             raise ConnectionLost(
                 f"could not connect to Tay at {self.socket_path!r} within "
                 f"{self.connect_timeout:g}s{detail}"
@@ -475,7 +498,9 @@ class Tay:
                 "register_tasks", {"tasks": sorted(self._registered_task_names)}
             )
 
-    async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _read_loop(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             while self._running and self._writer is writer:
                 message = await read_frame(reader, max_frame_bytes=self.max_frame_bytes)
@@ -514,7 +539,9 @@ class Tay:
             future = self._pending.pop(request_id, None)
             if future is not None and not future.done():
                 if message_type in {"error", "protocol_error"}:
-                    future.set_exception(_server_error_from_payload(message.get("error", message)))
+                    future.set_exception(
+                        _server_error_from_payload(message.get("error", message))
+                    )
                 else:
                     future.set_result(message)
                 return
@@ -537,7 +564,9 @@ class Tay:
         frame = encode_frame(envelope, max_frame_bytes=self.max_frame_bytes)
         async with self._write_lock:
             if self._writer is not writer or writer.is_closing():
-                raise ConnectionLost("Tay socket disconnected before request could be sent")
+                raise ConnectionLost(
+                    "Tay socket disconnected before request could be sent"
+                )
             try:
                 writer.write(frame)
                 await writer.drain()
@@ -560,7 +589,9 @@ class Tay:
             self._event_request_ids.discard(request_id)
             raise
 
-    async def _exchange(self, message_type: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+    async def _exchange(
+        self, message_type: str, fields: Mapping[str, Any]
+    ) -> dict[str, Any]:
         """Issue exactly one request without retrying it after a disconnect."""
 
         request_id = uuid.uuid4().hex
@@ -585,7 +616,9 @@ class Tay:
                 future.cancel()
             raise
         try:
-            return await asyncio.wait_for(asyncio.shield(future), timeout=self.request_timeout)
+            return await asyncio.wait_for(
+                asyncio.shield(future), timeout=self.request_timeout
+            )
         except asyncio.TimeoutError as exc:
             raise ConnectionLost(
                 f"Tay did not reply to {message_type!r} within {self.request_timeout:g}s"
@@ -594,7 +627,9 @@ class Tay:
             async with self._pending_lock:
                 self._pending.pop(request_id, None)
 
-    async def _request(self, message_type: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+    async def _request(
+        self, message_type: str, fields: Mapping[str, Any]
+    ) -> dict[str, Any]:
         await self.start()
         return await self._exchange(message_type, fields)
 
@@ -610,7 +645,9 @@ class Tay:
     def _registered_task_name(self, task: str | Task) -> str:
         name = self._task_name(task)
         if self._tasks.get(name) is None:
-            raise TaskRegistrationError(f"task {name!r} is not registered on this Tay instance")
+            raise TaskRegistrationError(
+                f"task {name!r} is not registered on this Tay instance"
+            )
         return name
 
     async def register_tasks(self, *tasks: str | Task) -> tuple[Task, ...]:
@@ -665,7 +702,9 @@ class Tay:
         """
 
         if self.mode == "worker":
-            raise ModeError("worker mode only executes tasks; use embedded or client to enqueue")
+            raise ModeError(
+                "worker mode only executes tasks; use embedded or client to enqueue"
+            )
         task_name = self._task_name(task)
         if args is None:
             args = {}
@@ -701,18 +740,22 @@ class Tay:
         timezone: str = "+00",
         catch_up: str = "latest",
         overlap: str | None = None,
-        delay: float | int | None = None,
+        delay: float | None = None,
         start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:
         """Create or reconcile a cron schedule for a task."""
 
         if self.mode == "worker":
-            raise ModeError("worker mode only executes tasks; use embedded or client to schedule")
+            raise ModeError(
+                "worker mode only executes tasks; use embedded or client to schedule"
+            )
         if kwargs is not None and args is not None:
             raise ValidationError("pass either kwargs or args to schedule, not both")
         if type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256:
-            raise ValidationError("cron must be a non-empty string no longer than 256 bytes")
+            raise ValidationError(
+                "cron must be a non-empty string no longer than 256 bytes"
+            )
         self._validate_schedule_options(
             declaration_id=declaration_id,
             timezone=timezone,
@@ -738,7 +781,9 @@ class Tay:
         if start_at is not None:
             payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
-        return ScheduleHandle(_extract_identifier(reply, "schedule_id", "schedule"), self)
+        return ScheduleHandle(
+            _extract_identifier(reply, "schedule_id", "schedule"), self
+        )
 
     async def every(
         self,
@@ -753,7 +798,7 @@ class Tay:
         declaration_id: str | None = None,
         catch_up: str = "latest",
         overlap: str | None = None,
-        delay: float | int | None = None,
+        delay: float | None = None,
         start_at: int | None = None,
         **options: Any,
     ) -> ScheduleHandle:
@@ -768,7 +813,9 @@ class Tay:
             }
         )
         if self.mode == "worker":
-            raise ModeError("worker mode only executes tasks; use embedded or client to schedule")
+            raise ModeError(
+                "worker mode only executes tasks; use embedded or client to schedule"
+            )
         if kwargs is not None and args is not None:
             raise ValidationError("pass either kwargs or args to every, not both")
         self._validate_schedule_options(
@@ -795,7 +842,9 @@ class Tay:
         if start_at is not None:
             payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
-        return ScheduleHandle(_extract_identifier(reply, "schedule_id", "schedule"), self)
+        return ScheduleHandle(
+            _extract_identifier(reply, "schedule_id", "schedule"), self
+        )
 
     @staticmethod
     def _validate_schedule_options(
@@ -804,24 +853,35 @@ class Tay:
         timezone: str,
         catch_up: str,
         overlap: str | None,
-        delay: float | int | None,
+        delay: float | None,
         start_at: int | None,
     ) -> None:
-        if declaration_id is not None and (type(declaration_id) is not str or not declaration_id):
+        if declaration_id is not None and (
+            type(declaration_id) is not str or not declaration_id
+        ):
             raise ValidationError("declaration_id must be a non-empty string")
         if type(timezone) is not str or not _TIMEZONE_OFFSET.fullmatch(timezone):
-            raise ValidationError("timezone must be UTC, Z, or an offset such as +01 or -02:30")
+            raise ValidationError(
+                "timezone must be UTC, Z, or an offset such as +01 or -02:30"
+            )
         if catch_up not in _CATCH_UP_POLICIES:
-            raise ValidationError(f"catch_up must be one of {sorted(_CATCH_UP_POLICIES)}")
+            raise ValidationError(
+                f"catch_up must be one of {sorted(_CATCH_UP_POLICIES)}"
+            )
         if overlap is not None and overlap not in _OVERLAP_POLICIES:
             raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
-        if delay is not None:
-            if type(delay) not in {int, float} or delay < 0 or (
-                type(delay) is float and not float(delay) < float("inf")
-            ):
-                raise ValidationError("delay must be a finite non-negative number of seconds")
+        if delay is not None and (
+            type(delay) not in {int, float}
+            or delay < 0
+            or (type(delay) is float and not float(delay) < float("inf"))
+        ):
+            raise ValidationError(
+                "delay must be a finite non-negative number of seconds"
+            )
         if start_at is not None and (type(start_at) is not int or start_at < 0):
-            raise ValidationError("start_at must be a non-negative UTC millisecond timestamp")
+            raise ValidationError(
+                "start_at must be a non-negative UTC millisecond timestamp"
+            )
         if delay is not None and start_at is not None:
             raise ValidationError("pass either delay or start_at, not both")
 
@@ -869,13 +929,19 @@ class Tay:
                 return
             if len(self._executions) >= self.capacity:
                 await self._execution_failure(
-                    message, ServerError("executor capacity exceeded", code="over_capacity")
+                    message,
+                    ServerError("executor capacity exceeded", code="over_capacity"),
                 )
                 return
             synchronous = not inspect.iscoroutinefunction(task.function)
             execution = asyncio.create_task(
                 self._run_execution(
-                    reservation_id, execution_id, job_id, task, dict(arguments), synchronous
+                    reservation_id,
+                    execution_id,
+                    job_id,
+                    task,
+                    dict(arguments),
+                    synchronous,
                 ),
                 name=f"tay-execution-{execution_id}",
             )
@@ -897,7 +963,9 @@ class Tay:
         # Safely interrupt async work.  A synchronous function runs in a thread
         # and cannot be safely killed by Python; leave it running and let Tay's
         # durable cancellation fence decide whether its eventual outcome counts.
-        if execution is not None and not self._execution_is_sync.get(execution_id, False):
+        if execution is not None and not self._execution_is_sync.get(
+            execution_id, False
+        ):
             execution.cancel()
 
     async def _run_execution(
@@ -972,7 +1040,9 @@ class Tay:
                     },
                 )
 
-    async def _execution_failure(self, message: Mapping[str, Any], error: BaseException) -> None:
+    async def _execution_failure(
+        self, message: Mapping[str, Any], error: BaseException
+    ) -> None:
         execution_id = message.get("execution_id")
         reservation_id = message.get("reservation_id")
         if (
@@ -981,7 +1051,9 @@ class Tay:
             or type(reservation_id) is not str
             or not reservation_id
         ):
-            raise ProtocolError("cannot report execute failure without execution context")
+            raise ProtocolError(
+                "cannot report execute failure without execution context"
+            )
         fields: dict[str, Any] = {
             "reservation_id": reservation_id,
             "execution_id": execution_id,
@@ -1009,7 +1081,10 @@ class Tay:
             elif error.get("message"):
                 error["message"] = _truncate_text(str(error["message"]))
             else:  # defensive fallback for tiny custom limits
-                return {"type": type(exc).__name__, "message": "error metadata exceeded limit"}
+                return {
+                    "type": type(exc).__name__,
+                    "message": "error metadata exceeded limit",
+                }
         return normalize_json(error)
 
 

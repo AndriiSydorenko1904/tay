@@ -33,7 +33,9 @@ class SocketPathTests(unittest.TestCase):
             "/chosen/tay.sock",
         )
         self.assertEqual(
-            resolve_socket_path(environ={"TAY_SOCKET_PATH": "/environment/tay.sock"}, uid=4242),
+            resolve_socket_path(
+                environ={"TAY_SOCKET_PATH": "/environment/tay.sock"}, uid=4242
+            ),
             "/environment/tay.sock",
         )
 
@@ -51,13 +53,18 @@ class SocketPathTests(unittest.TestCase):
         )
         self.assertEqual(
             resolve_socket_path(
-                environ={"TMPDIR": "/temporary"}, uid=4242, usable_directory=always_usable
+                environ={"TMPDIR": "/temporary"},
+                uid=4242,
+                usable_directory=always_usable,
             ),
             "/temporary/tay-4242/tay.sock",
         )
-        self.assertEqual(resolve_socket_path(environ={}, uid=4242), "/tmp/tay-4242/tay.sock")
+        self.assertEqual(
+            resolve_socket_path(environ={}, uid=4242), "/tmp/tay-4242/tay.sock"
+        )
         self.assertNotEqual(
-            resolve_socket_path(environ={}, uid=101), resolve_socket_path(environ={}, uid=202)
+            resolve_socket_path(environ={}, uid=101),
+            resolve_socket_path(environ={}, uid=202),
         )
 
     def test_invalid_configured_path_is_not_silently_replaced(self) -> None:
@@ -91,7 +98,11 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             [
                 (
                     "hello",
-                    {"mode": "client", "runtime_id": "producer-1", "max_concurrency": 0},
+                    {
+                        "mode": "client",
+                        "runtime_id": "producer-1",
+                        "max_concurrency": 0,
+                    },
                 )
             ],
         )
@@ -149,7 +160,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "client mode"):
             await client.unregister_tasks(local)
 
-    async def test_schedule_payload_supports_timezone_catch_up_and_delayed_start(self) -> None:
+    async def test_schedule_payload_supports_timezone_catch_up_and_delayed_start(
+        self,
+    ) -> None:
         client = Tay(mode="client")
         requests: list[tuple[str, dict[str, object]]] = []
 
@@ -214,5 +227,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
 
         self.assertEqual([kind for kind, _ in events], ["started", "succeeded"])
-        self.assertTrue(all(fields["reservation_id"] == "reservation-1" for _, fields in events))
+        self.assertTrue(
+            all(fields["reservation_id"] == "reservation-1" for _, fields in events)
+        )
         self.assertEqual(events[-1][1]["result"], {"sum": 7})
