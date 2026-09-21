@@ -47,9 +47,24 @@ mix hex.user auth
 mix hex.publish
 ```
 
-For PyPI, prefer a Trusted Publisher attached to the GitHub release workflow.
-For a manual first release, authenticate with an API token and upload only the
-artifacts produced from the release tag:
+Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow
+and PyPI Trusted Publishing. For the first release, configure a pending GitHub
+publisher in the PyPI account with these exact values:
+
+- PyPI project name: `tay-client`
+- GitHub owner: `AndriiSydorenko1904`
+- GitHub repository: `tay`
+- Workflow filename: `publish-python.yml`
+- Environment name: `pypi`
+
+Create the `pypi` environment in the GitHub repository. Publishing a GitHub
+release triggers the workflow automatically; an existing tag can instead be
+published with the workflow's manual `tag` input. The workflow checks that the
+tag and Python package version match, qualifies and builds the client, and uses
+GitHub OIDC to publish without a stored PyPI token.
+
+For an emergency manual release, authenticate with a scoped PyPI API token and
+upload only artifacts produced from the release tag:
 
 ```sh
 uvx twine upload clients/python/dist/*
