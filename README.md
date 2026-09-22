@@ -71,10 +71,12 @@ List and summarize jobs through the bounded public inspection API:
 ```
 
 The separately published optional `tay_dashboard` package provides an official
-Phoenix LiveView UI for these APIs. It lives in this repository under
-[`dashboard/`](dashboard/) but Phoenix, LiveView, and Plug are not dependencies
-of the core `tay` package. See the [dashboard README](dashboard/README.md) for
-installation, router mounting, and access-control guidance.
+Phoenix LiveView UI for these APIs. It lives in this repository under the
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.8.0/dashboard),
+but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
+See its
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.8.0/dashboard/README.md)
+for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
 follow a durable write; reconcile by job ID or resubmit the *same* intent,

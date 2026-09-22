@@ -67,7 +67,7 @@ offset pagination or an unbounded scan.
 
 ## Query and index strategy
 
-A new private, disposable `Tay.State.InspectionIndex` is part of the projection.
+A new private, disposable inspection index is part of the projection.
 It stores only ordered `{inserted_at, id}` keys and aggregate counters by state,
 queue, and worker key. `Projection.replace/3` updates it in the same owner
 process as every other projection. `Projection.load/2` reconstructs it from the
