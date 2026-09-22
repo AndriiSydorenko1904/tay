@@ -1,7 +1,7 @@
 defmodule TayDashboard.MixProject do
   use Mix.Project
 
-  @version "0.8.0"
+  @version "0.8.1"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -39,8 +39,8 @@ defmodule TayDashboard.MixProject do
 
   defp tay_dependency do
     if System.get_env("TAY_DASHBOARD_PACKAGE") == "1",
-      do: {:tay, "~> 0.8.0"},
-      else: {:tay, "~> 0.8.0", path: "..", override: true, env: Mix.env()}
+      do: {:tay, "~> 0.8.1"},
+      else: {:tay, "~> 0.8.1", path: "..", override: true, env: Mix.env()}
   end
 
   defp package do

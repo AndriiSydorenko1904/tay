@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.8.1 — 2026-09-22
+
+- Added the opt-in Engine option `initialize: :if_missing` for embedding
+  applications that need first-start creation of a genuinely missing store.
+- Kept the default existing-only startup model and fail-closed recovery: an
+  existing, corrupt, partial, unsupported, inaccessible, or busy store is never
+  reinitialized, repaired, replaced, truncated, or used as a bootstrap signal.
+- Added an atomic native ownership operation that creates the owner lock only
+  when it creates the final storage root, preventing Engine-level TOCTOU checks.
+
 ## 0.8.0 — 2026-09-22
 
 - Added the stable, bounded public inspection API: cursor-paginated job listing,

@@ -30,6 +30,14 @@ and Event-v1 semantic validation without activation. It returns aggregate
 diagnostics, not jobs or a reusable recovery ticket. Use `mix help
 tay.storage.inspect` for independent replay budgets.
 
+Explicit initialization is the default operational model (`initialize: :never`).
+Embedding applications that need first-start creation, such as containerized
+deployments, may opt into `initialize: :if_missing` on `Tay.child_spec/1`. The
+native ownership layer initializes only when it creates the final storage root;
+every pre-existing root remains existing-only and proceeds through normal full
+recovery. This option is initialization only, never repair or a fallback after
+recovery failure.
+
 ## Local executor access
 
 An Engine normally creates its Unix socket automatically outside `data_dir`.

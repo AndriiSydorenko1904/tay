@@ -43,6 +43,7 @@ defmodule Tay.Storage.Native do
     v2_restore_v1: 35,
     v2_clear_adoption: 36,
     v2_reclaim: 37,
+    acquire_if_missing: 38,
     fault: 240
   }
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, timeout: 10_000]
@@ -69,6 +70,15 @@ defmodule Tay.Storage.Native do
       do_open(path, options, :acquire_existing)
     else
       {:error, %{kind: :native_argument, reason: :invalid_existing_options}}
+    end
+  end
+
+  @doc "Creates and acquires a missing root, or acquires a pre-existing root without mutation."
+  def open_if_missing(path, options \\ []) do
+    if valid_open_options?(path, options) do
+      do_open(path, options, :acquire_if_missing)
+    else
+      {:error, %{kind: :native_argument, reason: :invalid_open_options}}
     end
   end
 
@@ -184,10 +194,17 @@ defmodule Tay.Storage.Native do
 
     case result do
       {:ok, <<created, filesystem::64, pid::64>>, 0}
-      when operation == :acquire or (created == 0 and pid > 0) ->
+      when operation == :acquire or
+             (operation == :acquire_if_missing and created in [0, 1] and pid > 0) or
+             (operation == :acquire_existing and created == 0 and pid > 0) ->
         Process.put(
           {__MODULE__, port, :capability},
-          if(operation == :acquire_existing, do: :inspection, else: :mutation)
+          if(
+            operation == :acquire_existing or
+              (operation == :acquire_if_missing and created == 0),
+            do: :inspection,
+            else: :mutation
+          )
         )
 
         {:ok, %{native | facts: %{created: created == 1, filesystem: filesystem, os_pid: pid}}}

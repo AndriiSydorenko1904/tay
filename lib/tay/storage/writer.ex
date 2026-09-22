@@ -30,6 +30,23 @@ defmodule Tay.Storage.Writer do
     end
   end
 
+  @doc false
+  def initialize_if_missing(options) do
+    case GenServer.start_link(__MODULE__, {:initialize_if_missing, options}) do
+      {:ok, writer} ->
+        case GenServer.call(writer, :finish_initialization, :infinity) do
+          {:ok, _} -> :ok
+          error -> error
+        end
+
+      :ignore ->
+        :ok
+
+      error ->
+        error
+    end
+  end
+
   @doc "Replays an existing store, retaining its owner/Port/lock and private candidate."
   def start_recovered_link(storage_options, replay_spec) do
     with {:ok, storage} <- options(storage_options),
@@ -201,39 +218,62 @@ defmodule Tay.Storage.Writer do
   end
 
   def init({:initialize_only, options}), do: init_physical(options, true)
+  def init({:initialize_if_missing, options}), do: init_if_missing(options)
   def init(options), do: init_physical(options, false)
+
+  defp init_if_missing(options) do
+    Process.flag(:trap_exit, true)
+
+    with {:ok, options} <- options(options),
+         {:ok, native} <- Native.open_if_missing(options.data_dir, Map.to_list(options)) do
+      if native.facts.created do
+        init_opened(native, options, true)
+      else
+        case Native.shutdown(native) do
+          :ok -> :ignore
+          error -> {:stop, error}
+        end
+      end
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
 
   defp init_physical(options, initialize_only) do
     Process.flag(:trap_exit, true)
 
     with {:ok, options} <- options(options),
          {:ok, native} <- Native.open(options.data_dir, Map.to_list(options)) do
-      state = %{
-        native: native,
-        options: options,
-        segment: nil,
-        store_id: nil,
-        epoch_id: nil,
-        v2_current: nil,
-        candidate_limits: %{},
-        value_limits: Tay.Event.Value.defaults(),
-        compacted: false,
-        retired_ports: MapSet.new(),
-        next_sequence: 1,
-        poisoned: nil,
-        initialize_only: initialize_only
-      }
-
-      case prepare(state) do
-        {:ok, state} ->
-          {:ok, state}
-
-        {:error, reason} ->
-          Native.shutdown(native)
-          {:stop, reason}
-      end
+      init_opened(native, options, initialize_only)
     else
       {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp init_opened(native, options, initialize_only) do
+    state = %{
+      native: native,
+      options: options,
+      segment: nil,
+      store_id: nil,
+      epoch_id: nil,
+      v2_current: nil,
+      candidate_limits: %{},
+      value_limits: Tay.Event.Value.defaults(),
+      compacted: false,
+      retired_ports: MapSet.new(),
+      next_sequence: 1,
+      poisoned: nil,
+      initialize_only: initialize_only
+    }
+
+    case prepare(state) do
+      {:ok, state} ->
+        {:ok, state}
+
+      {:error, reason} ->
+        Native.shutdown(native)
+        {:stop, reason}
     end
   end
 

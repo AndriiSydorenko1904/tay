@@ -17,8 +17,11 @@ defmodule Tay do
   Submitted calls with lost replies can have unknown outcomes and are not
   automatically retried.
 
-  Initialize storage explicitly with `Tay.Storage.initialize/1`, then supervise
-  `Tay.child_spec/1`. Engine options are not `:tay` application environment keys.
+  By default, initialize storage explicitly with `Tay.Storage.initialize/1`, then
+  supervise `Tay.child_spec/1`. Callers may opt into `initialize: :if_missing`
+  to initialize only a genuinely missing root before normal recovery. It is
+  never a repair or recovery fallback. Engine options are not `:tay` application
+  environment keys.
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
   is a development mode and is never described as durable.
   """

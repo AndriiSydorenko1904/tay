@@ -69,6 +69,32 @@ defmodule Tay.Storage.NativeProtocolTest do
     Native.shutdown(native)
   end
 
+  test "if-missing acquisition mutates only a root it creates", %{path: path} do
+    assert {:ok, native} =
+             Native.open_if_missing(path, durability: :write, test_helper: true)
+
+    assert native.facts.created
+    refute Native.inspection?(native)
+    assert :ok = Native.shutdown(native)
+
+    before = Tay.Test.RecoveryHelpers.snapshot(path)
+
+    assert {:ok, native} =
+             Native.open_if_missing(path, durability: :write, test_helper: true)
+
+    refute native.facts.created
+    assert Native.inspection?(native)
+    assert {:ok, %{ancestor_syncs: 0}} = Native.info(native)
+    assert :ok = Native.shutdown(native)
+    assert Tay.Test.RecoveryHelpers.snapshot(path) == before
+
+    empty = path <> "-existing"
+    File.mkdir!(empty)
+    on_exit(fn -> File.rm_rf!(empty) end)
+    assert {:error, %{reason: "enoent"}} = Native.open_if_missing(empty, durability: :write)
+    refute File.exists?(Path.join(empty, ".tay-owner.lock"))
+  end
+
   test "every mutating opcode is denied by an inspection-only helper", %{path: path} do
     alias Tay.Test.RecoveryHelpers, as: R
     R.store(path)
@@ -169,6 +195,17 @@ defmodule Tay.Storage.NativeProtocolTest do
 
     assert {:error, %{operation: :acquire_existing, reason: "invalid_protocol"}} =
              Native.open_existing(path,
+               durability: :write,
+               test_helper: true,
+               test_before_acquire: hook
+             )
+
+    refute File.exists?(path)
+
+    hook = fn native -> Native.fault(native, :acquire_if_missing, 1, :error, errno) end
+
+    assert {:error, %{operation: :acquire_if_missing, reason: "invalid_protocol"}} =
+             Native.open_if_missing(path,
                durability: :write,
                test_helper: true,
                test_before_acquire: hook

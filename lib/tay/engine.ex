@@ -22,6 +22,7 @@ defmodule Tay.Engine do
     Process.monitor(guardian)
 
     with {:ok, generation} <- GenServer.call(guardian, {:attach_engine, self()}),
+         :ok <- initialize_storage(config),
          {:ok, writer} <-
            Writer.start_recovered_link(
              Config.storage(config) ++ [lifecycle_observer: guardian],
@@ -148,6 +149,11 @@ defmodule Tay.Engine do
       {:error, reason} -> {:stop, startup_error(reason)}
     end
   end
+
+  defp initialize_storage(%{initialize: :never}), do: :ok
+
+  defp initialize_storage(%{initialize: :if_missing} = config),
+    do: Writer.initialize_if_missing(Config.storage(config))
 
   def handle_continue(:execution_start, s) do
     {:noreply, if(s.config.execution, do: start_controls(s), else: s)}

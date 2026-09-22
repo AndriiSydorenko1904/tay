@@ -35,7 +35,7 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
   V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31, V2_ADOPT_V1=32,
   V2_PUBLISH_CURRENT=33, V2_SPACE=34, V2_RESTORE_V1=35,
-  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, FAULT=240 };
+  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, FAULT=240 };
 static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
 static int epochs_fd=-1, epoch_fd=-1, candidate_fd=-1, candidate_segments_fd=-1;
 static int segments_parent_fd=-1;
@@ -328,20 +328,22 @@ static int walk_root(int create, int *result, int *created) {
   if (fd<0) return errno;
   char *save=NULL, *part=strtok_r(path,"/",&save);
   *created=0;
+  int made=0;
   while (part) {
     char *next=strtok_r(NULL,"/",&save);
     if (!basename_ok(part)) { close(fd); return EINVAL; }
     int child=openat(fd,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if (child<0 && errno==ENOENT && create==1) {
+    if (child<0 && errno==ENOENT && (create==1 || create==3)) {
       int e=filesystem(fd);
       if (e) { close(fd); return e; }
       if (mkdirat(fd,part,0700)<0) { e=errno; close(fd); return e; }
+      made=1;
       if (!next) *created=1;
       child=openat(fd,part,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     }
     if (child<0) { int e=errno; close(fd); return e; }
     /* Existing entries can belong to an interrupted earlier mkdir/fsync. */
-    if (create) {
+    if (create && (create!=3 || made)) {
       int synced=create==2?promotion_sync(fd,241):fsync(fd);
       if (synced<0) { int e=errno; close(child); close(fd); return e; }
       ancestor_syncs++;
@@ -433,7 +435,8 @@ static int stage_kind(int scope,const char *name) {
   if (scope==5 && canonical(name)) return 1;
   return 0;
 }
-static int acquire(int existing) {
+static int acquire(int mode) {
+  int existing=mode==1, if_missing=mode==2;
   if (acquired || !need(2)) return EPROTO;
   strict_mode=(int)number(1); validated_fs=(int)number(1);
   if (strict_mode>1 || validated_fs>1) return EINVAL;
@@ -450,24 +453,24 @@ static int acquire(int existing) {
   if (e || pos!=input_n) return e?e:EPROTO;
   if (strict_mode && (!strncmp(root_path,"/tmp/",5) || !strcmp(root_path,"/tmp") ||
       !strncmp(root_path,"/var/tmp/",9) || !strncmp(root_path,"/dev/shm/",9))) return ENOTSUP;
-  e=walk_root(existing?0:1,&root_fd,&root_created);
+  e=walk_root(existing?0:if_missing?3:1,&root_fd,&root_created);
   if (e) return e;
   e=filesystem(root_fd); if (e) return e;
   int created=0;
-  if (existing) {
+  if (existing || (if_missing && !root_created)) {
     lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
   } else {
     lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
     if (lock_fd>=0) created=1;
-    else if (errno==EEXIST) lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+    else if (errno==EEXIST && !if_missing) lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
   }
   if (lock_fd<0) return errno;
   struct stat s;
   e=checked_regular(lock_fd,root_fd,".tay-owner.lock",&s); if (e) return e;
   if (flock(lock_fd,LOCK_EX|LOCK_NB)<0) return errno;
   acquired=1;
-  inspection_only=existing;
-  if (!existing) {
+  inspection_only=existing || (if_missing && !root_created);
+  if (!inspection_only) {
     e=rename_capability(); if (e) return e;
     if (fsync(root_fd)<0) return errno;
     if (created && fsync(lock_fd)<0) return errno;
@@ -1083,9 +1086,9 @@ static int publish(void) {
 }
 static int dispatch(unsigned op) {
   int e=0, fd;
-  if (op==ACQUIRE || op==ACQUIRE_EXISTING) {
+  if (op==ACQUIRE || op==ACQUIRE_EXISTING || op==ACQUIRE_IF_MISSING) {
     if (poisoned || root_fd>=0) return ECANCELED;
-    return acquire(op==ACQUIRE_EXISTING);
+    return acquire(op==ACQUIRE_EXISTING?1:op==ACQUIRE_IF_MISSING?2:0);
   }
   if (op==COLD_TARGET_OPEN) {
     if (poisoned) return ECANCELED;
@@ -1202,7 +1205,7 @@ static int dispatch(unsigned op) {
 static int validate_request(unsigned op) {
   char name[PATH_MAX]; int e=0;
   switch (op) {
-    case ACQUIRE: case ACQUIRE_EXISTING:
+    case ACQUIRE: case ACQUIRE_EXISTING: case ACQUIRE_IF_MISSING:
       if (!need(op==ACQUIRE_EXISTING?6:2)) return EPROTO;
       pos+=op==ACQUIRE_EXISTING?6:2; e=string(name,sizeof(name)); break;
     case LIST: case SYNC_DIR:

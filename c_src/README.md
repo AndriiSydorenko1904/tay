@@ -59,6 +59,7 @@ Type is regular=1, directory=2, symlink=3, other=4.
 | 17 shutdown | empty | empty, after all FDs close and lock releases; then exit |
 | 18 acquire existing | strict:u8, operator_validated:u8, max_directory_entries:u32, absolute_path:str | root_created:u8=0, filesystem_type:u64, helper_pid:u64; inspection-only session |
 | 19 enable mutations | empty | empty, after deferred barriers; same helper and lock |
+| 38 acquire if missing | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64; mutation session only when the root was created |
 | 240 test fault | opcode:u8, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
 
 Fault actions are before-call error=1, short pwrite/pread=2, crash after=3, drop reply=4,
@@ -95,6 +96,13 @@ The native helper enforces capabilities, not Event semantics. The trusted Writer
 must establish semantic authorization before promotion. There is no Port transfer,
 lock release/reacquire handoff or durable recovery ticket. All Record, STORE and
 segment bytes, existing opcode encodings and physical CRC ownership are unchanged.
+
+Opcode 38 creates missing path components and the owner lock only when it also
+creates the final root. A pre-existing root is acquired exactly like opcode 18:
+the lock must already exist, no entry is created or synced, and the session is
+inspection-only. This makes the missing-root decision and ownership acquisition
+one native operation; concurrent creation can only produce an error or an
+existing-only session, never a fallback that creates inside an existing root.
 
 ## Filesystem assumptions and exact syscall boundary
 

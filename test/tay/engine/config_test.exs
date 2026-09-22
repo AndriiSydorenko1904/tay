@@ -5,6 +5,8 @@ defmodule Tay.Engine.ConfigTest do
   test "appendix option names, defaults, exact domains and conservative cross-budget checks" do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, c} = Config.new(base)
+    assert c.initialize == :never
+    assert {:ok, %{initialize: :if_missing}} = Config.new(base ++ [initialize: :if_missing])
 
     assert {c.max_insert_payload_bytes, c.max_insert_args_bytes, c.insert_value_depth,
             c.insert_value_nodes} == {1_048_576, 262_144, 32, 10_000}
@@ -39,6 +41,8 @@ defmodule Tay.Engine.ConfigTest do
           [client_slots: 0],
           [client_bytes: 1],
           [caller_timeout: :infinity],
+          [initialize: :always],
+          [initialize: true],
           [bootstrap: true]
         ],
         do: assert({:error, %Tay.Error{kind: :invalid}} = Config.new(Keyword.merge(base, extra)))

@@ -9,7 +9,7 @@ constrained, target-validated operating profile.
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
-building. Add `{:tay, "~> 0.8.0"}` to your application's Mix dependencies, or
+building. Add `{:tay, "~> 0.8.1"}` to your application's Mix dependencies, or
 `{:tay, path: "../tay"}` for this checkout. Run `mix deps.get` and `mix compile`.
 
 For a development run, choose a dedicated absolute directory and initialize it
@@ -50,6 +50,11 @@ children = [
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
+Explicit initialization remains the default. An embedding application may
+instead pass `initialize: :if_missing` to `Tay.child_spec/1`. That option only
+initializes a genuinely missing storage root before the normal full recovery
+path; it never repairs, replaces, truncates, or reinitializes existing storage.
+
 Once the Engine is ready, submit and inspect a job:
 
 ```elixir
@@ -72,10 +77,10 @@ List and summarize jobs through the bounded public inspection API:
 
 The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs. It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.8.0/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.8.1/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.8.0/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.8.1/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may

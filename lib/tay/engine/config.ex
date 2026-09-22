@@ -8,6 +8,7 @@ defmodule Tay.Engine.Config do
     name: Tay.Engine,
     workers: %{},
     durability: :sync,
+    initialize: :never,
     validated_filesystem: false,
     rotation_target_bytes: 67_108_864,
     storage_timeout: 10_000,
@@ -152,6 +153,7 @@ defmodule Tay.Engine.Config do
         c.rotation_target_bytes >= Tay.Storage.Segment.min_rotation_bytes() and
         c.rotation_target_bytes <= 1_073_741_824 and
         is_boolean(c.validated_filesystem) and c.durability in [:write, :sync] and
+        c.initialize in [:never, :if_missing] and
         (c.durability != :sync or (c.validated_filesystem and :os.type() == {:unix, :linux})) and
         production_durability?(c) and
         c.max_insert_payload_bytes <= r.max_decode_payload_bytes and
