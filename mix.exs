@@ -106,8 +106,7 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md",
-        "docs/tay-dashboard-design.md"
+        "docs/compatibility.md"
       ],
       build_tools: ["mix"],
       links: %{
@@ -129,8 +128,7 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md",
-        "docs/tay-dashboard-design.md"
+        "docs/compatibility.md"
       ]
     ]
   end

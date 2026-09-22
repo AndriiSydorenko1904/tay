@@ -1,6 +1,6 @@
 # Dashboard-local Mix artifacts. These patterns are relative to this project
 # and keep working whether commands run here or from the repository root.
-_build/
-deps/
-cover/
-doc/
+/_build/
+/deps/
+/cover/
+/doc/

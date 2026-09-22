@@ -1,14 +1,13 @@
 # Compatibility and limits
 
-Store-v2 Phase C adds exactly one schema-1 MANIFEST value variant: the existing
-`terminal_retention` key may contain the canonical one-key Value map
-`{"hours" => N}`, where integer `N` is in `1..2_562_047_788_015`. Existing
-`"infinity"` bytes remain identical. Framing versions, keys, CRC32C and CURRENT's
-manifest digest are unchanged. Phase-C readers accept qualified Phase-B infinite
-manifests. Pre-Phase-C readers may fail closed on bounded manifests; do not use
-an older binary to open an epoch published with bounded retention. Unknown forms
-are not converted to infinity or repaired. Store-v1 and released fixtures remain
-unchanged.
+Store v2 supports two schema-1 MANIFEST representations for the existing
+`terminal_retention` key: the original `"infinity"` value and the canonical
+one-key Value map `{"hours" => N}`, where `N` is in
+`1..2_562_047_788_015`. Framing versions, keys, CRC32C, and CURRENT's manifest
+digest are unchanged. Readers that predate bounded retention may fail closed on
+the map representation; do not use an older binary to open an epoch published
+with bounded retention. Unknown forms are never converted to infinity or
+repaired. Store-v1 and released fixtures remain unchanged.
 
 Tay v0.8.0 is a single-node public preview. Record v1, STORE v1, Segment v1,
 and Event v1 are fixed compatibility contracts described in [storage](storage.md).
