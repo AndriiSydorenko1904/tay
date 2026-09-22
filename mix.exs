@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "0.7.1"
+  @version "0.8.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -71,6 +71,7 @@ defmodule Tay.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       test_ignore_filters: [&String.starts_with?(&1, "test/fixtures/")],
       deps: [
+        {:telemetry, "~> 1.3"},
         {:stream_data, "~> 1.2", only: :test},
         {:ex_doc, "~> 0.40.4", only: :dev, runtime: false}
       ]
@@ -105,7 +106,8 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md"
+        "docs/compatibility.md",
+        "docs/tay-dashboard-design.md"
       ],
       build_tools: ["mix"],
       links: %{
@@ -127,7 +129,8 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md"
+        "docs/compatibility.md",
+        "docs/tay-dashboard-design.md"
       ]
     ]
   end

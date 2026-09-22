@@ -7,7 +7,10 @@ defmodule TayQualification.MixProject do
       version: "0.0.0-qualification",
       elixir: "~> 1.20",
       start_permanent: true,
-      deps: [{:tay, path: "vendor/tay", env: :prod}],
+      deps: [
+        {:tay, path: "vendor/tay", env: :prod},
+        {:telemetry, "~> 1.3", path: "vendor/telemetry", env: :prod, override: true}
+      ],
       releases: [tay_qualification: [include_executables_for: [:unix]]]
     ]
   end

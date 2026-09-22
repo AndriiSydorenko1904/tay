@@ -9,7 +9,7 @@ constrained, target-validated operating profile.
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
-building. Add `{:tay, "~> 0.7.1"}` to your application's Mix dependencies, or
+building. Add `{:tay, "~> 0.8.0"}` to your application's Mix dependencies, or
 `{:tay, path: "../tay"}` for this checkout. Run `mix deps.get` and `mix compile`.
 
 For a development run, choose a dedicated absolute directory and initialize it
@@ -59,6 +59,22 @@ Once the Engine is ready, submit and inspect a job:
 {:ok, current} = Tay.get_job(job.id)
 IO.inspect(current.state)
 ```
+
+List and summarize jobs through the bounded public inspection API:
+
+```elixir
+{:ok, %{jobs: jobs, next_cursor: cursor}} =
+  Tay.jobs(states: [:retryable, :discarded], queues: [:default], limit: 50)
+
+{:ok, counts} = Tay.stats()
+{:ok, queues} = Tay.queues()
+```
+
+The separately published optional `tay_dashboard` package provides an official
+Phoenix LiveView UI for these APIs. It lives in this repository under
+[`dashboard/`](dashboard/) but Phoenix, LiveView, and Plug are not dependencies
+of the core `tay` package. See the [dashboard README](dashboard/README.md) for
+installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
 follow a durable write; reconcile by job ID or resubmit the *same* intent,

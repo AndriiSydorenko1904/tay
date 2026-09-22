@@ -5,10 +5,10 @@ defmodule Tay.Engine do
   model as recovery; callback execution never runs in this process.
   """
   use GenServer, restart: :temporary
-  alias Tay.{Event, Error, Job, JobID}
+  alias Tay.{Event, Error, Job, JobID, Queue}
   alias Tay.Event.{V1, Value}
   alias Tay.Engine.{Admission, Config, CompactionEstimate, CompactionReplay}
-  alias Tay.State.{Transition, Projection, JobIndex, SchedulerIndex, TaskIndex}
+  alias Tay.State.{InspectionIndex, Transition, Projection, JobIndex, SchedulerIndex, TaskIndex}
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
   alias Tay.Storage.{Writer, Segment}
@@ -409,6 +409,33 @@ defmodule Tay.Engine do
     {result, s}
   end
 
+  defp command({:inspect_jobs, query}, s) do
+    {jobs, next_key} = InspectionIndex.page(s.projection.inspection, s.projection.jobs, query)
+    {{:ok, %{jobs: Enum.map(jobs, &view(s, &1)), next_key: next_key}}, s}
+  end
+
+  defp command(:inspect_stats, s),
+    do: {{:ok, InspectionIndex.stats(s.projection.inspection)}, s}
+
+  defp command(:inspect_queues, s) do
+    queues =
+      s.config.queues
+      |> Enum.map(fn {key, name} ->
+        %Queue{
+          key: key,
+          name: name,
+          paused: MapSet.member?(s.paused, key),
+          concurrency: Map.fetch!(s.config.queue_limits, key),
+          executing: Map.get(s.slots, key, 0),
+          jobs: InspectionIndex.queue_count(s.projection.inspection, key),
+          states: InspectionIndex.queue_stats(s.projection.inspection, key)
+        }
+      end)
+      |> Enum.sort_by(& &1.key)
+
+    {{:ok, queues}, s}
+  end
+
   defp command({:insert, raw, worker, bytes}, s) do
     existing = JobIndex.get(s.projection.jobs, raw)
 
@@ -429,6 +456,7 @@ defmodule Tay.Engine do
 
       next = %{s | paused: paused}
       hook(s.config, {:operations, operation})
+      Tay.Telemetry.queue_control(s.config.name, operation, queue)
       {:ok, next}
     else
       {{:error, Error.new(:invalid, :unknown_queue, nil, operation)}, s}
@@ -1215,6 +1243,7 @@ defmodule Tay.Engine do
             Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
 
           :ok = Projection.replace(s.projection, previous, job)
+          Tay.Telemetry.transition(s.config.name, telemetry_operation(type), previous, job)
 
           next = %{
             s
@@ -1280,6 +1309,13 @@ defmodule Tay.Engine do
           hook(s.config, {:execution, 8, :post_append})
           :ok = Projection.replace(s.projection, previous, job)
 
+          Tay.Telemetry.transition(
+            s.config.name,
+            telemetry_operation(event.record_type),
+            previous,
+            job
+          )
+
           next = %{
             s
             | budget: budget,
@@ -1336,6 +1372,13 @@ defmodule Tay.Engine do
     do: s.settlement_reserve - 1
 
   defp reservation_after(s, _previous, _type), do: s.settlement_reserve
+
+  defp telemetry_operation(1), do: :insert
+  defp telemetry_operation(2), do: :make_available
+  defp telemetry_operation(3), do: :start
+  defp telemetry_operation(4), do: :finish
+  defp telemetry_operation(5), do: :cancel
+  defp telemetry_operation(6), do: :retry
 
   defp expected_position(s, payload_bytes) do
     rotate =

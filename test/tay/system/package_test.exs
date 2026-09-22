@@ -41,7 +41,9 @@ defmodule Tay.System.PackageTest do
     assert File.regular?(Path.join(vendor, "CHANGELOG.md"))
 
     assert Enum.sort(File.ls!(Path.join(vendor, "docs"))) ==
-             Enum.sort(~w(protocol.md storage.md operations.md compatibility.md))
+             Enum.sort(
+               ~w(protocol.md storage.md operations.md compatibility.md tay-dashboard-design.md)
+             )
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))
@@ -52,6 +54,7 @@ defmodule Tay.System.PackageTest do
         do: refute(File.exists?(Path.join(vendor, forbidden)))
 
     templates = Path.join(@checkout, "test/support/package_consumer")
+    File.cp_r!(Path.join(@checkout, "deps/telemetry"), Path.join(consumer, "vendor/telemetry"))
 
     for source <- Path.wildcard(Path.join(templates, "**/*.template")) do
       relative = source |> Path.relative_to(templates) |> String.replace_suffix(".template", "")

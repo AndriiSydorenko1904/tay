@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.8.0 — 2026-09-22
+
+- Added the stable, bounded public inspection API: cursor-paginated job listing,
+  incremental state statistics, and public queue runtime snapshots.
+- Added generic payload-bounded job-transition and queue-control telemetry.
+- Added the separately published optional `tay_dashboard` Phoenix LiveView
+  package with overview, job filtering/details, retry/cancel, queue controls,
+  live refreshes, host-router integration, and explicit authentication guidance.
+- Preserved all frozen durable storage formats and kept Phoenix, LiveView, Plug,
+  HTML, and JavaScript dependencies out of the core `tay` package.
+
 ## 0.7.1 — 2026-09-22
 
 - Fixed a circular `GenServer.call` deadlock between executor dispatch and

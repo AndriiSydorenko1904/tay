@@ -22,9 +22,12 @@ defmodule Tay do
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
   is a development mode and is never described as durable.
   """
-  alias Tay.{Error, Job, JobID}
+  alias Tay.{Error, Inspection, Job, JobID}
   alias Tay.Engine.{Admission, Config}
   alias Tay.Event.{Value, V1}
+
+  @doc "Returns the registered name used by Tay APIs when `:name` is omitted."
+  def default_name, do: Tay.Engine
 
   def child_spec(options) do
     %{
@@ -96,6 +99,34 @@ defmodule Tay do
       {:error, reason} -> public_error(reason, :get_job, safe_id(id))
     end
   end
+
+  @doc "Returns a bounded, cursor-paginated page of public job views."
+  def jobs(options \\ []) do
+    with {:ok, query} <- Inspection.normalize(options),
+         {:ok, name, timeout} <- request_options(Keyword.take(options, [:name, :timeout])),
+         {:ok, meta} <- ready(name),
+         {:ok, %{jobs: jobs, next_key: next_key}} <-
+           Admission.request(
+             name,
+             meta,
+             {:inspect_jobs, Map.drop(query, [:fingerprint])},
+             256,
+             :jobs,
+             nil,
+             timeout || meta.timeout
+           ) do
+      {:ok, %{jobs: jobs, next_cursor: Inspection.encode_cursor(next_key, query.fingerprint)}}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> public_error(reason, :jobs, nil)
+    end
+  end
+
+  @doc "Returns an efficient count snapshot for every public job state."
+  def stats(options \\ []), do: inspect_request(:inspect_stats, :stats, options)
+
+  @doc "Returns configured queues and their current volatile runtime state."
+  def queues(options \\ []), do: inspect_request(:inspect_queues, :queues, options)
 
   @doc """
   Durably cancels an eligible job. Options are `:name`, `:timeout`, and
@@ -208,6 +239,15 @@ defmodule Tay do
          {:ok, status} <- Admission.status(name),
          do: status,
          else: (_ -> %{state: :unavailable, freshness: :bounded_snapshot})
+  end
+
+  defp inspect_request(intent, operation, options) do
+    with {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      Admission.request(name, meta, intent, 256, operation, nil, timeout || meta.timeout)
+    else
+      {:error, reason} -> public_error(reason, operation, nil)
+    end
   end
 
   defp mutation(operation, id, options) do

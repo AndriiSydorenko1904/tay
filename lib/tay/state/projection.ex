@@ -1,6 +1,6 @@
 defmodule Tay.State.Projection do
   @moduledoc "Private disposable indexes. Only the owning Engine may read or update them."
-  alias Tay.State.{JobIndex, QueueIndex, SchedulerIndex, TaskIndex}
+  alias Tay.State.{InspectionIndex, JobIndex, QueueIndex, SchedulerIndex, TaskIndex}
   @test Mix.env() == :test
   def new(registry, queues, hook \\ nil) do
     context = %{hook: test_hook(hook)}
@@ -12,12 +12,15 @@ defmodule Tay.State.Projection do
     hook(context, :task_index_created)
     schedule = SchedulerIndex.new()
     hook(context, :scheduler_index_created)
+    inspection = InspectionIndex.new()
+    hook(context, :inspection_index_created)
 
     %{
       jobs: jobs,
       queue: queue,
       task: task,
       schedule: schedule,
+      inspection: inspection,
       registry: registry,
       queues: queues,
       held: MapSet.new(),
@@ -38,6 +41,7 @@ defmodule Tay.State.Projection do
     if previous && scheduled?(previous), do: SchedulerIndex.delete(p.schedule, previous)
     hook(p, :schedule_removed)
     JobIndex.put(p.jobs, job)
+    :ok = InspectionIndex.replace(p.inspection, previous, job)
     hook(p, :job_written)
     if available?(p, job), do: QueueIndex.put(p.queue, job)
     hook(p, :queue_written)
@@ -80,21 +84,25 @@ defmodule Tay.State.Projection do
   end
 
   def valid?(p) do
-    {queue, task, schedule} =
+    {queue, task, schedule, jobs} =
       JobIndex.fold(
         p.jobs,
-        fn job, {q, t, s} ->
+        fn job, {q, t, s, jobs} ->
           q = if available?(p, job), do: [{QueueIndex.key(job), job.id} | q], else: q
           t = if task_available?(p, job), do: [{TaskIndex.key(job), job.id} | t], else: t
           s = if scheduled?(job), do: [{SchedulerIndex.key(job), job.revision} | s], else: s
-          {q, t, s}
+          {q, t, s, [job | jobs]}
         end,
-        {[], [], []}
+        {[], [], [], []}
       )
+
+    {inspection_entries, inspection_counts} = InspectionIndex.expected(jobs)
 
     Enum.sort(queue) == Enum.sort(:ets.tab2list(p.queue)) and
       Enum.sort(task) == Enum.sort(:ets.tab2list(p.task)) and
-      Enum.sort(schedule) == Enum.sort(:ets.tab2list(p.schedule))
+      Enum.sort(schedule) == Enum.sort(:ets.tab2list(p.schedule)) and
+      Enum.sort(inspection_entries) == Enum.sort(InspectionIndex.entries(p.inspection)) and
+      inspection_counts == InspectionIndex.counts(p.inspection)
   end
 
   if @test do

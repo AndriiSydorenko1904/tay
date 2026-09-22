@@ -23,8 +23,11 @@ defmodule Tay.Test.NativeHelpers do
 
   def child_elixir(script, args \\ []) do
     ebin = Application.app_dir(:tay, "ebin")
+    telemetry_ebin = Application.app_dir(:telemetry, "ebin")
 
-    System.cmd(System.find_executable("elixir"), ["-pa", ebin, "-e", script, "--" | args],
+    System.cmd(
+      System.find_executable("elixir"),
+      ["-pa", ebin, "-pa", telemetry_ebin, "-e", script, "--" | args],
       stderr_to_stdout: true
     )
   end
