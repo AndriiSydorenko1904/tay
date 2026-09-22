@@ -139,8 +139,8 @@ verification/reconciliation before retiring Engine and defers reclamation.
 No source bytes are deleted to obtain candidate headroom. Payload-free aggregate
 events are structured Logger debug metadata under `:tay_compaction`; enable
 debug logging to observe evaluation/gate/defer/start/completion/failure events.
-See the checkout's Phase-C implementation report for the
-qualification status, finite workload measurements and limitations.
+The qualification suite covers finite workload measurements and the documented
+operational limits.
 
 ## Cold backup and restore
 
