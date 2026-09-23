@@ -5,11 +5,20 @@ defmodule Tay.Dashboard.Standalone.HTTPTest do
 
   @endpoint Tay.Dashboard.Standalone.Endpoint
 
-  test "accepts browser LiveView connections through local loopback aliases" do
-    origins = @endpoint.config(:check_origin)
-    assert "//localhost" in origins
-    assert "//127.0.0.1" in origins
-    assert "//[::1]" in origins
+  test "accepts same-origin LiveView connections through a published host port" do
+    assert @endpoint.config(:check_origin) == :conn
+
+    conn =
+      :get
+      |> Plug.Test.conn("http://127.0.0.1:4001/live/websocket")
+      |> put_req_header("origin", "http://127.0.0.1:4001")
+
+    refute Phoenix.Socket.Transport.check_origin(
+             conn,
+             Phoenix.LiveView.Socket,
+             @endpoint,
+             check_origin: :conn
+           ).halted
   end
 
   test "requires authentication for the dashboard" do

@@ -50,18 +50,28 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
+    assert html =~ "v0.9.3"
     assert html =~ "Next page"
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 
     first_page_ids = job_ids(render(list))
-    render_click(element(list, "#next-page"))
-    assert assert_patch(list) =~ ~r|^/tay/jobs\?cursor=|
-    assert length(job_ids(render(list))) == 2
-    assert MapSet.disjoint?(MapSet.new(first_page_ids), MapSet.new(job_ids(render(list))))
+    redirect = list |> element("#next-page") |> render_click()
+    assert {:error, {:redirect, %{to: next_path}}} = redirect
+    assert next_path =~ ~r|^/tay/jobs\?cursor=|
+    {:ok, second_page, second_html} = live(build_conn(), next_path)
+    assert second_html =~ "Page 2"
+    assert length(job_ids(second_html)) == 2
 
-    html = render_change(list, "filter", %{"state" => "available", "queue" => "default"})
+    assert MapSet.disjoint?(
+             MapSet.new(first_page_ids),
+             MapSet.new(job_ids(render(second_page)))
+           )
+
+    html =
+      render_change(second_page, "filter", %{"state" => "available", "queue" => "default"})
+
     assert html =~ "available"
-    assert_patch(list, "/tay/jobs?queue=default&state=available")
+    assert_patch(second_page, "/tay/jobs?queue=default&state=available")
     assert length(job_ids(html)) == 50
 
     selected = List.last(jobs)

@@ -8,7 +8,11 @@ defmodule Tay.Dashboard.Live do
     path = Map.get(session, "tay_dashboard_path", "/tay")
 
     socket =
-      Phoenix.Component.assign(socket, engine: engine, dashboard_path: path, flash_error: nil)
+      Phoenix.Component.assign(socket,
+        engine: engine,
+        dashboard_path: path,
+        flash_error: nil
+      )
 
     if Phoenix.LiveView.connected?(socket) do
       handler = "tay-dashboard-#{inspect(self())}"
@@ -64,6 +68,8 @@ defmodule Tay.Dashboard.Live do
   slot :inner_block, required: true
 
   def shell(assigns) do
+    assigns = assign(assigns, :dashboard_version, Application.spec(:tay_dashboard, :vsn))
+
     ~H"""
     <div
       id="tay-dashboard"
@@ -88,7 +94,10 @@ defmodule Tay.Dashboard.Live do
         #tay-dashboard pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f6f8fa; padding:14px; border-radius:8px; }
       </style>
       <header>
-        <h1 style="margin-bottom:8px">Tay Dashboard</h1>
+        <h1 style="margin-bottom:8px">
+          Tay Dashboard
+          <small style="font-size:14px; color:#65717e; font-weight:500">v{@dashboard_version}</small>
+        </h1>
       </header>
       <nav>
         <a class={if @current == :overview, do: "active"} href={@path <> "/"}>Overview</a>

@@ -182,6 +182,7 @@ defmodule Tay.Executor.Connection do
          {:ok, next} <- send_wire(%{s | session: session}, hello_reply(message, session)) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unavailable")
     end
@@ -217,6 +218,7 @@ defmodule Tay.Executor.Connection do
            ) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unavailable")
     end
@@ -234,6 +236,7 @@ defmodule Tay.Executor.Connection do
            ) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unavailable")
     end
@@ -264,6 +267,7 @@ defmodule Tay.Executor.Connection do
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unknown_execution")
     end
@@ -277,6 +281,7 @@ defmodule Tay.Executor.Connection do
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, :json_too_large} -> protocol_reply(s, message, "result_too_large")
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unknown_execution")
@@ -290,6 +295,7 @@ defmodule Tay.Executor.Connection do
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
+      {:error, next} when is_map(next) -> {:stop, next}
       {:error, code} -> protocol_reply(s, message, code)
       _ -> protocol_reply(s, message, "unknown_execution")
     end

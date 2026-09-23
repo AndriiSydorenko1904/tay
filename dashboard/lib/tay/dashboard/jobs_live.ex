@@ -14,7 +14,8 @@ defmodule Tay.Dashboard.JobsLive do
       "worker" => Map.get(params, "worker", "")
     }
 
-    {:noreply, load(socket, filters, Map.get(params, "cursor"))}
+    page = page_number(Map.get(params, "page"))
+    {:noreply, load(socket, filters, Map.get(params, "cursor"), page)}
   end
 
   @impl true
@@ -25,7 +26,7 @@ defmodule Tay.Dashboard.JobsLive do
 
   @impl true
   def handle_info(:tay_dashboard_refresh, socket) do
-    {:noreply, load(socket, socket.assigns.filters, nil)}
+    {:noreply, load(socket, socket.assigns.filters, nil, 1)}
   end
 
   @impl true
@@ -36,7 +37,14 @@ defmodule Tay.Dashboard.JobsLive do
     ~H"""
     <Live.shell current={:jobs} path={@dashboard_path}>
       <h2>Jobs</h2>
-      <form id="job-filters" phx-change="filter" class="actions">
+      <form
+        id="job-filters"
+        action={@dashboard_path <> "/jobs"}
+        method="get"
+        phx-change="filter"
+        phx-submit="filter"
+        class="actions"
+      >
         <label>
           State<br />
           <select name="state">
@@ -56,6 +64,7 @@ defmodule Tay.Dashboard.JobsLive do
           value={@filters["worker"]}
           placeholder="worker.v1"
         /></label>
+        <button type="submit">Apply filters</button>
       </form>
       <div :if={@flash_error} class="error">{@flash_error}</div>
       <table>
@@ -79,17 +88,27 @@ defmodule Tay.Dashboard.JobsLive do
         </tbody>
       </table>
       <p :if={@jobs == [] && !@flash_error}>No jobs match this page.</p>
+      <p :if={!@flash_error} id="page-summary">
+        Page {@page} · showing {length(@jobs)} job{if length(@jobs) == 1, do: "", else: "s"}
+      </p>
       <p :if={@next_cursor}>
-        <.link
+        <a
           id="next-page"
-          patch={jobs_path(@dashboard_path, Map.put(drop_empty(@filters), "cursor", @next_cursor))}
-        >Next page →</.link>
+          href={
+            jobs_path(
+              @dashboard_path,
+              drop_empty(@filters)
+              |> Map.put("cursor", @next_cursor)
+              |> Map.put("page", @page + 1)
+            )
+          }
+        >Next page →</a>
       </p>
     </Live.shell>
     """
   end
 
-  defp load(socket, filters, cursor) do
+  defp load(socket, filters, cursor, page_number) do
     options = [name: socket.assigns.engine, limit: 50]
 
     state =
@@ -104,10 +123,11 @@ defmodule Tay.Dashboard.JobsLive do
     options = add(options, :cursor, cursor)
 
     case Tay.jobs(options) do
-      {:ok, page} ->
+      {:ok, result_page} ->
         assign(socket,
-          jobs: page.jobs,
-          next_cursor: page.next_cursor,
+          jobs: result_page.jobs,
+          next_cursor: result_page.next_cursor,
+          page: page_number,
           filters: filters,
           flash_error: nil
         )
@@ -116,6 +136,7 @@ defmodule Tay.Dashboard.JobsLive do
         assign(socket,
           jobs: [],
           next_cursor: nil,
+          page: page_number,
           filters: filters,
           flash_error: Live.error_message(error)
         )
@@ -136,6 +157,15 @@ defmodule Tay.Dashboard.JobsLive do
   defp add(options, key, value), do: Keyword.put(options, key, value)
   defp present(value) when value in [nil, ""], do: nil
   defp present(value), do: value
+
+  defp page_number(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {page, ""} when page > 0 -> page
+      _ -> 1
+    end
+  end
+
+  defp page_number(_), do: 1
   defp drop_empty(map), do: Map.reject(map, fn {_key, value} -> value in [nil, ""] end)
   defp short(id), do: String.slice(id, 0, 12) <> "…"
   defp time(nil), do: "—"

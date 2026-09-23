@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.9.3 — 2026-09-23
+
+- Fixed LiveView origin validation behind Docker port publishing and reverse
+  proxies while retaining same-origin protection.
+- Made job filters usable with both live events and ordinary GET submission,
+  restored no-JavaScript cursor navigation, and exposed page position.
+- Added dashboard version, lifecycle context, attempt semantics, and readable
+  diagnostic-code descriptions to job details.
+- Prevented executor connection send failures from being misclassified as
+  protocol error codes and crashing the connection process.
+
 ## 0.9.2 — 2026-09-23
 
 - Fixed standalone dashboard LiveView connections when accessed through local

@@ -99,6 +99,33 @@ defmodule Tay.Executor.ConnectionConcurrencyTest do
     GenServer.stop(server)
   end
 
+  test "a peer closing before a failure acknowledgement stops the connection normally", %{
+    socket_path: socket_path
+  } do
+    {:ok, server} = start_server(socket_path, self())
+    assert_receive {:executor_server_ready, ^server}
+    socket = connect_executor(socket_path, 1)
+    connection = only_connection(server)
+    monitor = Process.monitor(connection)
+
+    {:ok, reservation} = Server.reserve(server, @task)
+    :ok = Server.dispatch(server, reservation, job("failed-and-closed"))
+    execute = recv_type(socket, "execute")
+
+    send_message(socket, %{
+      "version" => 1,
+      "type" => "failed",
+      "request_id" => "failure",
+      "reservation_id" => execute["reservation_id"],
+      "execution_id" => execute["execution_id"],
+      "error" => %{"type" => "RuntimeError", "message" => "worker failed"}
+    })
+
+    :ok = :gen_tcp.close(socket)
+    assert_receive {:DOWN, ^monitor, :process, ^connection, :normal}, 1_000
+    GenServer.stop(server)
+  end
+
   defp start_server(socket_path, engine) do
     Server.start_link(%{
       engine: engine,

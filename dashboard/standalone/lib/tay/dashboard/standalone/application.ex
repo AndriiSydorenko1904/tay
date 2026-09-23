@@ -36,7 +36,10 @@ defmodule Tay.Dashboard.Standalone.Application do
       server: Application.get_env(:tay_dashboard_standalone, :serve, true),
       url: [host: config.host, port: config.port],
       http: [ip: {0, 0, 0, 0}, port: config.port],
-      check_origin: allowed_origins(config.host),
+      # Compare the Origin header with the actual request authority. This keeps
+      # same-origin protection while supporting Docker port publishing and
+      # trusted reverse proxies whose public port differs from the listener.
+      check_origin: :conn,
       secret_key_base: config.secret_key_base
     ]
 
@@ -51,11 +54,4 @@ defmodule Tay.Dashboard.Standalone.Application do
       Application.delete_env(:tay_dashboard_standalone, :basic_auth)
     end
   end
-
-  # The HTTP listener binds all interfaces. Keep the configured public host as
-  # the authority while also allowing the equivalent loopback spellings used
-  # to reach the default local installation.
-  defp allowed_origins("localhost"), do: ["//localhost", "//127.0.0.1", "//[::1]"]
-  defp allowed_origins("127.0.0.1"), do: ["//127.0.0.1", "//localhost", "//[::1]"]
-  defp allowed_origins(host), do: ["//#{host}"]
 end
