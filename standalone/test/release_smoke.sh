@@ -10,7 +10,10 @@ repo_dir=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 release_source="$repo_dir/standalone/_build/prod/rel/tay_standalone"
 test -x "$release_source/bin/tay_standalone"
 
-test_root=$(mktemp -d)
+# Strict durability intentionally rejects the host's /tmp filesystem. Keep the
+# smoke Store on the checked-out workspace filesystem instead.
+mkdir -p "$repo_dir/tmp"
+test_root=$(mktemp -d "$repo_dir/tmp/standalone-smoke.XXXXXX")
 release_dir="$test_root/release"
 data_dir="$test_root/data/store"
 socket_dir="$test_root/socket"
