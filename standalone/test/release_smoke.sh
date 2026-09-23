@@ -63,7 +63,7 @@ test "$store_before" = "$store_after"
 "$release_dir/bin/tay_standalone" stop
 
 test ! -e "$release_dir/mix.exs"
-test ! -d "$release_dir/lib"
+test -z "$(find "$release_dir" -type f -name '*.ex' -print -quit)"
 
 export TAY_INITIALIZE_IF_MISSING=maybe
 if "$release_dir/bin/tay_standalone" start >/dev/null 2>&1; then
