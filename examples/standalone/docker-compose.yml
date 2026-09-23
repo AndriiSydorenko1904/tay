@@ -1,0 +1,40 @@
+services:
+  tay:
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.9.0}
+    environment:
+      # The named-volume mount root already exists. A missing child preserves
+      # Tay's exact initialize-if-missing contract on first boot.
+      TAY_DATA_DIR: /var/lib/tay/store
+      TAY_SOCKET_PATH: /run/tay/tay.sock
+      TAY_INITIALIZE_IF_MISSING: "true"
+    volumes:
+      - taydata:/var/lib/tay
+      - taysocket:/run/tay
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid=10001,gid=10001
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: examples/standalone/worker.Dockerfile
+    environment:
+      TAY_SOCKET_PATH: /run/tay/tay.sock
+    depends_on:
+      tay:
+        condition: service_healthy
+    volumes:
+      - taysocket:/run/tay
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  taydata:
+  taysocket:

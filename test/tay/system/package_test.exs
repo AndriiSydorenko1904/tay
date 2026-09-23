@@ -41,7 +41,7 @@ defmodule Tay.System.PackageTest do
     assert File.regular?(Path.join(vendor, "CHANGELOG.md"))
 
     assert Enum.sort(File.ls!(Path.join(vendor, "docs"))) ==
-             Enum.sort(~w(protocol.md storage.md operations.md compatibility.md))
+             Enum.sort(~w(protocol.md storage.md operations.md compatibility.md standalone.md))
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))

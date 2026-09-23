@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.9.0 — 2026-09-23
+
+- Added an official minimal standalone OTP release and Debian-slim production
+  image for non-Elixir Executor Protocol v1 clients, without changing the Hex
+  package or embedded startup contract.
+- Added strict runtime environment parsing, Engine-plus-UDS readiness checks,
+  non-root/read-only container support, a generic Python worker Compose example,
+  release/container lifecycle tests, and stable/prerelease-aware GHCR publishing.
+
 ## 0.8.1 — 2026-09-22
 
 - Added the opt-in Engine option `initialize: :if_missing` for embedding

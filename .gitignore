@@ -1,5 +1,7 @@
 /_build/
 /deps/
+/standalone/_build/
+/standalone/deps/
 /cover/
 /doc/
 /tmp/

@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "0.8.1"
+  @version "0.9.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -106,7 +106,8 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md"
+        "docs/compatibility.md",
+        "docs/standalone.md"
       ],
       build_tools: ["mix"],
       links: %{
@@ -128,7 +129,8 @@ defmodule Tay.MixProject do
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",
-        "docs/compatibility.md"
+        "docs/compatibility.md",
+        "docs/standalone.md"
       ]
     ]
   end

@@ -6,10 +6,16 @@ can dispatch stable task keys to local Python workers over a Unix socket. It
 does not require a database or broker. This is a public preview with a
 constrained, target-validated operating profile.
 
+Tay can also run as a standalone production OCI image for non-Elixir
+applications. This is an additional distribution mode around the same Engine;
+the Hex dependency remains the normal Elixir installation. See the
+[standalone runtime guide](docs/standalone.md) for its volumes, permissions,
+configuration, health check, restart behavior, and Compose example.
+
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
-building. Add `{:tay, "~> 0.8.1"}` to your application's Mix dependencies, or
+building. Add `{:tay, "~> 0.9.0"}` to your application's Mix dependencies, or
 `{:tay, path: "../tay"}` for this checkout. Run `mix deps.get` and `mix compile`.
 
 For a development run, choose a dedicated absolute directory and initialize it
@@ -77,10 +83,10 @@ List and summarize jobs through the bounded public inspection API:
 
 The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs. It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.8.1/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.9.0/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.8.1/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.9.0/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
@@ -134,6 +140,29 @@ The socket is local only; there is no TCP listener or multi-host worker
 protocol. See the [protocol contract](docs/protocol.md) for discovery, security,
 request types, and result retention.
 
+## Standalone container
+
+The release workflow publishes a self-contained Linux image for `amd64` and
+`arm64` as `ghcr.io/andriisydorenko1904/tay:0.9.0`. It includes the Erlang VM
+and Tay runtime, so the host needs Docker (or another OCI runtime), not Elixir
+or Erlang. Pull it directly with:
+
+```sh
+docker pull ghcr.io/andriisydorenko1904/tay:0.9.0
+```
+
+A typical non-Elixir deployment runs that image beside a language worker and
+shares only the `/run/tay` socket volume. Durable state belongs on
+`/var/lib/tay`. The included example starts both services:
+
+```sh
+docker compose -f examples/standalone/docker-compose.yml up --build
+```
+
+The container is single-node, single-writer, non-root, and compatible with a
+read-only root filesystem. It does not execute user job code. Deleting its data
+volume deletes Tay's durable state; deleting its socket volume does not.
+
 ## License
 
 The Tay engine is source-available under the Elastic License 2.0. Internal use,
@@ -158,4 +187,5 @@ individual log files to recover capacity.
 Start with [operations](docs/operations.md) for initialization, inspection,
 cold backup/restore, and incident response. The [storage contract](docs/storage.md)
 describes persistent formats and recovery; [compatibility](docs/compatibility.md)
-covers supported platforms, upgrade boundaries, and finite release limits.
+covers supported platforms, upgrade boundaries, and finite release limits. The
+[standalone guide](docs/standalone.md) covers the official Docker/OCI runtime.

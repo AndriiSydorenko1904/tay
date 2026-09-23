@@ -1,0 +1,60 @@
+name: Standalone runtime
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - standalone/**
+      - examples/standalone/**
+      - lib/**
+      - mix.exs
+      - mix.lock
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - standalone/**
+      - examples/standalone/**
+      - lib/**
+      - mix.exs
+      - mix.lock
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "29.0.2"
+          elixir-version: "1.20.2"
+          version-type: strict
+          install-rebar: false
+      - name: Test and build the standalone release
+        working-directory: standalone
+        run: |
+          mix deps.get --check-locked
+          mix format --check-formatted
+          mix test --warnings-as-errors
+          MIX_ENV=prod mix compile --warnings-as-errors
+          MIX_ENV=prod mix release tay_standalone
+      - name: Exercise fresh start, readiness, stop, and recovery
+        run: standalone/test/release_smoke.sh
+      - name: Build the production image
+        run: docker build --tag tay-standalone:test .
+      - name: Build the example Python worker
+        run: >-
+          docker build --file examples/standalone/worker.Dockerfile
+          --tag tay-standalone-worker:test .
+      - name: Exercise the production image with named volumes
+        run: >-
+          standalone/test/container_smoke.sh
+          tay-standalone:test tay-standalone-worker:test

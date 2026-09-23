@@ -13,13 +13,13 @@ Add both packages to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "~> 0.8.1"},
-    {:tay_dashboard, "~> 0.8.1"}
+    {:tay, "~> 0.9.0"},
+    {:tay_dashboard, "~> 0.9.0"}
   ]
 end
 ```
 
-Tay Dashboard 0.8.x requires Elixir 1.20, Tay 0.8.x, Phoenix 1.8, and Phoenix
+Tay Dashboard 0.9.x requires Elixir 1.20, Tay 0.9.x, Phoenix 1.8, and Phoenix
 LiveView 1.2. The host endpoint must have a working LiveView socket and PubSub,
 as a normal Phoenix LiveView application does.
 

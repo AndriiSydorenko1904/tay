@@ -1,0 +1,41 @@
+defmodule Tay.Standalone.Application do
+  @moduledoc false
+
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    case {Application.get_env(:tay_standalone, :start_runtime, true),
+          Tay.Standalone.Config.load()} do
+      {false, {:ok, _config}} ->
+        Supervisor.start_link([],
+          strategy: :one_for_one,
+          name: Tay.Standalone.Supervisor
+        )
+
+      {true, {:ok, config}} ->
+        children = [
+          Tay.child_spec(
+            data_dir: config.data_dir,
+            initialize: config.initialize,
+            durability: :sync,
+            validated_filesystem: true,
+            workers: %{},
+            queues: [default: 10],
+            executor_socket: config.socket_path,
+            executor_socket_mode: 0o660
+          )
+          |> Map.put(:significant, true)
+        ]
+
+        Supervisor.start_link(children,
+          strategy: :one_for_one,
+          auto_shutdown: :any_significant,
+          name: Tay.Standalone.Supervisor
+        )
+
+      {_, {:error, message}} ->
+        {:error, {:invalid_runtime_configuration, message}}
+    end
+  end
+end
