@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.9.6 — 2026-09-23
+
+- Gave dashboard package publication its own committed lock file so switching
+  from the local Tay checkout to the Hex dependency no longer mutates the
+  development lock.
+- Required Tay 0.9.5 or newer for dashboard partial worker-key filtering while
+  allowing dashboard releases to version independently from the core package.
+
 ## 0.9.5 — 2026-09-23
 
 - Added partial worker-key filtering to the inspection API and dashboard while

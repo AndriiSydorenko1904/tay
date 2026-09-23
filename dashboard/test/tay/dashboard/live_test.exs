@@ -50,7 +50,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.5"
+    assert html =~ "v0.9.6"
     assert html =~ "Next page"
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 

@@ -1,7 +1,8 @@
 defmodule TayDashboard.MixProject do
   use Mix.Project
 
-  @version "0.9.5"
+  @version "0.9.6"
+  @tay_requirement "~> 0.9.5"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -49,8 +50,8 @@ defmodule TayDashboard.MixProject do
 
   defp tay_dependency do
     if package_mode?(),
-      do: {:tay, "~> #{@version}"},
-      else: {:tay, "~> #{@version}", path: "..", override: true, env: Mix.env()}
+      do: {:tay, @tay_requirement},
+      else: {:tay, @tay_requirement, path: "..", override: true, env: Mix.env()}
   end
 
   defp lockfile, do: if(package_mode?(), do: "mix.package.lock", else: "mix.lock")
