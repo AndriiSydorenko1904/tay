@@ -1,7 +1,7 @@
 defmodule TayDashboard.MixProject do
   use Mix.Project
 
-  @version "0.9.3"
+  @version "0.9.4"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -38,6 +38,7 @@ defmodule TayDashboard.MixProject do
       {:phoenix, "~> 1.8.14"},
       {:phoenix_live_view, "~> 1.2.11"},
       {:phoenix_html, "~> 4.3"},
+      {:jason, "~> 1.4"},
       {:floki, ">= 0.38.0", only: :test},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:stream_data, "~> 1.2", only: :test},

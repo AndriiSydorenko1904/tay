@@ -27,6 +27,7 @@ defmodule Tay.Dashboard.Standalone.Endpoint do
 
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+  plug(Plug.Parsers, parsers: [:urlencoded], pass: ["text/*", "application/*"])
   plug(Plug.Session, @session_options)
   plug(Tay.Dashboard.Standalone.Router)
 end

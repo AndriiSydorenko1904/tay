@@ -37,6 +37,9 @@ defmodule Tay.Dashboard.Standalone.HTTPTest do
   end
 
   test "serves a complete LiveView page and client assets" do
+    assert Code.ensure_loaded?(Jason)
+    assert Jason.decode!(Jason.encode!(%{"live_view" => true})) == %{"live_view" => true}
+
     conn =
       build_conn()
       |> put_req_header(
@@ -51,5 +54,14 @@ defmodule Tay.Dashboard.Standalone.HTTPTest do
 
     assert get(build_conn(), "/assets/phoenix.min.js").status == 200
     assert get(build_conn(), "/assets/phoenix_live_view.min.js").status == 200
+  end
+
+  test "parses query parameters for non-JavaScript filter navigation" do
+    auth = Application.get_env(:tay_dashboard_standalone, :basic_auth)
+    Application.delete_env(:tay_dashboard_standalone, :basic_auth)
+    on_exit(fn -> Application.put_env(:tay_dashboard_standalone, :basic_auth, auth) end)
+
+    conn = get(build_conn(), "/tay/jobs?state=scheduled")
+    assert html_response(conn, 200) =~ ~r/<option value="scheduled" selected>/
   end
 end

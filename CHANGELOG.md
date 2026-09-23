@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.4 — 2026-09-23
+
+- Included the JSON codec required by Phoenix LiveView in the standalone
+  dashboard release, preventing WebSocket joins from crashing after upgrade.
+- Parsed URL-encoded query parameters in the standalone endpoint so filters and
+  cursor links also work during static and non-JavaScript navigation.
+
 ## 0.9.3 — 2026-09-23
 
 - Fixed LiveView origin validation behind Docker port publishing and reverse
