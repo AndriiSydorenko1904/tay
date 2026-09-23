@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.9.1 — 2026-09-23
+
+- Added the dashboard-enabled OCI distribution with one Tay Engine, the
+  Executor Protocol Unix socket, and a self-contained Phoenix LiveView UI.
+- Added a Compose example, non-root/read-only runtime hardening, Engine and HTTP
+  smoke coverage, multi-architecture GHCR publishing, and complete deployment
+  documentation.
+- Kept built-in HTTP Basic authentication optional and disabled by default;
+  deployments may enable it with a paired username/password or rely on their
+  private network, loopback binding, VPN, or trusted ingress boundary.
+
 ## 0.9.0 — 2026-09-23
 
 - Added an official minimal standalone OTP release and Debian-slim production

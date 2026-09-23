@@ -1,7 +1,7 @@
 defmodule TayDashboard.MixProject do
   use Mix.Project
 
-  @version "0.9.0"
+  @version "0.9.1"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -15,7 +15,15 @@ defmodule TayDashboard.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       package: package(),
-      docs: [main: "readme", source_ref: "v#{@version}", extras: ["README.md"]]
+      docs: [
+        main: "readme",
+        source_ref: "v#{@version}",
+        extras: ["README.md", "guides/docker.md", "guides/documentation.md"],
+        groups_for_extras: [
+          Deployment: ["guides/docker.md"],
+          Development: ["guides/documentation.md"]
+        ]
+      ]
     ]
   end
 
@@ -46,7 +54,7 @@ defmodule TayDashboard.MixProject do
   defp package do
     [
       name: "tay_dashboard",
-      files: ["lib", "mix.exs", ".formatter.exs", "README.md", "LICENSE"],
+      files: ["lib", "guides", "mix.exs", ".formatter.exs", "README.md", "LICENSE"],
       build_tools: ["mix"],
       licenses: ["Elastic-2.0"],
       links: %{"Source" => @source_url, "Tay" => "https://hex.pm/packages/tay"}

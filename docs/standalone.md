@@ -72,3 +72,20 @@ filesystem whose durability properties have been validated for the workload.
 
 The standalone image is not distributed Tay and does not run user job code;
 external worker processes do that over the existing UDS protocol.
+
+## Dashboard-enabled distribution
+
+The separate `tay-dashboard` OCI image is built from the same standalone host
+and adds the `tay_dashboard` package plus a minimal Phoenix endpoint. It starts
+one Engine and exposes both `/run/tay/tay.sock` and the web UI at `/tay`.
+Application-level authentication is optional. It is a replacement for
+the headless image, not a sidecar.
+
+```sh
+docker compose -f examples/dashboard/docker-compose.yml up --build
+```
+
+Both images use the same data and socket volume contracts. Never start one of
+each against the same data volume. See the
+[dashboard container guide](../dashboard/guides/docker.md) for its network
+boundary, optional credentials, HTTP configuration, and Compose example.

@@ -12,6 +12,11 @@ the Hex dependency remains the normal Elixir installation. See the
 [standalone runtime guide](docs/standalone.md) for its volumes, permissions,
 configuration, health check, restart behavior, and Compose example.
 
+When an operational web UI is required, the dashboard-enabled image combines
+one Tay Engine, the same executor socket, and the optional LiveView dashboard.
+It replaces the headless image rather than running as a sidecar. See the
+[dashboard container guide](dashboard/guides/docker.md).
+
 ## Start locally
 
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
@@ -83,10 +88,10 @@ List and summarize jobs through the bounded public inspection API:
 
 The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs. It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.9.0/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.9.1/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.9.0/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.9.1/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
@@ -143,12 +148,12 @@ request types, and result retention.
 ## Standalone container
 
 The release workflow publishes a self-contained Linux image for `amd64` and
-`arm64` as `ghcr.io/andriisydorenko1904/tay:0.9.0`. It includes the Erlang VM
+`arm64` as `ghcr.io/andriisydorenko1904/tay:0.9.1`. It includes the Erlang VM
 and Tay runtime, so the host needs Docker (or another OCI runtime), not Elixir
 or Erlang. Pull it directly with:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.9.0
+docker pull ghcr.io/andriisydorenko1904/tay:0.9.1
 ```
 
 A typical non-Elixir deployment runs that image beside a language worker and
@@ -162,6 +167,24 @@ docker compose -f examples/standalone/docker-compose.yml up --build
 The container is single-node, single-writer, non-root, and compatible with a
 read-only root filesystem. It does not execute user job code. Deleting its data
 volume deletes Tay's durable state; deleting its socket volume does not.
+
+### Standalone container with Dashboard
+
+The dashboard distribution contains Tay core and a small Phoenix host
+in one release. Start the repository example with:
+
+```sh
+docker compose -f examples/dashboard/docker-compose.yml up --build
+```
+
+Open <http://localhost:4000/tay>. The example binds only to host loopback and
+leaves optional Basic authentication disabled. The image is
+`ghcr.io/andriisydorenko1904/tay-dashboard:0.9.1`. It owns the Store, so never
+run it beside the headless `tay` image on the same data volume.
+
+See the [complete dashboard container guide](dashboard/guides/docker.md) for
+configuration, optional Basic authentication, reverse-proxy guidance, persistence, and
+upgrade rules.
 
 ## License
 

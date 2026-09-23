@@ -1,4 +1,5 @@
 defmodule Tay.Dashboard.JobLive do
+  @moduledoc false
   use Phoenix.LiveView
   alias Tay.Dashboard.Live
 

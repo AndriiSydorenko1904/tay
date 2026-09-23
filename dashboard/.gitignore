@@ -3,4 +3,5 @@
 /_build/
 /deps/
 /cover/
+# Generated ExDoc output. Authored docs live in README.md, guides/, and lib/.
 /doc/

@@ -1,12 +1,18 @@
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.9.1}
+    image: ${TAY_DASHBOARD_IMAGE:-ghcr.io/andriisydorenko1904/tay-dashboard:0.9.1}
+    build:
+      context: ../..
+      dockerfile: Dockerfile.dashboard
     environment:
-      # The named-volume mount root already exists. A missing child preserves
-      # Tay's exact initialize-if-missing contract on first boot.
       TAY_DATA_DIR: /var/lib/tay/store
       TAY_SOCKET_PATH: /run/tay/tay.sock
       TAY_INITIALIZE_IF_MISSING: "true"
+      TAY_DASHBOARD_HOST: localhost
+      TAY_DASHBOARD_PORT: "4000"
+      TAY_DASHBOARD_SECRET_KEY_BASE: ${TAY_DASHBOARD_SECRET_KEY_BASE:-development-only-secret-key-base-change-this-before-production-000000}
+    ports:
+      - "127.0.0.1:${TAY_DASHBOARD_HTTP_PORT:-4000}:4000"
     volumes:
       - taydata:/var/lib/tay
       - taysocket:/run/tay
