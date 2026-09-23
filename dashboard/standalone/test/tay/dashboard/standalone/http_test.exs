@@ -5,6 +5,13 @@ defmodule Tay.Dashboard.Standalone.HTTPTest do
 
   @endpoint Tay.Dashboard.Standalone.Endpoint
 
+  test "accepts browser LiveView connections through local loopback aliases" do
+    origins = @endpoint.config(:check_origin)
+    assert "//localhost" in origins
+    assert "//127.0.0.1" in origins
+    assert "//[::1]" in origins
+  end
+
   test "requires authentication for the dashboard" do
     conn = get(build_conn(), "/tay")
     assert conn.status == 401

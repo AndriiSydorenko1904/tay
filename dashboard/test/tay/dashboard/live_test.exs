@@ -53,8 +53,16 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Next page"
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 
+    first_page_ids = job_ids(render(list))
+    render_click(element(list, "#next-page"))
+    assert assert_patch(list) =~ ~r|^/tay/jobs\?cursor=|
+    assert length(job_ids(render(list))) == 2
+    assert MapSet.disjoint?(MapSet.new(first_page_ids), MapSet.new(job_ids(render(list))))
+
     html = render_change(list, "filter", %{"state" => "available", "queue" => "default"})
     assert html =~ "available"
+    assert_patch(list, "/tay/jobs?queue=default&state=available")
+    assert length(job_ids(html)) == 50
 
     selected = List.last(jobs)
     {:ok, detail, html} = live(build_conn(), "/tay/jobs/#{selected.id}")
@@ -113,5 +121,12 @@ defmodule Tay.Dashboard.LiveTest do
   test "engine unavailable renders an ordinary error" do
     {:ok, _view, html} = live(build_conn(), "/tay/")
     assert html =~ "unavailable"
+  end
+
+  defp job_ids(html) do
+    html
+    |> Floki.parse_document!()
+    |> Floki.find("#jobs tr")
+    |> Enum.map(fn row -> row |> Floki.attribute("id") |> List.first() end)
   end
 end

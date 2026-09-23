@@ -80,10 +80,10 @@ defmodule Tay.Dashboard.JobsLive do
       </table>
       <p :if={@jobs == [] && !@flash_error}>No jobs match this page.</p>
       <p :if={@next_cursor}>
-        <a
+        <.link
           id="next-page"
-          href={jobs_path(@dashboard_path, Map.put(drop_empty(@filters), "cursor", @next_cursor))}
-        >Next page →</a>
+          patch={jobs_path(@dashboard_path, Map.put(drop_empty(@filters), "cursor", @next_cursor))}
+        >Next page →</.link>
       </p>
     </Live.shell>
     """
