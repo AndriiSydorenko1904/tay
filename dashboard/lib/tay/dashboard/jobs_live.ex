@@ -59,7 +59,7 @@ defmodule Tay.Dashboard.JobsLive do
           </select>
         </label>
         <label>Queue<br /><input name="queue" value={@filters["queue"]} placeholder="default" /></label>
-        <label>Worker key<br /><input
+        <label>Worker key contains<br /><input
           name="worker"
           value={@filters["worker"]}
           placeholder="worker.v1"
@@ -119,7 +119,7 @@ defmodule Tay.Dashboard.JobsLive do
 
     options = add(options, :state, state)
     options = add(options, :queue, present(filters["queue"]))
-    options = add(options, :worker, present(filters["worker"]))
+    options = add(options, :worker_contains, present(filters["worker"]))
     options = add(options, :cursor, cursor)
 
     case Tay.jobs(options) do

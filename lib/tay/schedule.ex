@@ -72,6 +72,11 @@ defmodule Tay.Schedule do
   def cancel(%__MODULE__{} = schedule, at) when is_integer(at) and at >= 0,
     do: %{schedule | cancelled_at: at}
 
+  def equivalent?(%__MODULE__{} = left, %__MODULE__{} = right) do
+    Map.take(left, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up]) ==
+      Map.take(right, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up])
+  end
+
   defp timing(fields, now) do
     case {Map.get(fields, "cron"), Map.get(fields, "every")} do
       {cron, nil} when is_binary(cron) ->

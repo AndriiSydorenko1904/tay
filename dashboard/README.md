@@ -89,8 +89,8 @@ model.
 
 - **Overview** shows incrementally maintained counts for available, scheduled,
   executing, retryable, completed, cancelled, and discarded jobs.
-- **Jobs** provides bounded cursor pagination and state, queue, and worker-key
-  filters. Details show safe public job fields, bounded argument rendering, the
+- **Jobs** provides bounded cursor pagination and state, queue, and partial
+  worker-key filters. Details show safe public job fields, bounded argument rendering, the
   last diagnostic, and revision-checked Retry/Cancel actions when valid.
 - **Queues** shows configured concurrency, current execution use, retained job
   counts, and volatile Pause/Resume controls.

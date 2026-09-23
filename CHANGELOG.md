@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.5 — 2026-09-23
+
+- Added partial worker-key filtering to the inspection API and dashboard while
+  preserving cursor/filter binding.
+- Made stable schedule declarations idempotent so periodic reconciliation no
+  longer resets interval timers or triggers a job on every reconciliation pass.
+
 ## 0.9.4 — 2026-09-23
 
 - Included the JSON codec required by Phoenix LiveView in the standalone

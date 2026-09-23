@@ -50,7 +50,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.4"
+    assert html =~ "v0.9.5"
     assert html =~ "Next page"
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 
@@ -72,6 +72,11 @@ defmodule Tay.Dashboard.LiveTest do
 
     assert html =~ "available"
     assert_patch(second_page, "/tay/jobs?queue=default&state=available")
+    assert length(job_ids(html)) == 50
+
+    html = render_change(second_page, "filter", %{"worker" => "worker."})
+    assert_patch(second_page, "/tay/jobs?worker=worker.")
+    assert html =~ "Worker key contains"
     assert length(job_ids(html)) == 50
 
     selected = List.last(jobs)

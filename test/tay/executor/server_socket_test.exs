@@ -98,4 +98,35 @@ defmodule Tay.Executor.ServerSocketTest do
     assert {:error, :socket_path_exists} = Server.start_link(options(socket, false))
     assert File.read!(socket) == "do not replace"
   end
+
+  test "redeclaring the same stable schedule preserves its timer", %{socket: socket} do
+    assert {:ok, server} = Server.start_link(options(socket))
+    assert_receive {:executor_server_ready, ^server}
+
+    fields = %{
+      "declaration_id" => "stable-schedule",
+      "task" => "media.cleanup-orphans.v1",
+      "args" => %{},
+      "every" => %{"hours" => 24},
+      "delay" => 60,
+      "options" => %{"queue" => "default"}
+    }
+
+    assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
+    first_entry = :sys.get_state(server).schedules["stable-schedule"]
+    assert {:ok, second} = GenServer.call(server, {:put_schedule, fields})
+    second_entry = :sys.get_state(server).schedules["stable-schedule"]
+
+    assert second == first
+    assert second_entry.timer == first_entry.timer
+    assert second_entry.schedule.next_at == first_entry.schedule.next_at
+
+    changed = put_in(fields, ["every"], %{"hours" => 12})
+    assert {:ok, _} = GenServer.call(server, {:put_schedule, changed})
+    changed_entry = :sys.get_state(server).schedules["stable-schedule"]
+    refute changed_entry.timer == first_entry.timer
+    assert changed_entry.schedule.expression == 12 * 60 * 60 * 1_000
+
+    GenServer.stop(server)
+  end
 end

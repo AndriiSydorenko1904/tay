@@ -18,6 +18,7 @@ defmodule Tay.Inspection do
       :queues,
       :worker,
       :workers,
+      :worker_contains,
       :id,
       :limit,
       :cursor
@@ -27,19 +28,22 @@ defmodule Tay.Inspection do
          true <- not paired?(options, :state, :states),
          true <- not paired?(options, :queue, :queues),
          true <- not paired?(options, :worker, :workers),
+         true <- not mixed_worker_filter?(options),
          {:ok, states} <- values(options, :state, :states, &state/1),
          {:ok, queues} <- values(options, :queue, :queues, &key/1),
          {:ok, workers} <- values(options, :worker, :workers, &worker_key/1),
+         {:ok, worker_contains} <- optional(options, :worker_contains, &key/1),
          {:ok, id} <- id(Keyword.get(options, :id)),
          limit when is_integer(limit) and limit in 1..@max_limit <-
            Keyword.get(options, :limit, @default_limit),
-         fingerprint = fingerprint(states, queues, workers, id),
+         fingerprint = fingerprint(states, queues, workers, worker_contains, id),
          {:ok, after_key} <- decode_cursor(Keyword.get(options, :cursor), fingerprint) do
       {:ok,
        %{
          states: states,
          queues: queues,
          workers: workers,
+         worker_contains: worker_contains,
          id: id,
          limit: limit,
          after_key: after_key,
@@ -74,8 +78,18 @@ defmodule Tay.Inspection do
 
   defp decode_cursor(_, _), do: {:error, :invalid_cursor}
 
-  defp fingerprint(states, queues, workers, id) do
-    :crypto.hash(:sha256, :erlang.term_to_binary({states, queues, workers, id}, [:deterministic]))
+  defp fingerprint(states, queues, workers, worker_contains, id) do
+    :crypto.hash(
+      :sha256,
+      :erlang.term_to_binary({states, queues, workers, worker_contains, id}, [:deterministic])
+    )
+  end
+
+  defp optional(options, key, validator) do
+    case Keyword.fetch(options, key) do
+      :error -> {:ok, nil}
+      {:ok, value} -> validator.(value)
+    end
   end
 
   defp values(options, singular, plural, validator) do
@@ -137,6 +151,11 @@ defmodule Tay.Inspection do
 
   defp paired?(options, one, many),
     do: Keyword.has_key?(options, one) and Keyword.has_key?(options, many)
+
+  defp mixed_worker_filter?(options) do
+    Keyword.has_key?(options, :worker_contains) and
+      (Keyword.has_key?(options, :worker) or Keyword.has_key?(options, :workers))
+  end
 
   defp keyword?(options, allowed),
     do:

@@ -72,7 +72,7 @@ docker run --name tay-dashboard \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay-dashboard:0.9.4
+  ghcr.io/andriisydorenko1904/tay-dashboard:0.9.5
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is

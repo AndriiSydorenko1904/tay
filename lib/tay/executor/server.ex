@@ -236,10 +236,18 @@ defmodule Tay.Executor.Server do
 
     case Schedule.new(id, fields, now) do
       {:ok, schedule} ->
-        state = drop_schedule(s, id)
-        entry = arm_schedule(schedule, Map.get(fields, "options", %{}), now)
-        next = %{state | schedules: Map.put(state.schedules, id, entry)}
-        {:reply, {:ok, public_schedule(schedule)}, next}
+        options = Map.get(fields, "options", %{})
+
+        existing_entry = Map.get(s.schedules, id)
+
+        if equivalent_schedule_entry?(existing_entry, schedule, options) do
+          {:reply, {:ok, public_schedule(existing_entry.schedule)}, s}
+        else
+          state = drop_schedule(s, id)
+          entry = arm_schedule(schedule, options, now)
+          next = %{state | schedules: Map.put(state.schedules, id, entry)}
+          {:reply, {:ok, public_schedule(schedule)}, next}
+        end
 
       {:error, _} ->
         {:reply, {:error, "invalid_schedule"}, s}
@@ -819,6 +827,11 @@ defmodule Tay.Executor.Server do
     timer = Process.send_after(self(), {:schedule_due, schedule.id, schedule.next_at}, delay)
     %{schedule: schedule, options: options, timer: timer}
   end
+
+  defp equivalent_schedule_entry?(%{schedule: existing, options: options}, candidate, options),
+    do: Schedule.equivalent?(existing, candidate)
+
+  defp equivalent_schedule_entry?(_, _, _), do: false
 
   defp drop_schedule(s, id) do
     case Map.pop(s.schedules, id) do

@@ -77,7 +77,9 @@ defmodule Tay.State.InspectionIndex do
     (is_nil(query.id) or job.id == query.id) and
       (is_nil(query.states) or job.state in query.states) and
       (is_nil(query.queues) or job.definition["queue_key"] in query.queues) and
-      (is_nil(query.workers) or job.definition["worker_key"] in query.workers)
+      (is_nil(query.workers) or job.definition["worker_key"] in query.workers) and
+      (is_nil(query.worker_contains) or
+         String.contains?(job.definition["worker_key"], query.worker_contains))
   end
 
   defp increment(counts, job, amount) do

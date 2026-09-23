@@ -75,8 +75,9 @@ token before best-effort termination but cannot undo an effect already made.
 ## Live inspection and dashboard
 
 `Tay.jobs/1` returns public `Tay.Job` views in deterministic newest-first
-insertion order. It accepts state, queue, worker-key, ID, limit, and opaque
-cursor filters. Pages are capped at 100 results and each call examines at most
+insertion order. It accepts state, queue, exact worker-key (`worker`/`workers`),
+partial worker-key (`worker_contains`), ID, limit, and opaque cursor filters.
+Pages are capped at 100 results and each call examines at most
 1,000 retained jobs. A selective filter can therefore return a short or empty
 page with a non-nil cursor; follow the cursor to continue. Cursors are tied to
 their filters. Concurrent state changes produce a weakly consistent live view,

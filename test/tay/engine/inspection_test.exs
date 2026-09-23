@@ -66,6 +66,14 @@ defmodule Tay.Engine.InspectionTest do
     assert {:ok, %{jobs: [^second], next_cursor: nil}} =
              Tay.jobs(name: @name, queues: [:mail], workers: [EngineWorker])
 
+    assert {:ok, %{jobs: partial_jobs, next_cursor: nil}} =
+             Tay.jobs(name: @name, worker_contains: "worker.")
+
+    assert MapSet.new(Enum.map(partial_jobs, & &1.id)) == MapSet.new([second.id, cancelled.id])
+
+    assert {:ok, %{jobs: [], next_cursor: nil}} =
+             Tay.jobs(name: @name, worker_contains: "missing")
+
     assert {:ok, %{jobs: [^cancelled], next_cursor: nil}} =
              Tay.jobs(name: @name, id: cancelled.id)
 
@@ -110,7 +118,8 @@ defmodule Tay.Engine.InspectionTest do
           [states: []],
           [state: :unknown],
           [state: :available, states: [:available]],
-          [queues: ["default", "default"]]
+          [queues: ["default", "default"]],
+          [worker: "engine.worker.v1", worker_contains: "engine"]
         ] do
       assert {:error, %Tay.Error{kind: :invalid}} = Tay.jobs([name: @name] ++ options)
     end
