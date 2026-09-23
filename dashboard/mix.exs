@@ -11,6 +11,7 @@ defmodule TayDashboard.MixProject do
       description: "Official optional Phoenix LiveView dashboard for Tay",
       source_url: @source_url,
       elixir: "~> 1.20",
+      lockfile: lockfile(),
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -47,10 +48,13 @@ defmodule TayDashboard.MixProject do
   end
 
   defp tay_dependency do
-    if System.get_env("TAY_DASHBOARD_PACKAGE") == "1",
-      do: {:tay, "~> 0.9.0"},
-      else: {:tay, "~> 0.9.0", path: "..", override: true, env: Mix.env()}
+    if package_mode?(),
+      do: {:tay, "~> #{@version}"},
+      else: {:tay, "~> #{@version}", path: "..", override: true, env: Mix.env()}
   end
+
+  defp lockfile, do: if(package_mode?(), do: "mix.package.lock", else: "mix.lock")
+  defp package_mode?, do: System.get_env("TAY_DASHBOARD_PACKAGE") == "1"
 
   defp package do
     [
