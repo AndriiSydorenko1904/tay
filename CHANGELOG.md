@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.2 — 2026-09-23
+
+- Fixed standalone dashboard LiveView connections when accessed through local
+  loopback aliases such as `127.0.0.1`, restoring interactive job filters.
+- Changed job cursor pagination to use LiveView patch navigation and added
+  regression coverage for distinct pages and filtered results.
+
 ## 0.9.1 — 2026-09-23
 
 - Added the dashboard-enabled OCI distribution with one Tay Engine, the

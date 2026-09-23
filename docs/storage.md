@@ -1,6 +1,6 @@
 # Storage and recovery contract
 
-Tay v0.9.1 has one authoritative append-only store per Engine. Runtime ETS
+Tay v0.9.2 has one authoritative append-only store per Engine. Runtime ETS
 indexes are disposable projections, not a second source of truth. Record v1,
 STORE v1, Segment v1, and Event v1 are frozen compatibility contracts: changing
 their bytes or meanings requires an explicitly versioned migration. The
