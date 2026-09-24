@@ -1,6 +1,6 @@
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.9.9}
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.10.0}
     environment:
       # The named-volume mount root already exists. A missing child preserves
       # Tay's exact initialize-if-missing contract on first boot.

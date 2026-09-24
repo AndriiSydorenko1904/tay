@@ -1,7 +1,6 @@
 defmodule Tay.Engine.PublicMutationTest do
   use ExUnit.Case, async: false
   alias Tay.Engine.{Admission, Config, Lifecycle}
-  alias Tay.Test.EngineHelpers, as: H
   @name __MODULE__
 
   setup do
@@ -41,9 +40,7 @@ defmodule Tay.Engine.PublicMutationTest do
   defp reply(guardian, {slot, token}, from, result) do
     # This test process stands in for Engine; finish the command before making
     # its reply visible so a one-capture request can claim its next finite slot.
-    send(guardian, {:completed, self(), slot, token, %{}})
-    assert H.eventually(fn -> :ets.lookup(@name, slot) == [{slot, nil, nil, :free, 0}] end)
-    GenServer.reply(from, result)
+    send(guardian, {:completed, self(), slot, token, from, result, %{}})
   end
 
   test "an explicit revision submits exactly one bounded intent, without lookup or refresh", c do

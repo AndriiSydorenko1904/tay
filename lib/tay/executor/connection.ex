@@ -22,9 +22,9 @@ defmodule Tay.Executor.Connection do
     end
   end
 
-  def error(connection, request_id, code) do
+  def error(connection, request_id, code, fields \\ %{}) do
     try do
-      GenServer.call(connection, {:error, request_id, code}, @send_timeout)
+      GenServer.call(connection, {:error, request_id, code, fields}, @send_timeout)
     catch
       :exit, _ -> {:error, :connection_closed}
     end
@@ -148,14 +148,14 @@ defmodule Tay.Executor.Connection do
     end
   end
 
-  def handle_call({:error, request_id, code}, _from, s) do
+  def handle_call({:error, request_id, code, fields}, _from, s) do
     next =
       case take_pending(s, request_id) do
         {:ok, state} -> state
         :error -> s
       end
 
-    case send_wire(next, Protocol.error(request_id, code)) do
+    case send_wire(next, Protocol.error(request_id, code, fields)) do
       {:ok, sent} -> {:reply, :ok, sent}
       {:error, sent} -> {:stop, :normal, {:error, :connection_closed}, sent}
     end

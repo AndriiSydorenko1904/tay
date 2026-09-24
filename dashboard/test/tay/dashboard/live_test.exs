@@ -39,6 +39,9 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "MiB"
     assert html =~ "Configured retention"
     assert html =~ "24 h"
+    assert html =~ "Storage segments (1 shown)"
+    assert html =~ "00000000000000000001.tay"
+    assert html =~ "active"
 
     {:ok, job} = EngineWorker.new(%{"safe" => "value"}) |> Tay.insert(name: @engine)
     assert job.state == :available
@@ -65,7 +68,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.9"
+    assert html =~ "v0.10.0"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

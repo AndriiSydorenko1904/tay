@@ -1,8 +1,8 @@
 defmodule TayDashboard.MixProject do
   use Mix.Project
 
-  @version "0.9.9"
-  @tay_requirement "~> 0.9.6"
+  @version "0.10.0"
+  @tay_requirement ">= 0.9.6 and < 0.11.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do

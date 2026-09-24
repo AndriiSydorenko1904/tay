@@ -730,6 +730,7 @@ defmodule Tay.Executor.Server do
     case result do
       {:ok, reply_type, fields} -> Connection.reply(connection, request_id, reply_type, fields)
       {:error, code} -> Connection.error(connection, request_id, code)
+      {:error, code, fields} -> Connection.error(connection, request_id, code, fields)
     end
   catch
     :exit, _ -> Connection.error(connection, request_id, "unavailable")
@@ -743,12 +744,22 @@ defmodule Tay.Executor.Server do
          {:ok, job} <- Tay.enqueue(task, args, [name: engine_name] ++ options) do
       {:ok, "enqueued", %{"job_id" => job.id, "job" => public_job(job)}}
     else
-      {:error, %Tay.Error{kind: :unknown_outcome}} -> {:error, "unknown_outcome"}
-      {:error, %Tay.Error{kind: :capacity}} -> {:error, "capacity"}
-      {:error, _} -> {:error, "invalid_enqueue"}
-      _ -> {:error, "invalid_enqueue"}
+      {:error, %Tay.Error{kind: :unknown_outcome}} ->
+        {:error, "unknown_outcome"}
+
+      {:error, %Tay.Error{kind: :capacity, reason: reason}} ->
+        {:error, "capacity", %{"reason" => capacity_reason(reason)}}
+
+      {:error, _} ->
+        {:error, "invalid_enqueue"}
+
+      _ ->
+        {:error, "invalid_enqueue"}
     end
   end
+
+  defp capacity_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp capacity_reason(_), do: "capacity_exhausted"
 
   defp status(engine_name, %{"job_id" => id}) do
     case Tay.get_job(id, name: engine_name) do

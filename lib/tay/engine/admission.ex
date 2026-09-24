@@ -18,18 +18,23 @@ defmodule Tay.Engine.Admission do
 
   def status(name) do
     with {:ok, m} <- metadata(name) do
-      used =
-        Enum.count(1..m.slots, fn slot ->
-          case :ets.lookup(name, slot) do
-            [{_, nil, nil, :free, _}] -> false
-            _ -> true
-          end
+      states =
+        Enum.reduce(1..m.slots, %{free: 0, claimed: 0, reserved: 0, submitted: 0}, fn
+          slot, counts ->
+            case :ets.lookup(name, slot) do
+              [{_, _, _, state, _}] when state in [:free, :claimed, :reserved, :submitted] ->
+                Map.update!(counts, state, &(&1 + 1))
+
+              _ ->
+                counts
+            end
         end)
 
       {:ok,
        Map.merge(m.status, %{
          client_slots: m.slots,
-         client_slots_used: used,
+         client_slots_used: m.slots - states.free,
+         client_slot_states: states,
          client_byte_capacity: m.slots * m.slot_bytes,
          slot_byte_limit: m.slot_bytes,
          freshness: :bounded_snapshot

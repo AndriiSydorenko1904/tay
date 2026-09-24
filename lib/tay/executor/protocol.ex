@@ -132,11 +132,11 @@ defmodule Tay.Executor.Protocol do
     Tay.Event.V1.key?(value)
   end
 
-  def error(request_id, code) when is_binary(code) do
+  def error(request_id, code, fields \\ %{}) when is_binary(code) and is_map(fields) do
     message = %{
       "version" => @version,
       "type" => "error",
-      "error" => %{"code" => code}
+      "error" => Map.put(fields, "code", code)
     }
 
     if is_binary(request_id) and identifier?(request_id),

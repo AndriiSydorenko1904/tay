@@ -24,4 +24,13 @@ defmodule Tay.Executor.ProtocolTest do
     assert {:error, :frame_too_large} =
              Protocol.decode_frames(<<65_537::unsigned-big-32>>, 65_536)
   end
+
+  test "capacity errors preserve a backward-compatible machine-readable reason" do
+    assert %{
+             "version" => 1,
+             "type" => "error",
+             "request_id" => "request-1",
+             "error" => %{"code" => "capacity", "reason" => "client_slots"}
+           } = Protocol.error("request-1", "capacity", %{"reason" => "client_slots"})
+  end
 end

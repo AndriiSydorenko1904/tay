@@ -809,6 +809,12 @@ defmodule Tay.Storage.Writer do
       terminal = recovery.view.store.exhausted
       reference = if terminal, do: nil, else: make_ref()
 
+      segment_catalog =
+        recovery.result
+        |> Map.get(:segments, [])
+        |> Enum.map(&segment_catalog_entry/1)
+        |> include_active_segment(next.segment)
+
       summary =
         recovery.result
         |> Map.drop([:segments])
@@ -816,6 +822,7 @@ defmodule Tay.Storage.Writer do
           scope: :activated,
           state: if(terminal, do: :terminal, else: :ready),
           highest: next.segment,
+          segment_catalog: segment_catalog,
           admission_ref: reference
         })
 
@@ -829,7 +836,7 @@ defmodule Tay.Storage.Writer do
           view: nil,
           session_ref: nil,
           admission_ref: reference,
-          result: Map.drop(summary, [:admission_ref])
+          result: Map.drop(summary, [:admission_ref, :segment_catalog])
       }
 
       native = %{next.native | deadline: nil, timeout: next.options.timeout}
@@ -1321,6 +1328,19 @@ defmodule Tay.Storage.Writer do
 
   defp nonce, do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
   defp canonical(id), do: elem(Segment.filename(id), 1)
+
+  defp segment_catalog_entry(segment),
+    do: Map.take(segment, [:id, :state, :bytes, :count, :first_sequence, :last_sequence])
+
+  defp include_active_segment([], segment), do: [segment_catalog_entry(segment)]
+
+  defp include_active_segment(catalog, segment) do
+    entry = segment_catalog_entry(segment)
+
+    if List.last(catalog).id == entry.id,
+      do: List.replace_at(catalog, -1, entry),
+      else: catalog ++ [entry]
+  end
 
   defp stage_name(id),
     do:

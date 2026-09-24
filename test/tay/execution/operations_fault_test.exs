@@ -175,12 +175,15 @@ defmodule Tay.Execution.OperationsFaultTest do
 
     try do
       send(engine, :continue)
-      assert {:error, %Tay.Error{reason: :generation_stopping}} = Task.await(cancel)
-      assert R.snapshot(path) == before
+      # Guardian owns the final reply so the submitted permit is released
+      # before this error can become visible to the caller.
+      assert Task.yield(cancel, 20) == nil
     after
       if Process.alive?(guardian), do: :sys.resume(guardian)
     end
 
+    assert {:error, %Tay.Error{reason: :generation_stopping}} = Task.await(cancel)
+    assert R.snapshot(path) == before
     assert :ok = Task.await(stopping)
     assert Tay.status(name: @name).state == :stopped
     assert R.snapshot(path) == before

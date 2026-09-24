@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 # Keep builder and runtime on the same Debian release. Override these pinned
 # args together when updating the toolchain.
 ARG ELIXIR_VERSION=1.20.2

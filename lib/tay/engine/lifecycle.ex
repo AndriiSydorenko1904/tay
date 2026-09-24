@@ -349,13 +349,28 @@ defmodule Tay.Engine.Lifecycle do
     {:noreply, s}
   end
 
-  def handle_info({:completed, engine, slot, token, snapshot}, %{engine: engine} = s) do
-    s =
-      if s.meta.status.state in [:ready, :draining, :drained],
-        do: publish(s, Map.merge(s.meta.status, snapshot)),
-        else: s
+  def handle_info(
+        {:completed, engine, slot, token, {owner, _} = from, reply, snapshot},
+        %{engine: engine} = s
+      ) do
+    case :ets.lookup(s.table, slot) do
+      [{^slot, ^token, ^owner, :submitted, _}] ->
+        s =
+          if s.meta.status.state in [:ready, :draining, :drained],
+            do: publish(s, Map.merge(s.meta.status, snapshot)),
+            else: s
 
-    {:noreply, release(s, slot, token)}
+        # Releasing the exact submitted capability before replying is the
+        # admission invariant. A caller that observes success can immediately
+        # reuse capacity; stale generations/tokens never reach this branch.
+        s = release(s, slot, token)
+        GenServer.reply(from, reply)
+        send(engine, {:command_replied, self(), slot, token})
+        {:noreply, s}
+
+      _ ->
+        {:noreply, s}
+    end
   end
 
   def handle_info({:execution_snapshot, engine, token, snapshot}, %{engine: engine} = s) do
