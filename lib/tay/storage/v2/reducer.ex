@@ -23,11 +23,14 @@ defmodule Tay.Storage.V2.Reducer do
 
     seed =
       if previous do
+        active = previous.state not in [:completed, :cancelled, :discarded]
+
         %{
           seed
           | jobs: %{id => previous},
-            bytes: previous.charge.bytes,
-            nodes: previous.charge.nodes,
+            count: if(active, do: 1, else: 0),
+            bytes: if(active, do: previous.charge.bytes, else: 0),
+            nodes: if(active, do: previous.charge.nodes, else: 0),
             availability_orders:
               if(previous.availability_order,
                 do: MapSet.new([previous.availability_order]),

@@ -32,6 +32,9 @@ defmodule Tay.Engine.CompactionPolicy do
 
   def eligible(summary, config, now) do
     cond do
+      Map.get(summary, :terminal_pressure, false) ->
+        :ok
+
       not is_nil(summary.last_compaction_at) and
           now - summary.last_compaction_at < config.min_interval ->
         {:error, :cooldown}
@@ -52,6 +55,11 @@ defmodule Tay.Engine.CompactionPolicy do
         :ok
     end
   end
+
+  def handle_cast(:evaluate_now, %{pending: nil} = s),
+    do: {:noreply, schedule(s, 0)}
+
+  def handle_cast(:evaluate_now, s), do: {:noreply, s}
 
   def handle_info({:evaluate, token}, %{timer: {timer, token}, pending: nil} = s) do
     Process.cancel_timer(timer)
@@ -131,10 +139,12 @@ defmodule Tay.Engine.CompactionPolicy do
     :ok
   end
 
-  defp schedule(s) do
+  defp schedule(s), do: schedule(s, s.config.check_interval)
+
+  defp schedule(s, delay) do
     if s.timer, do: Process.cancel_timer(elem(s.timer, 0))
     token = make_ref()
-    timer = Process.send_after(self(), {:evaluate, token}, s.config.check_interval)
+    timer = Process.send_after(self(), {:evaluate, token}, delay)
     %{s | timer: {timer, token}, started: nil}
   end
 

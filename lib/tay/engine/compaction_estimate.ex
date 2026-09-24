@@ -10,7 +10,16 @@ defmodule Tay.Engine.CompactionEstimate do
   @bucket_ms 3_600_000
   @max_buckets 128
 
-  def new, do: %{jobs: 0, definition_bytes: 0, buckets: %{}, available: true}
+  def new,
+    do: %{
+      jobs: 0,
+      definition_bytes: 0,
+      terminal_jobs: 0,
+      terminal_bytes: 0,
+      buckets: %{},
+      available: true
+    }
+
   def terminal_time(job, at), do: if(job.state in @terminal, do: at, else: nil)
 
   # Prefix<=41, body header=5, keys=174, state<=14, scalars<=72,
@@ -48,7 +57,12 @@ defmodule Tay.Engine.CompactionEstimate do
           do: Map.delete(buckets, Enum.max(Map.keys(buckets))),
           else: buckets
 
-      %{estimate | buckets: buckets}
+      %{
+        estimate
+        | buckets: buckets,
+          terminal_jobs: max(0, estimate.terminal_jobs + sign),
+          terminal_bytes: max(0, estimate.terminal_bytes + sign * job_bound(job))
+      }
     else
       %{estimate | available: false}
     end
@@ -56,7 +70,10 @@ defmodule Tay.Engine.CompactionEstimate do
 
   defp bucket(estimate, _, _), do: estimate
 
-  def summarize(estimate, sealed_bytes, sealed_segments, retention, now) do
+  def summarize(estimate, sealed_bytes, sealed_segments, retention, now),
+    do: summarize(estimate, sealed_bytes, sealed_segments, retention, :infinity, now)
+
+  def summarize(estimate, sealed_bytes, sealed_segments, retention, max_terminal_jobs, now) do
     with true <- estimate.available,
          {:ok, duration} <- Retention.duration(retention),
          true <- V1.time?(now) do
@@ -69,11 +86,23 @@ defmodule Tay.Engine.CompactionEstimate do
             else: {count, bytes}
         end)
 
-      snapshot_bound = estimate.definition_bytes + estimate.jobs * 512 - expired_bound
+      pressure_jobs =
+        if max_terminal_jobs == :infinity,
+          do: 0,
+          else: max(estimate.terminal_jobs - max_terminal_jobs, 0)
+
+      pressure_bound =
+        if estimate.terminal_jobs == 0,
+          do: 0,
+          else: div(estimate.terminal_bytes * pressure_jobs, estimate.terminal_jobs)
+
+      removed_bound = max(expired_bound, pressure_bound)
+      removed_jobs = max(expired, pressure_jobs)
+      snapshot_bound = estimate.definition_bytes + estimate.jobs * 512 - removed_bound
       # Manifest entries<=256 each; 1 MiB covers fixed metadata and empty tail.
       candidate_bound =
         snapshot_bound + 1_048_576 +
-          (sealed_segments + estimate.jobs - expired) * 256
+          (sealed_segments + estimate.jobs - removed_jobs) * 256
 
       reclaimable = max(0, sealed_bytes - candidate_bound)
 
@@ -84,6 +113,9 @@ defmodule Tay.Engine.CompactionEstimate do
          candidate_upper_bytes: candidate_bound,
          reclaimable_bytes: reclaimable,
          expired_terminals: expired,
+         terminal_jobs: estimate.terminal_jobs,
+         terminal_pressure: pressure_jobs > 0,
+         excess_terminal_jobs: pressure_jobs,
          ratio: if(sealed_bytes == 0, do: 0.0, else: reclaimable / sealed_bytes)
        }}
     else

@@ -1,7 +1,8 @@
 # Storage and recovery contract
 
-Tay v0.10.0 has one authoritative append-only store per Engine. Runtime ETS
-indexes are disposable projections, not a second source of truth. Record v1,
+Tay v0.11.0 has one authoritative append-only store per Engine. Runtime ETS
+indexes and the disk-backed terminal inspection index are disposable
+projections, not a second source of truth. Record v1,
 STORE v1, Segment v1, and Event v1 are frozen compatibility contracts: changing
 their bytes or meanings requires an explicitly versioned migration. The
 committed binary fixtures under `test/fixtures/storage/` and the Event literals
@@ -56,9 +57,10 @@ the same ownership session and after full revalidation. There is no scan-ahead,
 automatic torn-tail truncation, stage deletion, or writable-prefix salvage.
 Inspection and copy catalogs do not grant activation authority.
 
-Resource budgets for decoding, candidate state, directory traversal, and
-history admission are operational limits. Lowering them can refuse an otherwise
-valid history but cannot redefine physical or semantic validity. A larger
-budget permits a new complete inspection; it never makes corrupt bytes valid.
-No retained job or segment is automatically evicted, and individual log files
-must not be removed to reclaim capacity.
+Resource budgets for decoding, active candidate state, directory traversal,
+and history admission are operational limits. Lowering them can refuse an
+otherwise valid active workload but cannot redefine physical or semantic
+validity. A larger budget permits a new complete inspection; it never makes
+corrupt bytes valid. Terminal history is removed only by a successful bounded
+compaction according to time retention or `max_terminal_jobs`; active jobs are
+never evicted. Individual log files must not be removed to reclaim capacity.

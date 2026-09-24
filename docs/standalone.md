@@ -22,6 +22,10 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_DATA_DIR` | `/var/lib/tay` | Authoritative durable Store root. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | Executor Protocol v1 UDS path. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
+| `TAY_MAX_JOBS` | `100000` | Maximum simultaneously active jobs. Terminal history does not consume this budget. |
+| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
+| `TAY_MAX_STATE_NODES` | `2000000` | Conservative value-node budget for active jobs. |
+| `TAY_MAX_TERMINAL_JOBS` | `5000` | Maximum retained completed, cancelled, and discarded jobs after pressure compaction. |
 
 Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode

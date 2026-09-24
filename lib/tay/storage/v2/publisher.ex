@@ -23,6 +23,7 @@ defmodule Tay.Storage.V2.Publisher do
     source =
       source
       |> Map.put_new(:terminal_retention, :infinity)
+      |> Map.put_new(:max_terminal_jobs, :infinity)
       |> Map.put_new_lazy(:captured_at, fn -> System.system_time(:millisecond) end)
 
     with true <- V1.id?(source.store_id) || {:error, :store_id},
@@ -30,7 +31,12 @@ defmodule Tay.Storage.V2.Publisher do
            (is_nil(source.epoch_id) or V1.id?(source.epoch_id)) ||
              {:error, :source_epoch},
          {:ok, normalized, ids, retention_stats} <-
-           Snapshot.prepare(source.jobs, source.terminal_retention, source.captured_at),
+           Snapshot.prepare(
+             source.jobs,
+             source.terminal_retention,
+             source.captured_at,
+             source.max_terminal_jobs
+           ),
          {:ok, inventory} <- source_inventory(native, source.store_id),
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
@@ -97,6 +103,7 @@ defmodule Tay.Storage.V2.Publisher do
         |> Map.merge(retention_stats)
         |> Map.merge(%{
           terminal_retention: source.terminal_retention,
+          max_terminal_jobs: source.max_terminal_jobs,
           captured_at: source.captured_at
         })
 
@@ -532,8 +539,10 @@ defmodule Tay.Storage.V2.Publisher do
            reclamation: :deferred,
            previous_epoch_id: source.epoch_id,
            terminal_retention: publication.terminal_retention,
+           max_terminal_jobs: publication.max_terminal_jobs,
            captured_at: publication.captured_at,
            expired_jobs: publication.expired_jobs,
+           pressure_expired_jobs: publication.pressure_expired_jobs,
            retained_terminal_jobs: publication.retained_terminal_jobs,
            reclaimed_bytes: 0
          }}

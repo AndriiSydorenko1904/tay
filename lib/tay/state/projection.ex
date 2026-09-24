@@ -52,6 +52,15 @@ defmodule Tay.State.Projection do
     :ok
   end
 
+  def delete(p, job) do
+    if available?(p, job), do: QueueIndex.delete(p.queue, job)
+    if task_available?(p, job), do: TaskIndex.delete(p.task, job)
+    if scheduled?(job), do: SchedulerIndex.delete(p.schedule, job)
+    JobIndex.delete(p.jobs, job.id)
+    :ok = InspectionIndex.delete(p.inspection, job)
+    :ok
+  end
+
   def available?(p, job),
     do:
       job.state == :available and Map.has_key?(p.registry, job.definition["worker_key"]) and
@@ -82,6 +91,9 @@ defmodule Tay.State.Projection do
     if task_available?(p, job), do: TaskIndex.put(p.task, job)
     p
   end
+
+  def release(p, nil, id), do: %{p | held: MapSet.delete(p.held, id)}
+  def release(p, job, _id), do: release(p, job)
 
   def valid?(p) do
     {queue, task, schedule, jobs} =

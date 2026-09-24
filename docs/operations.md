@@ -107,6 +107,7 @@ Configuration (milliseconds except the explicit retention unit):
 compaction: [
   enabled: true,
   terminal_retention: {:hours, 24},
+  max_terminal_jobs: 5_000,
   check_interval: 60_000,
   min_interval: 3_600_000,
   min_sealed_segments: 1,
@@ -121,7 +122,21 @@ signed durable time/integer range. Bounded hours use the shared manifest rule
 `1..2_562_047_788_015`, not a separate configuration duration syntax. Ratios are
 positive finite numbers at most one. Automatic configuration rejects infinity.
 
-Retention is eligibility, not an exact-time deletion guarantee: terminal jobs
+Terminal jobs are removed from the hot ETS job projection as soon as they
+finish and remain queryable through a disposable disk-backed inspection index.
+They therefore do not consume `max_jobs`, `max_state_bytes`, or
+`max_state_nodes`; those limits protect active work. Aggregate terminal state
+and queue counters remain in memory. The append-only Store remains authoritative
+for both projections and rebuilds them on restart.
+
+`max_terminal_jobs` is a hard history bound in addition to time retention.
+Crossing it wakes the compaction policy immediately and retains the newest
+terminal jobs. This pressure path bypasses the normal size/ratio/cooldown gates,
+but still uses the same fenced, stop-the-world publication path. It prevents
+completed/discarded history from blocking new active work while bounding restart
+and dashboard history.
+
+Time retention is eligibility, not an exact-time deletion guarantee: terminal jobs
 expire at `terminal_at <= captured_at - duration`, but actual work waits for
 sealed-history thresholds, cooldown, healthy ownership, successful execution
 drain and sufficient additional disk. The estimator retains at most 128 oldest
@@ -131,8 +146,9 @@ below thresholds. Live, scheduled, available, executing, retryable and unsettled
 jobs are protected. Expired IDs are not remembered: get/retry/cancel return
 not-found, and a later submission with that ID is a new job.
 
-`compaction: false` disables the policy child/timer; reclaimable history may then
-grow indefinitely and the operator assumes storage management. Manual work
+`compaction: false` disables the policy child/timer, including the hard-count
+wake; terminal history may then grow indefinitely and the operator assumes
+storage management. Manual work
 remains available:
 
 ```elixir

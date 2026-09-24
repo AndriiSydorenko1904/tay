@@ -29,7 +29,7 @@ defmodule Tay.State.Transition do
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
     limits = Map.merge(%{max_jobs: 100_000, max_bytes: 268_435_456, max_nodes: 2_000_000}, limits)
-    %{jobs: %{}, bytes: 0, nodes: 0, limits: limits, value_limits: value_limits}
+    %{jobs: %{}, count: 0, bytes: 0, nodes: 0, limits: limits, value_limits: value_limits}
   end
 
   def reduce(%Event{} = event, position, candidate) do
@@ -42,25 +42,44 @@ defmodule Tay.State.Transition do
   end
 
   def put_candidate(candidate, previous, job) do
-    with {:ok, job, budget} <-
-           account(Map.put(candidate, :count, map_size(candidate.jobs)), previous, job) do
+    with {:ok, job} <- charge(job, candidate.value_limits),
+         old <- if(active?(previous), do: previous.charge, else: %{bytes: 0, nodes: 0}),
+         added <- if(active?(job), do: job.charge, else: %{bytes: 0, nodes: 0}),
+         count <-
+           candidate.count - if(active?(previous), do: 1, else: 0) +
+             if(active?(job), do: 1, else: 0),
+         bytes <- candidate.bytes - old.bytes + added.bytes,
+         nodes <- candidate.nodes - old.nodes + added.nodes,
+         :ok <- within_limits(candidate.limits, count, bytes, nodes) do
       {:ok,
        %{
          candidate
          | jobs: Map.put(candidate.jobs, job.id, job),
-           bytes: budget.bytes,
-           nodes: budget.nodes
+           count: count,
+           bytes: bytes,
+           nodes: nodes
        }}
     end
   end
 
   @doc false
-  def accounting(candidate),
-    do: candidate |> Map.delete(:jobs) |> Map.put(:count, map_size(candidate.jobs))
+  def accounting(candidate), do: Map.delete(candidate, :jobs)
 
   @doc false
   def account(budget, previous, job) do
-    {:ok, stats} = Value.measure(job.definition, budget.value_limits)
+    with {:ok, job} <- charge(job, budget.value_limits) do
+      old = if previous, do: previous.charge, else: %{bytes: 0, nodes: 0}
+      bytes = budget.bytes - old.bytes + job.charge.bytes
+      nodes = budget.nodes - old.nodes + job.charge.nodes
+      count = budget.count + if(previous, do: 0, else: 1)
+
+      with :ok <- within_limits(budget.limits, count, bytes, nodes),
+           do: {:ok, job, %{budget | count: count, bytes: bytes, nodes: nodes}}
+    end
+  end
+
+  defp charge(job, value_limits) do
+    {:ok, stats} = Value.measure(job.definition, value_limits)
     # Reserve a fixed metadata allowance, including the largest diagnostic, so
     # later lifecycle transitions cannot exceed an accepted job's state charge.
     charge = %{
@@ -68,25 +87,27 @@ defmodule Tay.State.Transition do
       nodes: stats.nodes + 64
     }
 
-    old = if previous, do: previous.charge, else: %{bytes: 0, nodes: 0}
-    bytes = budget.bytes - old.bytes + charge.bytes
-    nodes = budget.nodes - old.nodes + charge.nodes
-    count = budget.count + if(previous, do: 0, else: 1)
+    {:ok, Map.put(job, :charge, charge)}
+  end
 
+  defp within_limits(limits, count, bytes, nodes) do
     cond do
-      count > budget.limits.max_jobs ->
+      count > limits.max_jobs ->
         {:error, {:resource_limit, :retained_jobs}}
 
-      bytes > budget.limits.max_bytes ->
+      bytes > limits.max_bytes ->
         {:error, {:resource_limit, :retained_bytes}}
 
-      nodes > budget.limits.max_nodes ->
+      nodes > limits.max_nodes ->
         {:error, {:resource_limit, :retained_nodes}}
 
       true ->
-        {:ok, Map.put(job, :charge, charge), %{budget | count: count, bytes: bytes, nodes: nodes}}
+        :ok
     end
   end
+
+  defp active?(nil), do: false
+  defp active?(%{state: state}), do: state not in [:completed, :cancelled, :discarded]
 
   defp definition_bytes(nil, %Event{record_type: 1, data: data}, limits),
     do: Value.encode(data["definition"], limits)

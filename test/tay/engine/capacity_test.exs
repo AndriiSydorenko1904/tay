@@ -104,4 +104,24 @@ defmodule Tay.Engine.CapacityTest do
     assert {:ok, _} = Tay.insert(job, name: @name)
     H.stop(root)
   end
+
+  test "terminal history does not consume hot admission capacity across restart", %{path: path} do
+    options = [max_jobs: 1, start_paused: true, compaction: false]
+    {:ok, root} = H.start(path, @name, options)
+
+    for n <- 1..20 do
+      {:ok, job} = EngineWorker.new(%{"n" => n}) |> Tay.insert(name: @name)
+      assert {:ok, %{state: :cancelled}} = Tay.cancel(job.id, name: @name)
+    end
+
+    assert %{active_jobs: 0, terminal_jobs: 20, max_jobs: 1} = Tay.status(name: @name)
+    assert {:ok, %{cancelled: 20}} = Tay.stats(name: @name)
+    H.stop(root)
+
+    {:ok, root} = H.restart(path, @name, options)
+    assert %{active_jobs: 0, terminal_jobs: 20} = Tay.status(name: @name)
+    assert {:ok, %{cancelled: 20}} = Tay.stats(name: @name)
+    assert {:ok, %{state: :available}} = EngineWorker.new(%{}) |> Tay.insert(name: @name)
+    H.stop(root)
+  end
 end

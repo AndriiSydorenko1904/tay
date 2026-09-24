@@ -97,12 +97,14 @@ defmodule Tay.Storage.Writer do
         deadline \\ System.monotonic_time(:millisecond) + 900_000,
         retention \\ :infinity,
         captured_at \\ nil,
+        max_terminal_jobs \\ :infinity,
         cancel_flag \\ nil
       ),
       do:
         GenServer.call(
           writer,
-          {:compact, admission_ref, deadline, retention, captured_at, cancel_flag},
+          {:compact, admission_ref, deadline, retention, captured_at, max_terminal_jobs,
+           cancel_flag},
           :infinity
         )
 
@@ -342,7 +344,7 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_call(
-        {:compact, reference, deadline, retention, captured_at, cancel_flag},
+        {:compact, reference, deadline, retention, captured_at, max_terminal_jobs, cancel_flag},
         {caller, _},
         %{recovery: recovery} = state
       )
@@ -350,8 +352,13 @@ defmodule Tay.Storage.Writer do
     if recovery.status == :ready and caller == recovery.caller and
          reference == recovery.admission_ref and is_integer(deadline) and
          deadline > System.monotonic_time(:millisecond) and
+         (max_terminal_jobs == :infinity or
+            (is_integer(max_terminal_jobs) and max_terminal_jobs >= 0)) and
          Tay.Storage.V2.Retention.validate(retention) == :ok do
-      state = %{state | native: %{state.native | deadline: deadline}}
+      state =
+        state
+        |> Map.put(:max_terminal_jobs, max_terminal_jobs)
+        |> Map.put(:native, %{state.native | deadline: deadline})
 
       Tay.Storage.V2.CompactionControl.install(cancel_flag)
 
@@ -368,7 +375,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:compact, _, _, _, _, _}, _, state),
+  def handle_call({:compact, _, _, _, _, _, _}, _, state),
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call({:admitted, _, _}, _, state),
@@ -590,6 +597,7 @@ defmodule Tay.Storage.Writer do
         candidate_limits: state.candidate_limits,
         value_limits: state.value_limits,
         terminal_retention: retention,
+        max_terminal_jobs: Map.get(state, :max_terminal_jobs, :infinity),
         captured_at:
           if(is_nil(captured_at), do: System.system_time(:millisecond), else: captured_at)
       }
@@ -665,7 +673,12 @@ defmodule Tay.Storage.Writer do
              true <- recovered.epoch_id == publication.epoch_id || {:error, :old_current},
              true <- recovered.current == publication.current || {:error, :current_changed},
              {:ok, retained, _, _} <-
-               Snapshot.prepare(jobs, publication.terminal_retention, publication.captured_at),
+               Snapshot.prepare(
+                 jobs,
+                 publication.terminal_retention,
+                 publication.captured_at,
+                 publication.max_terminal_jobs
+               ),
              true <-
                Snapshot.equivalent?(retained, recovered.candidate.jobs) ||
                  {:error, :reconciled_candidate_mismatch} do
