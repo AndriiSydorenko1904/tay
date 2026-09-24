@@ -61,7 +61,9 @@ defmodule Tay.Dashboard.JobLive do
             <tr>
               <th>Queue</th><td>{@job.queue}</td>
             </tr><tr>
-              <th>State</th><td><span class="badge">{@job.state}</span></td>
+              <th>State</th><td>
+                <span class={["badge", "state-#{@job.state}"]}>{@job.state}</span>
+              </td>
             </tr>
             <tr>
               <th>Attempt</th><td>
@@ -93,8 +95,14 @@ defmodule Tay.Dashboard.JobLive do
         </ol>
         <h3>Arguments</h3><pre>{safe_inspect(@job.args)}</pre>
         <h3>Last outcome</h3>
-        <div id="last-outcome">{diagnostic_description(List.first(@job.errors))}</div>
-        <pre>{safe_inspect(List.first(@job.errors))}</pre>
+        <div id="last-outcome" class={outcome_class(List.first(@job.errors))}>
+          <strong>{diagnostic_title(List.first(@job.errors))}</strong>
+          <div>{diagnostic_description(List.first(@job.errors))}</div>
+        </div>
+        <details :if={List.first(@job.errors)} class="technical-details">
+          <summary>Technical details</summary>
+          <pre>{diagnostic_technical(List.first(@job.errors))}</pre>
+        </details>
       </div>
     </Live.shell>
     """
@@ -109,26 +117,49 @@ defmodule Tay.Dashboard.JobLive do
 
   defp safe_inspect(value), do: inspect(value, pretty: true, limit: 50, printable_limit: 4_096)
 
-  defp diagnostic_description(nil), do: "No failure has been recorded."
+  defp diagnostic_title(nil), do: "Successful outcome"
+  defp diagnostic_title(%{"version" => 1, "code" => 1}), do: "Task reported a failure"
+  defp diagnostic_title(%{"version" => 1, "code" => 2}), do: "Worker raised an exception"
+  defp diagnostic_title(%{"version" => 1, "code" => 3}), do: "Worker threw a value"
+  defp diagnostic_title(%{"version" => 1, "code" => 4}), do: "Worker process exited"
+  defp diagnostic_title(%{"version" => 1, "code" => 5}), do: "Execution timed out"
+  defp diagnostic_title(%{"version" => 1, "code" => 6}), do: "Unsupported worker result"
+  defp diagnostic_title(%{"version" => 1, "code" => 7}), do: "Execution was interrupted"
+  defp diagnostic_title(_), do: "Unknown execution outcome"
+
+  defp diagnostic_description(nil), do: "No failure was recorded for this job."
 
   defp diagnostic_description(%{"version" => 1, "code" => code}) do
     Map.get(
       %{
-        1 => "Task returned an error.",
-        2 => "Worker callback raised an exception.",
-        3 => "Worker callback threw a value.",
-        4 => "Worker callback exited.",
-        5 => "Execution timed out.",
-        6 => "Worker callback returned an unsupported value.",
+        1 =>
+          "The worker returned an error result. Tay persists only this bounded failure category; consult the worker logs for the original application error.",
+        2 =>
+          "The worker callback raised an exception. Consult the worker logs for its class, message, and traceback.",
+        3 =>
+          "The worker callback threw a value instead of returning normally. Consult the worker logs for details.",
+        4 =>
+          "The worker callback exited before it returned a result. Consult the worker logs for the exit reason.",
+        5 => "The execution exceeded its configured timeout and was stopped.",
+        6 => "The worker returned a value outside Tay's supported success/error contract.",
         7 =>
-          "Execution was interrupted because its worker connection was lost or the runtime stopped. The same attempt number is retried."
+          "The worker connection was lost or its runtime stopped. Interrupted executions retry without consuming another attempt number."
       },
       code,
-      "Unknown diagnostic code #{inspect(code)}."
+      "Tay does not recognize this diagnostic code. Upgrade the dashboard or inspect the producing runtime."
     )
   end
 
-  defp diagnostic_description(_), do: "Unknown diagnostic format."
+  defp diagnostic_description(_),
+    do:
+      "Tay does not recognize this diagnostic format. Upgrade the dashboard or inspect the producing runtime."
+
+  defp diagnostic_technical(%{"version" => version, "code" => code}),
+    do: "Diagnostic version: #{version}\nDiagnostic code: #{code}"
+
+  defp diagnostic_technical(value), do: safe_inspect(value)
+  defp outcome_class(nil), do: "outcome outcome-success"
+  defp outcome_class(_), do: "outcome outcome-error"
 
   defp state_description(%{state: :retryable, scheduled_at: at}),
     do: "Waiting to retry at #{time(at)}."

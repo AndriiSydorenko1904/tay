@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.9.8 — 2026-09-24
+
+### Added
+
+- Added a light/dark dashboard theme that follows the operating-system setting
+  by default and can be overridden with a persistent theme control.
+- Added state-specific colors throughout job, queue, and overview displays.
+- Added a confirmation-protected manual compaction action on the Overview page
+  with a human-readable completion summary.
+
+### Changed
+
+- Replaced raw diagnostic maps with readable outcome titles and explanations;
+  compact version/code data remains available under Technical details.
+- Removed the redundant Apply filters button because LiveView applies state,
+  queue, and partial worker filters as they change.
+
 ## 0.9.7 — 2026-09-24
 
 ### Added

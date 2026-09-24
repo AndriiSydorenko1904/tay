@@ -33,10 +33,17 @@ defmodule Tay.Dashboard.LiveTest do
     {:ok, view, html} = live(build_conn(), "/tay/")
     assert html =~ "Overview"
     assert html =~ "Available"
+    assert html =~ "Toggle color theme"
+    assert html =~ "Run compaction"
 
     {:ok, job} = EngineWorker.new(%{"safe" => "value"}) |> Tay.insert(name: @engine)
     assert job.state == :available
     assert render(view) =~ ~r/Available.*1/s
+
+    assert render_click(view, "prepare-compaction") =~ "Expired completed"
+    assert has_element?(view, "#confirm-compaction")
+    assert render_click(view, "compact") =~ "Compaction completed"
+    assert has_element?(view, "#compaction-result")
     EngineHelpers.stop(root)
   end
 
@@ -50,9 +57,11 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.7"
+    assert html =~ "v0.9.8"
     assert html =~ "Next page"
     assert html =~ "Last page"
+    refute html =~ "Apply filters"
+    assert html =~ "state-available"
     assert html =~ "Page 1 of 2 · showing 50 of 52 jobs"
     refute has_element?(list, "#first-page")
     refute has_element?(list, "#previous-page")
@@ -151,8 +160,9 @@ defmodule Tay.Dashboard.LiveTest do
     assert :ok = Tay.pause_queue(:default, name: @engine)
     {:ok, detail, html} = live(build_conn(), "/tay/jobs/#{intent.id}")
     assert has_element?(detail, "button", "Retry")
-    assert html =~ "Task returned an error."
-    assert html =~ ~s(&quot;code&quot; =&gt; 1)
+    assert html =~ "Task reported a failure"
+    assert html =~ "consult the worker logs"
+    assert html =~ "Diagnostic code: 1"
     assert render_click(detail, "retry") =~ "available"
     assert {:ok, %{state: :available}} = Tay.get_job(intent.id, name: @engine)
     EngineHelpers.stop(root)

@@ -3,8 +3,9 @@ defmodule Tay.Dashboard do
   The optional Phoenix LiveView dashboard for Tay.
 
   Tay Dashboard renders bounded job, queue, and state inspection through Tay's
-  public API. It can retry or cancel eligible jobs and pause or resume queues.
-  It does not read Store files or private Engine state.
+  public API. It can retry or cancel eligible jobs, pause or resume queues, and
+  explicitly run retention-aware compaction. It does not read Store files or
+  private Engine state.
 
   Mount the dashboard with `Tay.Dashboard.Router.tay_dashboard/2` inside a
   browser pipeline that enforces administrator authentication:
@@ -23,7 +24,8 @@ defmodule Tay.Dashboard do
   ## Security
 
   Anyone who can reach the mounted routes can see job arguments and use the
-  available administrative actions. Authentication and authorization belong to
+  available administrative actions, including irreversible removal of expired
+  terminal jobs during compaction. Authentication and authorization belong to
   the embedding application; the router macro deliberately adds neither.
 
   ## Consistency

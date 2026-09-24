@@ -42,7 +42,6 @@ defmodule Tay.Dashboard.JobsLive do
         action={@dashboard_path <> "/jobs"}
         method="get"
         phx-change="filter"
-        phx-submit="filter"
         class="actions"
       >
         <label>
@@ -58,13 +57,18 @@ defmodule Tay.Dashboard.JobsLive do
             </option>
           </select>
         </label>
-        <label>Queue<br /><input name="queue" value={@filters["queue"]} placeholder="default" /></label>
+        <label>Queue<br /><input
+          name="queue"
+          value={@filters["queue"]}
+          placeholder="default"
+          phx-debounce="300"
+        /></label>
         <label>Worker key contains<br /><input
           name="worker"
           value={@filters["worker"]}
           placeholder="worker.v1"
+          phx-debounce="300"
         /></label>
-        <button type="submit">Apply filters</button>
       </form>
       <div :if={@flash_error} class="error">{@flash_error}</div>
       <table>
@@ -79,7 +83,7 @@ defmodule Tay.Dashboard.JobsLive do
           <tr :for={job <- @jobs} id={"job-#{job.id}"}>
             <td><a href={@dashboard_path <> "/jobs/" <> job.id}>{short(job.id)}</a></td>
             <td>{job.worker_key}</td><td>{job.queue}</td><td>
-              <span class="badge">{job.state}</span>
+              <span class={["badge", "state-#{job.state}"]}>{job.state}</span>
             </td>
             <td>{job.attempt}/{job.max_attempts}</td><td>{time(job.inserted_at)}</td><td>
               {time(job.scheduled_at)}
@@ -93,7 +97,11 @@ defmodule Tay.Dashboard.JobsLive do
           @total_count
         )}
       </p>
-      <nav :if={!@flash_error && @total_pages > 1} aria-label="Job pages" class="actions">
+      <nav
+        :if={!@flash_error && @total_pages > 1}
+        aria-label="Job pages"
+        class="actions pagination"
+      >
         <a :if={@page > 1} id="first-page" href={page_path(@dashboard_path, @filters, nil, 1)}>
           ⇤ First page
         </a>

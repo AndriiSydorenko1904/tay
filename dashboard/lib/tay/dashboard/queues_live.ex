@@ -43,7 +43,9 @@ defmodule Tay.Dashboard.QueuesLive do
         <tbody id="queues">
           <tr :for={queue <- @queues} id={"queue-#{queue.key}"}>
             <td>{queue.key}</td><td>
-              <span class="badge">{if queue.paused, do: "paused", else: "running"}</span>
+              <span class={["badge", if(queue.paused, do: "state-paused", else: "state-running")]}>
+                {if queue.paused, do: "paused", else: "running"}
+              </span>
             </td>
             <td>{queue.concurrency}</td><td>{queue.executing}</td><td>{queue.jobs}</td>
             <td>

@@ -1,6 +1,6 @@
 services:
   tay:
-    image: ${TAY_DASHBOARD_IMAGE:-ghcr.io/andriisydorenko1904/tay-dashboard:0.9.7}
+    image: ${TAY_DASHBOARD_IMAGE:-ghcr.io/andriisydorenko1904/tay-dashboard:0.9.8}
     build:
       context: ../..
       dockerfile: Dockerfile.dashboard

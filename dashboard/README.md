@@ -88,13 +88,19 @@ model.
 ## Pages
 
 - **Overview** shows incrementally maintained counts for available, scheduled,
-  executing, retryable, completed, cancelled, and discarded jobs.
+  executing, retryable, completed, cancelled, and discarded jobs. It also
+  exposes a confirmation-protected manual compaction action with a result
+  summary.
 - **Jobs** provides first, previous, next, and last cursor navigation with exact
   result/page totals, plus state, queue, and partial worker-key filters. Details
-  show safe public job fields, bounded argument rendering, a readable last
-  diagnostic, and revision-checked Retry/Cancel actions when valid.
+  show safe public job fields, bounded argument rendering, readable failure
+  explanations with optional technical codes, and revision-checked Retry/Cancel
+  actions when valid.
 - **Queues** shows configured concurrency, current execution use, retained job
   counts, and volatile Pause/Resume controls.
+
+The dashboard follows the operating-system light/dark preference by default.
+The Theme control stores an explicit override in the browser's local storage.
 
 Successful Tay transitions emit bounded telemetry. Connected dashboard
 LiveViews receive refresh hints and re-run only bounded public queries; the
@@ -105,9 +111,12 @@ missing jobs, invalid URLs, and unavailable engines as ordinary visible errors.
 
 The dashboard never reads Tay ETS tables, storage files, internal GenServers,
 or private engine modules. All mutations go through `Tay.cancel/2`,
-`Tay.retry/2`, `Tay.pause_queue/2`, and `Tay.resume_queue/2`. It adds no durable
-events or dashboard storage. Cursor pages are weakly consistent under concurrent
-job changes; refresh to reconcile a changing result set.
+`Tay.retry/2`, `Tay.pause_queue/2`, `Tay.resume_queue/2`, and `Tay.compact/1`.
+It adds no dashboard storage. Manual compaction rewrites the durable store and
+permanently removes terminal jobs that have expired under the configured
+retention policy, so the UI requires an explicit confirmation. Cursor pages are
+weakly consistent under concurrent job changes; refresh to reconcile a changing
+result set.
 
 ## Documentation
 
