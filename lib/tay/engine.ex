@@ -1472,6 +1472,7 @@ defmodule Tay.Engine do
       execution_control_slots: map_size(s.config.queue_limits) + 1,
       canonical_history_bytes: s.history_bytes,
       segment_count: s.segment_count,
+      compaction_terminal_retention: s.config.compaction.terminal_retention,
       retained_definition_bytes: s.definition_bytes,
       reserved_outcome_bytes: outcome_reserve(s.settlement_reserve),
       remaining_sequence_coordinates: max(Segment.max_id() - s.next_sequence + 1, 0),

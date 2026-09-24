@@ -35,14 +35,22 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Available"
     assert html =~ "Toggle color theme"
     assert html =~ "Run compaction"
+    assert html =~ "Canonical history"
+    assert html =~ "MiB"
+    assert html =~ "Configured retention"
+    assert html =~ "24 h"
 
     {:ok, job} = EngineWorker.new(%{"safe" => "value"}) |> Tay.insert(name: @engine)
     assert job.state == :available
     assert render(view) =~ ~r/Available.*1/s
 
-    assert render_click(view, "prepare-compaction") =~ "Expired completed"
+    assert render_click(view, "prepare-compaction") =~ "cannot be recovered"
     assert has_element?(view, "#confirm-compaction")
-    assert render_click(view, "compact") =~ "Compaction completed"
+    assert has_element?(view, "#terminal-retention-hours[value='24']")
+
+    assert render_submit(view, "compact", %{"terminal_retention_hours" => "1"}) =~
+             "Compaction completed"
+
     assert has_element?(view, "#compaction-result")
     EngineHelpers.stop(root)
   end
@@ -57,7 +65,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.8"
+    assert html =~ "v0.9.9"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

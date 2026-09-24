@@ -128,6 +128,7 @@ defmodule Tay.Execution.OperationsTest do
     assert snapshot.reserved_outcome_bytes == 0
     assert snapshot.canonical_history_bytes <= 2_500
     assert snapshot.segment_count == 1
+    assert snapshot.compaction_terminal_retention == {:hours, 24}
     H.stop(root)
     # Canonical filenames are resolved through the frozen segment parser.
     files =

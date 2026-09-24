@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.9.9 — 2026-09-24
+
+### Added
+
+- Added canonical history size in MiB, segment count, and configured terminal
+  retention to the dashboard Overview page.
+- Added an explicit retention-hours control to manual dashboard compaction.
+- Exposed the configured compaction terminal retention in the bounded Engine
+  status snapshot.
+
+### Changed
+
+- Manual dashboard compaction now reports the selected retention alongside the
+  number of removed and retained jobs and reclaimed bytes.
+- Clarified that retention is time-based rather than a disk quota and that the
+  displayed canonical history excludes temporary compaction headroom.
+
 ## 0.9.8 — 2026-09-24
 
 ### Added
