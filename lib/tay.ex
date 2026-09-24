@@ -108,7 +108,7 @@ defmodule Tay do
     with {:ok, query} <- Inspection.normalize(options),
          {:ok, name, timeout} <- request_options(Keyword.take(options, [:name, :timeout])),
          {:ok, meta} <- ready(name),
-         {:ok, %{jobs: jobs, next_key: next_key}} <-
+         {:ok, page} <-
            Admission.request(
              name,
              meta,
@@ -118,7 +118,18 @@ defmodule Tay do
              nil,
              timeout || meta.timeout
            ) do
-      {:ok, %{jobs: jobs, next_cursor: Inspection.encode_cursor(next_key, query.fingerprint)}}
+      {:ok,
+       %{
+         jobs: page.jobs,
+         total_count: page.total_count,
+         next_cursor: Inspection.encode_cursor(page.next_key, query.fingerprint),
+         previous_cursor: Inspection.encode_cursor(page.previous_key, query.fingerprint),
+         last_cursor:
+           if(page.total_count > query.limit and not page.last?,
+             do: Inspection.encode_cursor(:last, query.fingerprint),
+             else: nil
+           )
+       }}
     else
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> public_error(reason, :jobs, nil)

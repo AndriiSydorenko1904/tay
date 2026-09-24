@@ -416,8 +416,8 @@ defmodule Tay.Engine do
   end
 
   defp command({:inspect_jobs, query}, s) do
-    {jobs, next_key} = InspectionIndex.page(s.projection.inspection, s.projection.jobs, query)
-    {{:ok, %{jobs: Enum.map(jobs, &view(s, &1)), next_key: next_key}}, s}
+    page = InspectionIndex.page(s.projection.inspection, s.projection.jobs, query)
+    {{:ok, %{page | jobs: Enum.map(page.jobs, &view(s, &1))}}, s}
   end
 
   defp command(:inspect_stats, s),

@@ -37,7 +37,7 @@ defmodule Tay.Inspection do
          limit when is_integer(limit) and limit in 1..@max_limit <-
            Keyword.get(options, :limit, @default_limit),
          fingerprint = fingerprint(states, queues, workers, worker_contains, id),
-         {:ok, after_key} <- decode_cursor(Keyword.get(options, :cursor), fingerprint) do
+         {:ok, position} <- decode_cursor(Keyword.get(options, :cursor), fingerprint) do
       {:ok,
        %{
          states: states,
@@ -46,7 +46,7 @@ defmodule Tay.Inspection do
          worker_contains: worker_contains,
          id: id,
          limit: limit,
-         after_key: after_key,
+         position: position,
          fingerprint: fingerprint
        }}
     else
@@ -56,27 +56,60 @@ defmodule Tay.Inspection do
 
   def encode_cursor(nil, _fingerprint), do: nil
 
-  def encode_cursor({inserted_at, id}, fingerprint) do
-    Base.url_encode64(<<1, inserted_at::unsigned-64, id::binary-size(16), fingerprint::binary>>,
+  def encode_cursor({direction, {inserted_at, id}, offset}, fingerprint)
+      when direction in [:after, :before] and is_integer(offset) and offset >= 0 do
+    direction = if direction == :after, do: 0, else: 1
+
+    Base.url_encode64(
+      <<2, direction, offset::unsigned-64, inserted_at::unsigned-64, id::binary-size(16),
+        fingerprint::binary>>,
       padding: false
     )
   end
+
+  def encode_cursor(:last, fingerprint),
+    do: Base.url_encode64(<<2, 2, fingerprint::binary>>, padding: false)
 
   def states, do: @states
 
   defp decode_cursor(nil, _fingerprint), do: {:ok, nil}
 
   defp decode_cursor(cursor, fingerprint) when is_binary(cursor) do
-    with {:ok, <<1, inserted_at::unsigned-64, id::binary-size(16), ^fingerprint::binary>>} <-
-           Base.url_decode64(cursor, padding: false),
-         true <- V1.time?(inserted_at) and V1.id?(id) do
-      {:ok, {inserted_at, id}}
+    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false) do
+      decode_position(decoded, fingerprint)
     else
       _ -> {:error, :invalid_cursor}
     end
   end
 
   defp decode_cursor(_, _), do: {:error, :invalid_cursor}
+
+  defp decode_position(
+         <<2, direction, offset::unsigned-64, inserted_at::unsigned-64, id::binary-size(16),
+           fingerprint::binary>>,
+         fingerprint
+       )
+       when direction in [0, 1] do
+    if V1.time?(inserted_at) and V1.id?(id) do
+      {:ok, {if(direction == 0, do: :after, else: :before), {inserted_at, id}, offset}}
+    else
+      {:error, :invalid_cursor}
+    end
+  end
+
+  defp decode_position(<<2, 2, fingerprint::binary>>, fingerprint), do: {:ok, :last}
+
+  # Version-one cursors remain readable so bookmarked dashboard pages keep working.
+  defp decode_position(
+         <<1, inserted_at::unsigned-64, id::binary-size(16), fingerprint::binary>>,
+         fingerprint
+       ) do
+    if V1.time?(inserted_at) and V1.id?(id),
+      do: {:ok, {:after, {inserted_at, id}, nil}},
+      else: {:error, :invalid_cursor}
+  end
+
+  defp decode_position(_, _), do: {:error, :invalid_cursor}
 
   defp fingerprint(states, queues, workers, worker_contains, id) do
     :crypto.hash(

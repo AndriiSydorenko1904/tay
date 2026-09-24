@@ -50,8 +50,13 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.9.6"
+    assert html =~ "v0.9.7"
     assert html =~ "Next page"
+    assert html =~ "Last page"
+    assert html =~ "Page 1 of 2 · showing 50 of 52 jobs"
+    refute has_element?(list, "#first-page")
+    refute has_element?(list, "#previous-page")
+    last_path = html |> Floki.parse_document!() |> Floki.attribute("#last-page", "href") |> hd()
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 
     first_page_ids = job_ids(render(list))
@@ -60,22 +65,40 @@ defmodule Tay.Dashboard.LiveTest do
     assert next_path =~ ~r|^/tay/jobs\?cursor=|
     {:ok, second_page, second_html} = live(build_conn(), next_path)
     assert second_html =~ "Page 2"
+    assert second_html =~ "Page 2 of 2 · showing 2 of 52 jobs"
+    assert has_element?(second_page, "#first-page")
+    assert has_element?(second_page, "#previous-page")
+    refute has_element?(second_page, "#next-page")
+    refute has_element?(second_page, "#last-page")
     assert length(job_ids(second_html)) == 2
+
+    previous_path =
+      second_html |> Floki.parse_document!() |> Floki.attribute("#previous-page", "href") |> hd()
 
     assert MapSet.disjoint?(
              MapSet.new(first_page_ids),
              MapSet.new(job_ids(render(second_page)))
            )
 
+    {:ok, previous_page, previous_html} = live(build_conn(), previous_path)
+    assert previous_html =~ "Page 1 of 2"
+    assert job_ids(previous_html) == first_page_ids
+    refute has_element?(previous_page, "#previous-page")
+
+    {:ok, _last_page, last_html} = live(build_conn(), last_path)
+    assert last_html =~ "Page 2 of 2 · showing 2 of 52 jobs"
+
+    {:ok, filter_page, _html} = live(build_conn(), "/tay/jobs")
+
     html =
-      render_change(second_page, "filter", %{"state" => "available", "queue" => "default"})
+      render_change(filter_page, "filter", %{"state" => "available", "queue" => "default"})
 
     assert html =~ "available"
-    assert_patch(second_page, "/tay/jobs?queue=default&state=available")
+    assert_patch(filter_page, "/tay/jobs?queue=default&state=available")
     assert length(job_ids(html)) == 50
 
-    html = render_change(second_page, "filter", %{"worker" => "worker."})
-    assert_patch(second_page, "/tay/jobs?worker=worker.")
+    html = render_change(filter_page, "filter", %{"worker" => "worker."})
+    assert_patch(filter_page, "/tay/jobs?worker=worker.")
     assert html =~ "Worker key contains"
     assert length(job_ids(html)) == 50
 
@@ -126,8 +149,10 @@ defmodule Tay.Dashboard.LiveTest do
 
     assert discarded.state == :discarded
     assert :ok = Tay.pause_queue(:default, name: @engine)
-    {:ok, detail, _html} = live(build_conn(), "/tay/jobs/#{intent.id}")
+    {:ok, detail, html} = live(build_conn(), "/tay/jobs/#{intent.id}")
     assert has_element?(detail, "button", "Retry")
+    assert html =~ "Task returned an error."
+    assert html =~ ~s(&quot;code&quot; =&gt; 1)
     assert render_click(detail, "retry") =~ "available"
     assert {:ok, %{state: :available}} = Tay.get_job(intent.id, name: @engine)
     EngineHelpers.stop(root)

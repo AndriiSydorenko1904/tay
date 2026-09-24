@@ -77,11 +77,12 @@ token before best-effort termination but cannot undo an effect already made.
 `Tay.jobs/1` returns public `Tay.Job` views in deterministic newest-first
 insertion order. It accepts state, queue, exact worker-key (`worker`/`workers`),
 partial worker-key (`worker_contains`), ID, limit, and opaque cursor filters.
-Pages are capped at 100 results and each call examines at most
-1,000 retained jobs. A selective filter can therefore return a short or empty
-page with a non-nil cursor; follow the cursor to continue. Cursors are tied to
-their filters. Concurrent state changes produce a weakly consistent live view,
-so refresh after administrative actions or engine restart.
+Pages are capped at 100 results. Each response includes the exact matching
+`total_count` plus opaque `previous_cursor`, `next_cursor`, and `last_cursor`
+values for bidirectional and final-page navigation. The first page uses no
+cursor. Cursors are tied to their filters. Concurrent inserts and state changes
+produce a weakly consistent live view, so refresh after administrative actions
+or engine restart.
 
 `Tay.stats/1` and `Tay.queues/1` use reconstructable runtime counters rather
 than scanning retained history. The optional `tay_dashboard` Hex package mounts

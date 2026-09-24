@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tay-client"
-version = "0.9.6"
+version = "0.9.7"
 description = "Python SDK for producing and executing Tay jobs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,7 +28,7 @@ classifiers = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/AndriiSydorenko1904/tay/tree/v0.9.6/clients/python"
+Documentation = "https://github.com/AndriiSydorenko1904/tay/tree/v0.9.7/clients/python"
 Issues = "https://github.com/AndriiSydorenko1904/tay/issues"
 Source = "https://github.com/AndriiSydorenko1904/tay"
 

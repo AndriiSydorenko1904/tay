@@ -2,7 +2,30 @@
 
 ## Unreleased
 
+## 0.9.7 — 2026-09-24
+
+### Added
+
+- Added exact filtered job totals and opaque previous/next/last cursors to the
+  public inspection response.
+- Added complete dashboard navigation for first, previous, next, and last pages,
+  including current/total page and visible/total job counts.
+
+### Changed
+
+- Made filtered cursor pages contain matching jobs up to the requested limit,
+  including sparse partial-worker matches.
+- Kept version-one job cursors readable while emitting the bidirectional
+  version-two cursor format.
+
+### Fixed
+
+- Fixed the dashboard's one-way pagination, which previously provided no way to
+  return to earlier pages or jump to the final page.
+
 ## 0.9.6 — 2026-09-23
+
+### Changed
 
 - Gave dashboard package publication its own committed lock file so switching
   from the local Tay checkout to the Hex dependency no longer mutates the
@@ -12,12 +35,19 @@
 
 ## 0.9.5 — 2026-09-23
 
+### Added
+
 - Added partial worker-key filtering to the inspection API and dashboard while
   preserving cursor/filter binding.
+
+### Fixed
+
 - Made stable schedule declarations idempotent so periodic reconciliation no
   longer resets interval timers or triggers a job on every reconciliation pass.
 
 ## 0.9.4 — 2026-09-23
+
+### Fixed
 
 - Included the JSON codec required by Phoenix LiveView in the standalone
   dashboard release, preventing WebSocket joins from crashing after upgrade.
@@ -26,16 +56,23 @@
 
 ## 0.9.3 — 2026-09-23
 
+### Added
+
+- Added dashboard version, lifecycle context, attempt semantics, and readable
+  diagnostic-code descriptions to job details.
+
+### Fixed
+
 - Fixed LiveView origin validation behind Docker port publishing and reverse
   proxies while retaining same-origin protection.
 - Made job filters usable with both live events and ordinary GET submission,
   restored no-JavaScript cursor navigation, and exposed page position.
-- Added dashboard version, lifecycle context, attempt semantics, and readable
-  diagnostic-code descriptions to job details.
 - Prevented executor connection send failures from being misclassified as
   protocol error codes and crashing the connection process.
 
 ## 0.9.2 — 2026-09-23
+
+### Fixed
 
 - Fixed standalone dashboard LiveView connections when accessed through local
   loopback aliases such as `127.0.0.1`, restoring interactive job filters.
@@ -43,6 +80,8 @@
   regression coverage for distinct pages and filtered results.
 
 ## 0.9.1 — 2026-09-23
+
+### Added
 
 - Added the dashboard-enabled OCI distribution with one Tay Engine, the
   Executor Protocol Unix socket, and a self-contained Phoenix LiveView UI.
@@ -55,6 +94,8 @@
 
 ## 0.9.0 — 2026-09-23
 
+### Added
+
 - Added an official minimal standalone OTP release and Debian-slim production
   image for non-Elixir Executor Protocol v1 clients, without changing the Hex
   package or embedded startup contract.
@@ -63,6 +104,8 @@
   release/container lifecycle tests, and stable/prerelease-aware GHCR publishing.
 
 ## 0.8.1 — 2026-09-22
+
+### Added
 
 - Added the opt-in Engine option `initialize: :if_missing` for embedding
   applications that need first-start creation of a genuinely missing store.
@@ -73,6 +116,8 @@
   when it creates the final storage root, preventing Engine-level TOCTOU checks.
 
 ## 0.8.0 — 2026-09-22
+
+### Added
 
 - Added the stable, bounded public inspection API: cursor-paginated job listing,
   incremental state statistics, and public queue runtime snapshots.
@@ -85,6 +130,8 @@
 
 ## 0.7.1 — 2026-09-22
 
+### Fixed
+
 - Fixed a circular `GenServer.call` deadlock between executor dispatch and
   completion on connections with capacity greater than one. Outbound delivery
   is now mailbox-ordered without synchronously blocking the executor server;
@@ -94,6 +141,8 @@
   test and a concurrent multi-capacity stress test.
 
 ## 0.7.0 — 2026-09-21
+
+### Added
 
 - Executor Protocol v1 now has automatic, cross-language local socket discovery:
   explicit path, `TAY_SOCKET_PATH`, XDG runtime, `TMPDIR`, then per-UID `/tmp`.
@@ -118,6 +167,8 @@
   producers and interval checks use the same frozen policy.
 
 ## 0.5.0 — first public preview
+
+### Added
 
 - Durable single-node job core: frozen Record v1 and Segment/STORE v1 framing,
   canonical Event v1 semantics, an authoritative append-only log, bounded

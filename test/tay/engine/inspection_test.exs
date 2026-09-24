@@ -105,6 +105,28 @@ defmodule Tay.Engine.InspectionTest do
     assert Enum.uniq(Enum.map(seen, & &1.id)) == Enum.map(seen, & &1.id)
     assert MapSet.new(Enum.map(seen, & &1.id)) == MapSet.new(Enum.map(inserted, & &1.id))
 
+    {:ok, first} = Tay.jobs(name: @name, limit: 50)
+    assert first.total_count == 125
+    assert first.previous_cursor == nil
+    assert is_binary(first.next_cursor)
+    assert is_binary(first.last_cursor)
+
+    {:ok, last} = Tay.jobs(name: @name, limit: 50, cursor: first.last_cursor)
+    assert length(last.jobs) == 25
+    assert last.total_count == 125
+    assert last.next_cursor == nil
+    assert last.last_cursor == nil
+    assert is_binary(last.previous_cursor)
+
+    {:ok, middle} = Tay.jobs(name: @name, limit: 50, cursor: last.previous_cursor)
+    assert length(middle.jobs) == 50
+    assert is_binary(middle.previous_cursor)
+    assert is_binary(middle.next_cursor)
+
+    {:ok, back_to_first} = Tay.jobs(name: @name, limit: 50, cursor: middle.previous_cursor)
+    assert Enum.map(back_to_first.jobs, & &1.id) == Enum.map(first.jobs, & &1.id)
+    assert back_to_first.previous_cursor == nil
+
     {:ok, %{next_cursor: cursor}} = Tay.jobs(name: @name, limit: 3)
     assert is_binary(cursor)
 
