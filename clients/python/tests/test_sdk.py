@@ -7,7 +7,8 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from tay import ProtocolError, Tay, ValidationError, resolve_socket_path
+from tay import ProtocolError, ServerError, Tay, ValidationError, resolve_socket_path
+from tay.client import _server_error_from_payload
 from tay.protocol import decode_payload, encode_frame, normalize_json
 
 
@@ -75,6 +76,14 @@ class SocketPathTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capacity_error_preserves_machine_readable_reason(self) -> None:
+        error = _server_error_from_payload(
+            {"code": "capacity", "reason": "client_slots"}
+        )
+        self.assertIsInstance(error, ServerError)
+        self.assertEqual(error.code, "capacity")
+        self.assertEqual(error.details["reason"], "client_slots")
+
     async def test_listener_bounds_are_validated_before_connecting(self) -> None:
         with self.assertRaises(ValidationError):
             Tay(capacity=65_536)

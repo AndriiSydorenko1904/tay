@@ -14,6 +14,7 @@ defmodule Tay.Engine do
   alias Tay.Storage.{Writer, Segment}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
+  @segment_catalog_limit 128
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, timeout: :infinity)
 
@@ -89,6 +90,7 @@ defmodule Tay.Engine do
           next_availability_order: Map.get(candidate, :next_availability_order, 1),
           next_sequence: summary.arithmetic_next_sequence,
           segment: Map.take(summary.highest, [:id, :bytes, :count, :state]),
+          segment_catalog: Enum.take(summary.segment_catalog, -@segment_catalog_limit),
           runtime: GenServer.call(guardian, :runtime),
           fence: GenServer.call(guardian, :fence),
           running: %{},
@@ -201,6 +203,14 @@ defmodule Tay.Engine do
 
   def handle_info({:DOWN, _, :process, guardian, _}, %{guardian: guardian} = s),
     do: {:stop, :guardian_lost, s}
+
+  def handle_info(
+        {:command_replied, guardian, _slot, _token},
+        %{guardian: guardian} = s
+      ) do
+    hook(s.config, :post_reply)
+    {:noreply, s}
+  end
 
   def handle_info(
         {:lifecycle_drain, generation, token, guardian, expected_source},
@@ -510,9 +520,7 @@ defmodule Tay.Engine do
 
   defp reply_command(s, {slot, token}, from, reply) do
     hook(s.config, :pre_reply)
-    GenServer.reply(from, reply)
-    hook(s.config, :post_reply)
-    send(s.guardian, {:completed, self(), slot, token, snapshot(s)})
+    send(s.guardian, {:completed, self(), slot, token, from, reply, snapshot(s)})
   end
 
   defp complete_drains(%{mode: :draining, settlement_reserve: 0, running: running} = s)
@@ -1268,7 +1276,8 @@ defmodule Tay.Engine do
                 state: :active,
                 bytes: receipt.offset + byte_size(payload) + 28,
                 count: if(receipt.segment_id == s.segment.id, do: s.segment.count + 1, else: 1)
-              }
+              },
+              segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
 
           hook(s.config, :post_projection)
@@ -1340,7 +1349,8 @@ defmodule Tay.Engine do
                 state: :active,
                 bytes: receipt.offset + byte_size(payload) + 28,
                 count: if(receipt.segment_id == s.segment.id, do: s.segment.count + 1, else: 1)
-              }
+              },
+              segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
 
           hook(s.config, :post_projection)
@@ -1472,6 +1482,8 @@ defmodule Tay.Engine do
       execution_control_slots: map_size(s.config.queue_limits) + 1,
       canonical_history_bytes: s.history_bytes,
       segment_count: s.segment_count,
+      storage_segments: s.segment_catalog,
+      storage_segments_truncated: s.segment_count > length(s.segment_catalog),
       compaction_terminal_retention: s.config.compaction.terminal_retention,
       retained_definition_bytes: s.definition_bytes,
       reserved_outcome_bytes: outcome_reserve(s.settlement_reserve),
@@ -1495,6 +1507,37 @@ defmodule Tay.Engine do
        do: Error.new(:unavailable, reason)
 
   defp startup_error(_), do: Error.new(:unavailable, :recovery_failed)
+
+  defp update_segment_catalog(s, receipt, payload_bytes) do
+    active = %{
+      id: receipt.segment_id,
+      state: :active,
+      bytes: receipt.offset + payload_bytes + 28,
+      count: if(receipt.segment_id == s.segment.id, do: s.segment.count + 1, else: 1),
+      first_sequence:
+        if(receipt.segment_id == s.segment.id,
+          do: List.last(s.segment_catalog).first_sequence,
+          else: s.next_sequence
+        ),
+      last_sequence: s.next_sequence
+    }
+
+    catalog =
+      if receipt.segment_id == s.segment.id do
+        List.replace_at(s.segment_catalog, -1, active)
+      else
+        sealed =
+          s.segment_catalog
+          |> List.last()
+          |> Map.merge(%{state: :sealed, bytes: s.segment.bytes + 64})
+
+        s.segment_catalog
+        |> List.replace_at(-1, sealed)
+        |> Kernel.++([active])
+      end
+
+    Enum.take(catalog, -@segment_catalog_limit)
+  end
 
   if Mix.env() == :test do
     defp test_terminate_option(config), do: Map.get(config, :test_terminate)

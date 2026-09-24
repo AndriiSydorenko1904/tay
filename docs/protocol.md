@@ -30,6 +30,11 @@ oversized frames close only that connection. Correlated request failures use:
 {"version":1,"type":"error","request_id":"request-1","error":{"code":"..."}}
 ```
 
+Error objects may include backward-compatible diagnostic fields. In
+particular, an enqueue admission refusal uses `code: "capacity"` and includes
+the bounded capacity category in `reason`, such as `"client_slots"` or
+`"client_bytes"`.
+
 The first request must be `hello` with `mode: "client"`, `"embedded"`, or
 `"worker"`, a `runtime_id`, and `max_concurrency`. Clients declare zero
 concurrency; executors declare `1..65535`. A successful handshake returns

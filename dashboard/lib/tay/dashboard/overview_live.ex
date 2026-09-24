@@ -14,7 +14,9 @@ defmodule Tay.Dashboard.OverviewLive do
        storage_bytes: 0,
        segment_count: 0,
        configured_retention: "Unknown",
-       retention_hours: 24
+       retention_hours: 24,
+       storage_segments: [],
+       storage_segments_truncated: false
      )
      |> refresh()}
   end
@@ -101,6 +103,32 @@ defmodule Tay.Dashboard.OverviewLive do
         <p style="color:var(--tay-muted)">
           Compaction rewrites the job store and permanently removes terminal jobs older than the selected retention period. Retention is time-based, not a disk quota. Canonical history excludes temporary compaction headroom and small metadata files.
         </p>
+        <details :if={@storage_segments != []} id="storage-segments">
+          <summary>Storage segments ({length(@storage_segments)} shown)</summary>
+          <p :if={@storage_segments_truncated} class="notice">
+            Only the 128 newest segments are shown; the total is {@segment_count}.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>FILE</th>
+                <th>STATE</th>
+                <th>SIZE</th>
+                <th>RECORDS</th>
+                <th>SEQUENCE</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={segment <- @storage_segments}>
+                <td><code>{segment_filename(segment.id)}</code></td>
+                <td><span class={["state", "state-#{segment.state}"]}>{segment.state}</span></td>
+                <td>{format_bytes(segment.bytes)}</td>
+                <td>{segment.count}</td>
+                <td>{sequence_range(segment)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
         <button :if={!@confirm_compaction} id="prepare-compaction" phx-click="prepare-compaction">
           Run compaction
         </button>
@@ -111,7 +139,9 @@ defmodule Tay.Dashboard.OverviewLive do
           phx-submit="compact"
         >
           <strong>Run compaction now?</strong>
-          <p>Completed, cancelled, and discarded jobs older than this period cannot be recovered afterward.</p>
+          <p>
+            Completed, cancelled, and discarded jobs older than this period cannot be recovered afterward.
+          </p>
           <label for="terminal-retention-hours">Retain terminal jobs for</label>
           <div class="actions">
             <input
@@ -150,6 +180,8 @@ defmodule Tay.Dashboard.OverviewLive do
           segment_count: Map.get(status, :segment_count, 0),
           configured_retention: format_retention(retention),
           retention_hours: retention_hours,
+          storage_segments: Map.get(status, :storage_segments, []),
+          storage_segments_truncated: Map.get(status, :storage_segments_truncated, false),
           flash_error: nil
         )
 
@@ -176,4 +208,12 @@ defmodule Tay.Dashboard.OverviewLive do
   defp format_retention(_), do: "Unknown"
   defp retention_hours({:hours, hours}), do: hours
   defp retention_hours(_), do: 24
+
+  defp segment_filename(id),
+    do: id |> Integer.to_string() |> String.pad_leading(20, "0") |> Kernel.<>(".tay")
+
+  defp sequence_range(%{count: 0}), do: "—"
+
+  defp sequence_range(segment),
+    do: "#{segment.first_sequence}–#{segment.last_sequence}"
 end

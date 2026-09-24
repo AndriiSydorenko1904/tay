@@ -175,6 +175,89 @@ defmodule Tay.Executor.PythonInteropTest do
              )
   end
 
+  test "a Python producer receives the exact admission capacity reason", %{
+    path: path,
+    socket: socket
+  } do
+    parent = self()
+
+    hook = fn point ->
+      if point == :pre_reply do
+        send(parent, {:enqueue_held, self()})
+
+        receive do
+          :continue -> :ok
+        end
+      end
+    end
+
+    assert {:ok, root} =
+             ExecutionHelpers.start(path, @name,
+               workers: %{},
+               executor_socket: socket,
+               executor_max_connections: 2,
+               client_slots: 1,
+               test_hook: hook
+             )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    assert ExecutionHelpers.eventually(fn -> File.exists?(socket) end)
+
+    script = """
+    import asyncio
+    import json
+    import sys
+
+    sys.path.insert(0, #{inspect(Path.expand("clients/python"))})
+    from tay import ServerError, Tay
+
+    async def main():
+        client = Tay(mode="client", socket_path=sys.argv[1], request_timeout=2)
+        await client.start()
+        first = asyncio.create_task(client.enqueue("tests.capacity.v1", {"n": 1}))
+        await asyncio.sleep(0.05)
+        try:
+            await client.enqueue("tests.capacity.v1", {"n": 2})
+        except ServerError as error:
+            print(json.dumps({"code": error.code, "reason": error.details["reason"]}, sort_keys=True))
+        else:
+            raise RuntimeError("second enqueue unexpectedly passed admission")
+        finally:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+            await client.close()
+
+    asyncio.run(main())
+    """
+
+    python =
+      if File.exists?("/opt/homebrew/bin/python3"),
+        do: "/opt/homebrew/bin/python3",
+        else: System.find_executable("python3")
+
+    command =
+      Task.async(fn ->
+        System.cmd(python, ["-c", script, socket],
+          stderr_to_stdout: true,
+          env: [{"PYTHONPYCACHEPREFIX", "/private/tmp/tay-python-cache"}]
+        )
+      end)
+
+    assert_receive {:enqueue_held, engine}, 2_000
+
+    assert {"{\"code\": \"capacity\", \"reason\": \"client_slots\"}\n", 0} =
+             Task.await(command, 5_000)
+
+    send(engine, :continue)
+  end
+
   test "an absent capability stays pending without blocking a later advertised task", %{
     path: path,
     socket: socket

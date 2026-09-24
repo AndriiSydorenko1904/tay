@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.10.0 — 2026-09-24
+
+### Added
+
+- Added a bounded catalog of the 128 newest canonical storage segments to the
+  Engine status snapshot.
+- Added a collapsible dashboard table with each segment's canonical filename,
+  active/sealed state, size, record count, and sequence range.
+- Added bounded `free`, `claimed`, `reserved`, and `submitted` client-slot
+  counts to the Engine status snapshot.
+- Added a backward-compatible machine-readable capacity reason to Protocol v1
+  error responses and preserved it in Python `ServerError.details`.
+- Added `deploy-helper.sh` to publish the version-matched container images and
+  Python client through their GitHub Actions workflows.
+
+### Changed
+
+- Moved normal command replies to the lifecycle Guardian so it releases the
+  exact submitted permit before making success or error visible to the caller.
+- Expanded the project README with clearer architecture, installation, and
+  deployment guidance.
+
+### Fixed
+
+- Fixed fast sequential producers transiently exhausting `client_slots`
+  because successful replies could previously race ahead of permit release.
+
 ## 0.9.9 — 2026-09-24
 
 ### Added
