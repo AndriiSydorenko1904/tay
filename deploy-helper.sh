@@ -23,6 +23,7 @@ gh auth status --hostname github.com >/dev/null
 publish_containers=true
 publish_python=true
 force_containers=false
+create_release=true
 tag=""
 
 while [[ $# -gt 0 ]]; do
@@ -30,8 +31,9 @@ while [[ $# -gt 0 ]]; do
     --containers-only) publish_python=false ;;
     --python-only) publish_containers=false ;;
     --force | --force-containers) force_containers=true ;;
+    --no-release) create_release=false ;;
     -h | --help)
-      echo "Usage: $0 [--containers-only|--python-only] [--force-containers] [vVERSION]"
+      echo "Usage: $0 [--containers-only|--python-only] [--force-containers] [--no-release] [vVERSION]"
       exit 0
       ;;
     v*)
@@ -50,6 +52,13 @@ done
   echo "Nothing selected for publication" >&2
   exit 1
 }
+
+if [[ "$create_release" == true &&
+      ("$publish_containers" != true || "$publish_python" != true) ]]; then
+  echo "A GitHub Release triggers both publication workflows." >&2
+  echo "Run the full release, or add --no-release for a partial manual publication." >&2
+  exit 1
+fi
 
 version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
 dashboard_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' dashboard/mix.exs)
@@ -79,6 +88,51 @@ git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || {
 git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || {
   echo "Git tag $tag has not been pushed to origin" >&2
   exit 1
+}
+
+readonly TAG_COMMIT="$(git rev-list -n 1 "$tag")"
+release_created=false
+
+ensure_release() {
+  if gh release view "$tag" --repo "$REPOSITORY" >/dev/null 2>&1; then
+    echo "GitHub Release $tag already exists; keeping it."
+    return
+  fi
+
+  echo "Creating GitHub Release $tag..."
+  gh release create "$tag" \
+    --repo "$REPOSITORY" \
+    --verify-tag \
+    --title "Tay $version" \
+    --generate-notes
+  release_created=true
+}
+
+release_run() {
+  gh run list --repo "$REPOSITORY" --workflow "$1" --event release --limit 20 \
+    --json databaseId,headSha \
+    --jq ".[] | select(.headSha == \"$TAG_COMMIT\") | .databaseId" \
+    | head -n 1
+}
+
+watch_release_workflow() {
+  workflow="$1"
+  label="$2"
+  run_id=""
+
+  for _ in {1..30}; do
+    run_id=$(release_run "$workflow")
+    [[ -n "$run_id" ]] && break
+    sleep 2
+  done
+
+  [[ -n "$run_id" ]] || {
+    echo "Release $tag was created, but the $label workflow did not appear after 60 seconds" >&2
+    exit 1
+  }
+
+  echo "Watching $label release workflow run $run_id..."
+  gh run watch "$run_id" --repo "$REPOSITORY" --exit-status
 }
 
 images_are_published() {
@@ -168,8 +222,17 @@ publish_python_client() {
   dispatch_and_watch "$PYTHON_WORKFLOW" "Python client"
 }
 
-[[ "$publish_containers" == true ]] && publish_container_images
-[[ "$publish_python" == true ]] && publish_python_client
+if [[ "$create_release" == true ]]; then
+  ensure_release
+fi
+
+if [[ "$release_created" == true ]]; then
+  watch_release_workflow "$CONTAINER_WORKFLOW" "container"
+  watch_release_workflow "$PYTHON_WORKFLOW" "Python client"
+else
+  [[ "$publish_containers" == true ]] && publish_container_images
+  [[ "$publish_python" == true ]] && publish_python_client
+fi
 
 echo "Publication complete for $tag:"
 [[ "$publish_containers" == true ]] && {
