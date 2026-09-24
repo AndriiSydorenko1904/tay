@@ -96,7 +96,13 @@ defmodule Tay.Engine.InspectionTest do
     inserted =
       for n <- 1..125 do
         {:ok, job} = EngineWorker.new(%{"n" => n}) |> Tay.insert(name: @name)
-        job
+
+        if rem(n, 3) == 0 do
+          {:ok, cancelled} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+          cancelled
+        else
+          job
+        end
       end
 
     {seen, cursor} = collect([], nil, @name)

@@ -39,6 +39,11 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "MiB"
     assert html =~ "Configured retention"
     assert html =~ "24 h"
+    assert html =~ "Runtime memory"
+    assert html =~ "BEAM total"
+    assert html =~ "State capacity"
+    assert html =~ "100,000"
+    assert html =~ "2,000,000"
     assert html =~ "Storage segments (1 shown)"
     assert html =~ "00000000000000000001.tay"
     assert html =~ "active"
@@ -68,7 +73,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.10.0"
+    assert html =~ "v0.11.0"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

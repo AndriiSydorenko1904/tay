@@ -6,6 +6,7 @@ defmodule Tay.Engine.CompactionConfig do
   @defaults %{
     enabled: true,
     terminal_retention: {:hours, 24},
+    max_terminal_jobs: 5_000,
     check_interval: 60_000,
     min_interval: 3_600_000,
     min_sealed_segments: 1,
@@ -24,6 +25,9 @@ defmodule Tay.Engine.CompactionConfig do
          true <- is_boolean(config.enabled),
          :ok <- Retention.validate(config.terminal_retention),
          true <- config.terminal_retention != :infinity,
+         true <-
+           is_integer(config.max_terminal_jobs) and
+             config.max_terminal_jobs in 0..4_294_967_295,
          true <- timer?(config.check_interval) and timer?(config.min_interval),
          true <-
            is_integer(config.min_sealed_segments) and

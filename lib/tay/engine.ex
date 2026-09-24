@@ -8,13 +8,25 @@ defmodule Tay.Engine do
   alias Tay.{Event, Error, Job, JobID, Queue}
   alias Tay.Event.{V1, Value}
   alias Tay.Engine.{Admission, Config, CompactionEstimate, CompactionReplay}
-  alias Tay.State.{InspectionIndex, Transition, Projection, JobIndex, SchedulerIndex, TaskIndex}
+
+  alias Tay.State.{
+    CombinedInspection,
+    InspectionIndex,
+    JobIndex,
+    Projection,
+    SchedulerIndex,
+    TaskIndex,
+    TerminalStore,
+    Transition
+  }
+
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
   alias Tay.Storage.{Writer, Segment}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
   @segment_catalog_limit 128
+  @states [:available, :scheduled, :executing, :retryable, :completed, :cancelled, :discarded]
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, timeout: :infinity)
 
@@ -38,8 +50,10 @@ defmodule Tay.Engine do
          :ok <- acquire_local_fence(config, guardian, writer, generation),
          inspection = Writer.status(writer),
          {:ok, summary, candidate} <-
-           Writer.activate_recovered(writer, inspection.session_ref) do
+           Writer.activate_recovered(writer, inspection.session_ref),
+         {:ok, terminal_store} <- TerminalStore.open(config.name, config.data_dir, candidate.jobs) do
       if match?({:error, _}, activation_capability(summary)) do
+        TerminalStore.close(terminal_store)
         GenServer.stop(writer)
         {:error, error} = activation_capability(summary)
         {:stop, error}
@@ -58,13 +72,16 @@ defmodule Tay.Engine do
               end),
             else: config.workers
 
+        active_jobs = Map.reject(candidate.jobs, fn {_id, job} -> terminal?(job) end)
         projection = Projection.new(dispatch_registry, config.queues, Map.get(config, :test_hook))
         hook(config, :indexes_created)
-        projection = Projection.load(projection, candidate.jobs)
+        projection = Projection.load(projection, active_jobs)
         true = Projection.valid?(projection)
-        budget = Transition.accounting(candidate)
-        # No copy of candidate.jobs survives init; private ETS is the only live
-        # job projection. Startup accounting reserves up to three charged views.
+        {active_budget, terminal_budget} = partition_budgets(candidate.jobs)
+        budget = candidate |> Transition.accounting() |> Map.merge(active_budget)
+        # No copy of candidate.jobs survives init. Active jobs live in private
+        # ETS; terminal history lives in a disposable disk projection. Startup
+        # accounting reserves up to three charged active views.
         state = %{
           config: config,
           guardian: guardian,
@@ -72,7 +89,11 @@ defmodule Tay.Engine do
           writer: writer,
           admission: summary.admission_ref,
           projection: projection,
+          terminal_store: terminal_store,
+          terminal_stats: terminal_statistics(candidate.jobs),
           budget: budget,
+          active_budget: active_budget,
+          terminal_budget: terminal_budget,
           compaction_estimate:
             Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
               CompactionEstimate.replace(acc, nil, job)
@@ -115,11 +136,9 @@ defmodule Tay.Engine do
           segment_count:
             summary.segment_count + summary.highest.id - inspection.summary.highest.id,
           definition_bytes:
-            JobIndex.fold(
-              projection.jobs,
-              fn job, n -> n + byte_size(job.definition_bytes) end,
-              0
-            ),
+            Enum.reduce(candidate.jobs, 0, fn {_id, job}, n ->
+              n + byte_size(job.definition_bytes)
+            end),
           blocked:
             JobIndex.fold(
               projection.jobs,
@@ -253,6 +272,7 @@ defmodule Tay.Engine do
             deadline,
             retention,
             Clock.wall(s.config.clock),
+            s.config.compaction.max_terminal_jobs,
             cancel_flag
           ),
         else: {:error, :compaction_source_changed}
@@ -271,6 +291,7 @@ defmodule Tay.Engine do
         sealed_bytes,
         sealed_segments,
         s.config.compaction.terminal_retention,
+        s.config.compaction.max_terminal_jobs,
         Clock.wall(s.config.clock)
       )
 
@@ -417,7 +438,7 @@ defmodule Tay.Engine do
 
   defp command({:get, raw}, s) do
     result =
-      case JobIndex.get(s.projection.jobs, raw) do
+      case lookup_job(s, raw) do
         nil -> {:error, :not_found}
         job -> {:ok, view(s, job)}
       end
@@ -426,12 +447,18 @@ defmodule Tay.Engine do
   end
 
   defp command({:inspect_jobs, query}, s) do
-    page = InspectionIndex.page(s.projection.inspection, s.projection.jobs, query)
+    page = CombinedInspection.page(s.projection.jobs, s.terminal_store, query)
     {{:ok, %{page | jobs: Enum.map(page.jobs, &view(s, &1))}}, s}
   end
 
-  defp command(:inspect_stats, s),
-    do: {{:ok, InspectionIndex.stats(s.projection.inspection)}, s}
+  defp command(:inspect_stats, s) do
+    stats =
+      Map.merge(s.terminal_stats.states, InspectionIndex.stats(s.projection.inspection), fn
+        _state, cold, hot -> cold + hot
+      end)
+
+    {{:ok, stats}, s}
+  end
 
   defp command(:inspect_queues, s) do
     queues =
@@ -443,8 +470,14 @@ defmodule Tay.Engine do
           paused: MapSet.member?(s.paused, key),
           concurrency: Map.fetch!(s.config.queue_limits, key),
           executing: Map.get(s.slots, key, 0),
-          jobs: InspectionIndex.queue_count(s.projection.inspection, key),
-          states: InspectionIndex.queue_stats(s.projection.inspection, key)
+          jobs:
+            InspectionIndex.queue_count(s.projection.inspection, key) +
+              (get_in(s.terminal_stats, [:queues, key, :count]) || 0),
+          states:
+            (get_in(s.terminal_stats, [:queues, key, :states]) || zero_states())
+            |> Map.merge(InspectionIndex.queue_stats(s.projection.inspection, key), fn
+              _state, cold, hot -> cold + hot
+            end)
         }
       end)
       |> Enum.sort_by(& &1.key)
@@ -453,7 +486,7 @@ defmodule Tay.Engine do
   end
 
   defp command({:insert, raw, worker, bytes}, s) do
-    existing = JobIndex.get(s.projection.jobs, raw)
+    existing = lookup_job(s, raw)
 
     cond do
       existing && existing.definition_bytes == bytes -> {{:ok, view(s, existing)}, s}
@@ -480,7 +513,7 @@ defmodule Tay.Engine do
   end
 
   defp command({operation, raw, revision}, s) when operation in [:cancel, :retry] do
-    job = JobIndex.get(s.projection.jobs, raw)
+    job = lookup_job(s, raw)
 
     cond do
       lifecycle_barrier?(s) ->
@@ -1081,7 +1114,7 @@ defmodule Tay.Engine do
             executions: Map.delete(s.executions, entry.id),
             relay_monitors: Map.delete(s.relay_monitors, entry.monitor),
             slots: Map.update!(s.slots, entry.queue, &(&1 - 1)),
-            projection: Projection.release(s.projection, job)
+            projection: Projection.release(s.projection, job, entry.id)
         }
 
       _ ->
@@ -1237,7 +1270,7 @@ defmodule Tay.Engine do
          reserve = reservation_after(s, previous, type),
          :ok <- headroom(s, byte_size(payload), reserve),
          {:ok, predicted} <- Transition.apply(effect, %{sequence: s.next_sequence}),
-         {:ok, _, budget} <- Transition.account(s.budget, previous, predicted) do
+         {:ok, _, budget} <- account_active(s, previous, predicted) do
       hook(s.config, {:execution, type, :pre_append})
       hook(s.config, :pre_append)
 
@@ -1251,17 +1284,20 @@ defmodule Tay.Engine do
           hook(s.config, :post_append)
           hook(s.config, {:execution, type, :post_append})
           {:ok, job} = Transition.apply(effect, receipt)
-          {:ok, job, ^budget} = Transition.account(s.budget, previous, job)
+          {:ok, job, ^budget} = account_active(s, previous, job)
 
           job =
             Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
 
-          :ok = Projection.replace(s.projection, previous, job)
+          :ok = publish_projection(s, previous, job)
           Tay.Telemetry.transition(s.config.name, telemetry_operation(type), previous, job)
 
           next = %{
             s
             | budget: budget,
+              active_budget: replace_partition(s.active_budget, previous, job, :active),
+              terminal_budget: replace_partition(s.terminal_budget, previous, job, :terminal),
+              terminal_stats: replace_terminal_stats(s.terminal_stats, previous, job),
               compaction_estimate:
                 CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
@@ -1279,6 +1315,8 @@ defmodule Tay.Engine do
               },
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
+
+          notify_terminal_pressure(next)
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, type, :post_projection})
@@ -1309,7 +1347,7 @@ defmodule Tay.Engine do
            ),
          reserve = reservation_after(s, previous, event.record_type),
          :ok <- headroom(s, byte_size(payload), reserve),
-         {:ok, job, budget} <- Transition.account(s.budget, previous, predicted) do
+         {:ok, job, budget} <- account_active(s, previous, predicted) do
       hook(s.config, {:execution, 8, :pre_append})
       hook(s.config, :pre_append)
 
@@ -1322,7 +1360,7 @@ defmodule Tay.Engine do
 
           hook(s.config, :post_append)
           hook(s.config, {:execution, 8, :post_append})
-          :ok = Projection.replace(s.projection, previous, job)
+          :ok = publish_projection(s, previous, job)
 
           Tay.Telemetry.transition(
             s.config.name,
@@ -1334,6 +1372,9 @@ defmodule Tay.Engine do
           next = %{
             s
             | budget: budget,
+              active_budget: replace_partition(s.active_budget, previous, job, :active),
+              terminal_budget: replace_partition(s.terminal_budget, previous, job, :terminal),
+              terminal_stats: replace_terminal_stats(s.terminal_stats, previous, job),
               compaction_estimate:
                 CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
@@ -1352,6 +1393,8 @@ defmodule Tay.Engine do
               },
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
+
+          notify_terminal_pressure(next)
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, 8, :post_projection})
@@ -1463,6 +1506,70 @@ defmodule Tay.Engine do
   defp failure(s, kind, reason, raw),
     do: {{:error, Error.new(kind, reason, JobID.encode(raw), :insert)}, s}
 
+  defp lookup_job(s, id),
+    do: JobIndex.get(s.projection.jobs, id) || TerminalStore.get(s.terminal_store, id)
+
+  defp account_active(s, previous, job) do
+    hot_previous = previous && JobIndex.get(s.projection.jobs, previous.id)
+
+    with {:ok, charged, budget} <- Transition.account(s.budget, hot_previous, job) do
+      budget = if terminal?(charged), do: add_charge(budget, charged, -1), else: budget
+      {:ok, charged, budget}
+    end
+  end
+
+  defp publish_projection(s, previous, job) do
+    hot_previous = previous && JobIndex.get(s.projection.jobs, previous.id)
+
+    cond do
+      terminal?(job) ->
+        if hot_previous, do: :ok = Projection.delete(s.projection, hot_previous)
+        :ok = TerminalStore.put(s.terminal_store, job)
+
+      hot_previous ->
+        :ok = Projection.replace(s.projection, hot_previous, job)
+
+      true ->
+        if previous, do: :ok = TerminalStore.delete(s.terminal_store, previous.id)
+        :ok = Projection.replace(s.projection, nil, job)
+    end
+  end
+
+  defp notify_terminal_pressure(s) do
+    if s.terminal_budget.count > s.config.compaction.max_terminal_jobs,
+      do: GenServer.cast(s.guardian, :terminal_pressure)
+
+    :ok
+  end
+
+  defp terminal_statistics(jobs) do
+    Enum.reduce(jobs, empty_terminal_stats(), fn {_id, job}, stats ->
+      if terminal?(job), do: update_terminal_stats(stats, job, 1), else: stats
+    end)
+  end
+
+  defp replace_terminal_stats(stats, previous, job) do
+    stats = if terminal?(previous), do: update_terminal_stats(stats, previous, -1), else: stats
+    if terminal?(job), do: update_terminal_stats(stats, job, 1), else: stats
+  end
+
+  defp update_terminal_stats(stats, job, amount) do
+    queue = job.definition["queue_key"]
+    queue_stats = Map.get(stats.queues, queue, %{count: 0, states: zero_states()})
+
+    %{
+      states: Map.update!(stats.states, job.state, &(&1 + amount)),
+      queues:
+        Map.put(stats.queues, queue, %{
+          count: queue_stats.count + amount,
+          states: Map.update!(queue_stats.states, job.state, &(&1 + amount))
+        })
+    }
+  end
+
+  defp empty_terminal_stats, do: %{states: zero_states(), queues: %{}}
+  defp zero_states, do: Map.new(@states, &{&1, 0})
+
   defp view(s, job),
     do: Job.view(job, s.config.workers, s.config.queues, s.store_id, s.generation, s.epoch_id)
 
@@ -1470,10 +1577,19 @@ defmodule Tay.Engine do
     do: %{
       state: s.mode,
       paused_queues: s.paused |> MapSet.to_list() |> Enum.sort(),
-      jobs: s.budget.count,
+      jobs: s.active_budget.count + s.terminal_budget.count,
+      active_jobs: s.active_budget.count,
+      terminal_jobs: s.terminal_budget.count,
       blocked_jobs: s.blocked,
-      state_bytes_charged: s.budget.bytes,
-      state_nodes_charged: s.budget.nodes,
+      state_bytes_charged: s.active_budget.bytes + s.terminal_budget.bytes,
+      state_nodes_charged: s.active_budget.nodes + s.terminal_budget.nodes,
+      active_state_bytes_charged: s.active_budget.bytes,
+      active_state_nodes_charged: s.active_budget.nodes,
+      terminal_state_bytes_charged: s.terminal_budget.bytes,
+      terminal_state_nodes_charged: s.terminal_budget.nodes,
+      max_jobs: s.config.max_jobs,
+      max_state_bytes: s.config.max_state_bytes,
+      max_state_nodes: s.config.max_state_nodes,
       startup_state_bytes_budget: 3 * s.config.max_state_bytes,
       running_executions: map_size(s.running),
       unsettled_executions: s.settlement_reserve,
@@ -1485,6 +1601,7 @@ defmodule Tay.Engine do
       storage_segments: s.segment_catalog,
       storage_segments_truncated: s.segment_count > length(s.segment_catalog),
       compaction_terminal_retention: s.config.compaction.terminal_retention,
+      max_terminal_jobs: s.config.compaction.max_terminal_jobs,
       retained_definition_bytes: s.definition_bytes,
       reserved_outcome_bytes: outcome_reserve(s.settlement_reserve),
       remaining_sequence_coordinates: max(Segment.max_id() - s.next_sequence + 1, 0),
@@ -1493,6 +1610,38 @@ defmodule Tay.Engine do
       max_segments: s.config.max_segments,
       insertion_space: if(s.next_sequence > Segment.max_id(), do: :exhausted, else: :available)
     }
+
+  defp partition_budgets(jobs) do
+    Enum.reduce(jobs, {empty_budget(), empty_budget()}, fn {_, job}, {active, terminal} ->
+      if terminal?(job) do
+        {active, add_charge(terminal, job, 1)}
+      else
+        {add_charge(active, job, 1), terminal}
+      end
+    end)
+  end
+
+  defp replace_partition(budget, previous, job, kind) do
+    budget =
+      if previous && partition(previous) == kind,
+        do: add_charge(budget, previous, -1),
+        else: budget
+
+    if partition(job) == kind, do: add_charge(budget, job, 1), else: budget
+  end
+
+  defp partition(job), do: if(terminal?(job), do: :terminal, else: :active)
+  defp terminal?(nil), do: false
+  defp terminal?(%{state: state}), do: state in [:completed, :cancelled, :discarded]
+  defp empty_budget, do: %{count: 0, bytes: 0, nodes: 0}
+
+  defp add_charge(budget, job, sign) do
+    Map.merge(budget, %{
+      count: budget.count + sign,
+      bytes: budget.bytes + sign * job.charge.bytes,
+      nodes: budget.nodes + sign * job.charge.nodes
+    })
+  end
 
   defp startup_error(%Tay.Storage.Recovery.Error{} = error),
     do: Error.new(:unavailable, {:recovery, error})
@@ -1552,6 +1701,7 @@ defmodule Tay.Engine do
   end
 
   def terminate(_, s) do
+    if Map.has_key?(s, :terminal_store), do: TerminalStore.close(s.terminal_store)
     if Process.alive?(s.writer), do: GenServer.stop(s.writer, :normal, :infinity)
     :ok
   end

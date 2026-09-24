@@ -427,6 +427,56 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     end
   end
 
+  test "terminal pressure retains only the newest configured history across restart", %{
+    path: path
+  } do
+    root = start(path, compaction: [enabled: false, max_terminal_jobs: 2])
+
+    jobs =
+      for at <- 1..4 do
+        ExecutionHelpers.set_clock(at)
+        job = insert(%{"at" => at})
+        assert {:ok, cancelled} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+        cancelled
+      end
+
+    assert {:ok, stats} =
+             Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 24})
+
+    assert stats.pressure_expired_jobs == 2
+    assert stats.retained_terminal_jobs == 2
+
+    for job <- Enum.take(jobs, 2),
+        do: assert({:error, :not_found} = Tay.get_job(job.id, name: @name))
+
+    for job <- Enum.drop(jobs, 2),
+        do: assert({:ok, %{state: :cancelled}} = Tay.get_job(job.id, name: @name))
+
+    EngineHelpers.stop(root)
+    start(path, compaction: [enabled: false, max_terminal_jobs: 2])
+    assert {:ok, stats} = Tay.stats(name: @name)
+    assert stats.cancelled == 2
+  end
+
+  test "automatic policy compacts fresh terminal pressure without waiting for time retention", %{
+    path: path
+  } do
+    start(path,
+      compaction: [max_terminal_jobs: 2, check_interval: 60_000, min_interval: 60_000]
+    )
+
+    for at <- 1..3 do
+      ExecutionHelpers.set_clock(at)
+      job = insert(%{"at" => at})
+      assert {:ok, _} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+    end
+
+    assert EngineHelpers.eventually(fn ->
+             Tay.status(name: @name).state == :ready and
+               match?({:ok, %{cancelled: 2}}, Tay.stats(name: @name))
+           end)
+  end
+
   test "bounded expiry lost-CURRENT reply uses exact retained view", %{path: path} do
     start(path, storage_timeout: 500)
     old = insert()

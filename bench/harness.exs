@@ -562,7 +562,13 @@ defmodule Tay.Bench.Harness do
     # boundaries wait for its acknowledged counters, never treat a stale snapshot
     # as proof of a lost event or of a successful capacity refusal.
     state = :sys.get_state(:sys.get_state(Process.whereis(@name)).engine)
-    expected = {state.history_bytes, state.budget.count, state.settlement_reserve}
+
+    expected = {
+      state.history_bytes,
+      state.active_budget.count + state.terminal_budget.count,
+      state.settlement_reserve
+    }
+
     stable_status(expected, System.monotonic_time(:millisecond) + 5_000)
   end
 

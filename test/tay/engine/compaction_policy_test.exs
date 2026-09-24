@@ -66,6 +66,8 @@ defmodule Tay.Engine.CompactionPolicyTest do
           [terminal_retention: :infinity],
           [terminal_retention: {:hours, 0}],
           [terminal_retention: {:hours, Retention.max_hours() + 1}],
+          [max_terminal_jobs: -1],
+          [max_terminal_jobs: 4_294_967_296],
           [check_interval: :infinity],
           [check_interval: 0],
           [check_interval: 4_294_967_296],
@@ -80,6 +82,33 @@ defmodule Tay.Engine.CompactionPolicyTest do
         ] do
       assert {:error, :compaction_configuration} = CompactionConfig.new(options)
     end
+  end
+
+  test "terminal-count pressure keeps the newest bounded history and bypasses ordinary gates" do
+    jobs = Map.new(1..6, fn id -> {<<id::128>>, job(id, id, true)} end)
+
+    assert {:ok, retained, _, stats} = Snapshot.prepare(jobs, {:hours, 24}, 10, 3)
+    assert Enum.sort(Map.keys(retained)) == [<<4::128>>, <<5::128>>, <<6::128>>]
+    assert stats.pressure_expired_jobs == 3
+    assert stats.retained_terminal_jobs == 3
+
+    estimate =
+      Enum.reduce(jobs, CompactionEstimate.new(), fn {_, terminal}, acc ->
+        CompactionEstimate.replace(acc, nil, terminal)
+      end)
+
+    assert {:ok, summary} =
+             CompactionEstimate.summarize(estimate, 0, 0, {:hours, 24}, 3, 10)
+
+    assert summary.terminal_pressure
+    assert summary.excess_terminal_jobs == 3
+
+    assert :ok =
+             CompactionPolicy.eligible(
+               Map.put(summary, :last_compaction_at, 10),
+               CompactionConfig.defaults(),
+               10
+             )
   end
 
   test "all gates conjunctive, cooldown equality and minimal generations do not churn" do

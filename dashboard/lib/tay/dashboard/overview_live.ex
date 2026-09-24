@@ -11,6 +11,18 @@ defmodule Tay.Dashboard.OverviewLive do
      |> assign(
        confirm_compaction: false,
        compaction_result: nil,
+       beam_memory: %{total: 0, processes: 0, ets: 0, binary: 0},
+       capacity: %{
+         jobs: 0,
+         max_jobs: 0,
+         active_jobs: 0,
+         terminal_jobs: 0,
+         max_terminal_jobs: 0,
+         bytes: 0,
+         max_bytes: 0,
+         nodes: 0,
+         max_nodes: 0
+       },
        storage_bytes: 0,
        segment_count: 0,
        configured_retention: "Unknown",
@@ -84,6 +96,58 @@ defmodule Tay.Dashboard.OverviewLive do
           <div class="count">{count}</div>
         </div>
       </div>
+      <section style="margin-top:28px">
+        <h3>Runtime memory</h3>
+        <div class="cards">
+          <div class="card">
+            <div>BEAM total</div>
+            <div class="count">{format_mib(@beam_memory.total)}</div>
+          </div>
+          <div class="card">
+            <div>Processes</div>
+            <div class="count">{format_mib(@beam_memory.processes)}</div>
+          </div>
+          <div class="card">
+            <div>ETS</div>
+            <div class="count">{format_mib(@beam_memory.ets)}</div>
+          </div>
+          <div class="card">
+            <div>Binaries</div>
+            <div class="count">{format_mib(@beam_memory.binary)}</div>
+          </div>
+        </div>
+        <p style="color:var(--tay-muted)">
+          BEAM total is the memory managed by the Erlang VM hosting Tay and this dashboard. ETS, processes, and binaries are components of that total; they must not be added together again.
+        </p>
+      </section>
+      <section style="margin-top:28px">
+        <h3>State capacity</h3>
+        <div class="cards">
+          <div class="card">
+            <div>Active jobs</div>
+            <div class="count">{format_ratio(@capacity.active_jobs, @capacity.max_jobs)}</div>
+          </div>
+          <div class="card">
+            <div>Terminal history</div>
+            <div class="count">
+              {format_ratio(@capacity.terminal_jobs, @capacity.max_terminal_jobs)}
+            </div>
+          </div>
+          <div class="card">
+            <div>Charged state</div>
+            <div class="count">
+              {format_bytes(@capacity.bytes)} / {format_bytes(@capacity.max_bytes)}
+            </div>
+          </div>
+          <div class="card">
+            <div>Retained nodes</div>
+            <div class="count">{format_ratio(@capacity.nodes, @capacity.max_nodes)}</div>
+          </div>
+        </div>
+        <p style="color:var(--tay-muted)">
+          State capacity is conservative admission accounting, not measured RAM. New jobs are rejected before any configured budget is exceeded.
+        </p>
+      </section>
       <section style="margin-top:28px">
         <h3>Storage maintenance</h3>
         <div class="cards">
@@ -173,9 +237,27 @@ defmodule Tay.Dashboard.OverviewLive do
         status = Tay.status(name: socket.assigns.engine)
         retention = Map.get(status, :compaction_terminal_retention, {:hours, 24})
         retention_hours = retention_hours(retention)
+        memory = Map.new(:erlang.memory())
 
         assign(socket,
           stats: stats,
+          beam_memory: %{
+            total: Map.get(memory, :total, 0),
+            processes: Map.get(memory, :processes, 0),
+            ets: Map.get(memory, :ets, 0),
+            binary: Map.get(memory, :binary, 0)
+          },
+          capacity: %{
+            jobs: Map.get(status, :jobs, 0),
+            max_jobs: Map.get(status, :max_jobs, 0),
+            active_jobs: Map.get(status, :active_jobs, 0),
+            terminal_jobs: Map.get(status, :terminal_jobs, terminal_count(stats)),
+            max_terminal_jobs: Map.get(status, :max_terminal_jobs, 0),
+            bytes: Map.get(status, :active_state_bytes_charged, 0),
+            max_bytes: Map.get(status, :max_state_bytes, 0),
+            nodes: Map.get(status, :active_state_nodes_charged, 0),
+            max_nodes: Map.get(status, :max_state_nodes, 0)
+          },
           storage_bytes: Map.get(status, :canonical_history_bytes, 0),
           segment_count: Map.get(status, :segment_count, 0),
           configured_retention: format_retention(retention),
@@ -203,11 +285,24 @@ defmodule Tay.Dashboard.OverviewLive do
   defp format_bytes(bytes), do: "#{Float.round(bytes / 1_048_576, 1)} MiB"
 
   defp format_mib(bytes), do: :erlang.float_to_binary(bytes / 1_048_576, decimals: 2) <> " MiB"
+  defp format_ratio(value, limit), do: "#{format_integer(value)} / #{format_integer(limit)}"
+  defp format_integer(value), do: value |> Integer.to_string() |> group_digits()
+  defp group_digits(value) when byte_size(value) <= 3, do: value
+
+  defp group_digits(value) do
+    {head, tail} = String.split_at(value, rem(byte_size(value), 3))
+    groups = tail |> String.graphemes() |> Enum.chunk_every(3) |> Enum.map_join(",", &Enum.join/1)
+    if head == "", do: groups, else: head <> "," <> groups
+  end
+
   defp format_retention({:hours, hours}), do: "#{hours} h"
   defp format_retention(:infinity), do: "Forever"
   defp format_retention(_), do: "Unknown"
   defp retention_hours({:hours, hours}), do: hours
   defp retention_hours(_), do: 24
+
+  defp terminal_count(stats),
+    do: Enum.sum(for state <- [:completed, :cancelled, :discarded], do: Map.get(stats, state, 0))
 
   defp segment_filename(id),
     do: id |> Integer.to_string() |> String.pad_leading(20, "0") |> Kernel.<>(".tay")

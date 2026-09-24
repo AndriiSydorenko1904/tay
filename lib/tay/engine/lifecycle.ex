@@ -294,6 +294,11 @@ defmodule Tay.Engine.Lifecycle do
     {:noreply, s}
   end
 
+  def handle_cast(:terminal_pressure, %{policy: policy} = s) when is_pid(policy) do
+    GenServer.cast(policy, :evaluate_now)
+    {:noreply, s}
+  end
+
   def handle_cast(
         {:automatic_compaction, policy, token, generation, source},
         %{policy: policy} = s

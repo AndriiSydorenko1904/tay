@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 0.11.0 — 2026-09-25
+
+### Added
+
+- Added a configurable `max_terminal_jobs` safety bound and standalone
+  `TAY_MAX_JOBS`, `TAY_MAX_STATE_BYTES`, `TAY_MAX_STATE_NODES`, and
+  `TAY_MAX_TERMINAL_JOBS` settings.
+- Added dashboard runtime-memory and active/terminal capacity diagnostics.
+
+### Changed
+
+- Split runtime state into a hot private-ETS projection for active jobs and a
+  disposable disk-backed projection for terminal inspection history.
+- Made active admission limits apply only to actionable work; completed,
+  cancelled, and discarded jobs no longer consume hot job/byte/node capacity,
+  including after recovery.
+- Kept filtered statistics, queues, job lookup, retry, and bidirectional
+  pagination available across both projections.
+
+### Fixed
+
+- Prevented large completed/discarded histories from permanently rejecting new
+  jobs with `retained_nodes` or `retained_jobs`.
+- Added pressure-triggered compaction that retains the newest bounded terminal
+  history without waiting for normal age, size, ratio, or cooldown gates.
+
 ## 0.10.0 — 2026-09-24
 
 ### Added

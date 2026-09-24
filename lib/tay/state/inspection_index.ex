@@ -23,6 +23,12 @@ defmodule Tay.State.InspectionIndex do
     :ok
   end
 
+  def delete(index, job) do
+    :ets.delete(index.order, key(job))
+    increment(index.counts, job, -1)
+    :ok
+  end
+
   def stats(index), do: Map.new(@states, &{&1, count(index.counts, {:state, &1})})
 
   def queue_count(index, queue), do: count(index.counts, {:queue, queue})

@@ -42,7 +42,12 @@ defmodule Tay.Storage.V2.Snapshot do
   def prepare_infinity(_), do: {:error, :invalid_jobs}
 
   @doc "Plans retained canonical state without materializing whole-store payloads."
-  def prepare(jobs, retention, captured_at) when is_map(jobs) do
+  def prepare(jobs, retention, captured_at, max_terminal_jobs \\ :infinity)
+
+  def prepare(jobs, retention, captured_at, max_terminal_jobs)
+      when is_map(jobs) and
+             (max_terminal_jobs == :infinity or
+                (is_integer(max_terminal_jobs) and max_terminal_jobs >= 0)) do
     with :ok <- Retention.validate(retention),
          true <- Tay.Event.V1.time?(captured_at) || {:error, :retention_timestamp_unavailable},
          :ok <- validate_source(jobs) do
@@ -62,10 +67,15 @@ defmodule Tay.Storage.V2.Snapshot do
       end)
       |> case do
         {:ok, kept, expired, terminals} ->
+          {kept, pressure_expired} = enforce_terminal_limit(kept, max_terminal_jobs)
           normalized = normalize_availability(kept)
 
           {:ok, normalized, Enum.sort(Map.keys(normalized)),
-           %{expired_jobs: expired, retained_terminal_jobs: terminals}}
+           %{
+             expired_jobs: expired + pressure_expired,
+             pressure_expired_jobs: pressure_expired,
+             retained_terminal_jobs: terminals - pressure_expired
+           }}
 
         error ->
           error
@@ -73,7 +83,19 @@ defmodule Tay.Storage.V2.Snapshot do
     end
   end
 
-  def prepare(_, _, _), do: {:error, :invalid_jobs}
+  def prepare(_, _, _, _), do: {:error, :invalid_jobs}
+
+  defp enforce_terminal_limit(jobs, :infinity), do: {jobs, 0}
+
+  defp enforce_terminal_limit(jobs, limit) do
+    terminals =
+      jobs
+      |> Enum.filter(fn {_, job} -> job.state in @terminal end)
+      |> Enum.sort_by(fn {id, job} -> {job.terminal_at, job.inserted_at, id} end, :desc)
+
+    expired = Enum.drop(terminals, limit)
+    {Map.drop(jobs, Enum.map(expired, &elem(&1, 0))), length(expired)}
+  end
 
   defp plan_validated(jobs, retention, now) do
     jobs

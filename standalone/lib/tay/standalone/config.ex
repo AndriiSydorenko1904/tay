@@ -6,12 +6,20 @@ defmodule Tay.Standalone.Config do
 
   defstruct data_dir: @data_default,
             socket_path: @socket_default,
-            initialize: :never
+            initialize: :never,
+            max_jobs: 100_000,
+            max_state_bytes: 268_435_456,
+            max_state_nodes: 2_000_000,
+            max_terminal_jobs: 5_000
 
   @type t :: %__MODULE__{
           data_dir: String.t(),
           socket_path: String.t(),
-          initialize: :never | :if_missing
+          initialize: :never | :if_missing,
+          max_jobs: non_neg_integer(),
+          max_state_bytes: non_neg_integer(),
+          max_state_nodes: non_neg_integer(),
+          max_terminal_jobs: non_neg_integer()
         }
 
   @spec load(map()) :: {:ok, t()} | {:error, String.t()}
@@ -21,12 +29,23 @@ defmodule Tay.Standalone.Config do
     with {:ok, data_dir} <- path(environment, "TAY_DATA_DIR", @data_default, :data),
          {:ok, socket_path} <- path(environment, "TAY_SOCKET_PATH", @socket_default, :socket),
          :ok <- outside_data_dir(socket_path, data_dir),
-         {:ok, initialize} <- initialize(environment) do
+         {:ok, initialize} <- initialize(environment),
+         {:ok, max_jobs} <- nonnegative(environment, "TAY_MAX_JOBS", 100_000),
+         {:ok, max_state_bytes} <-
+           nonnegative(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
+         {:ok, max_state_nodes} <-
+           nonnegative(environment, "TAY_MAX_STATE_NODES", 2_000_000),
+         {:ok, max_terminal_jobs} <-
+           nonnegative(environment, "TAY_MAX_TERMINAL_JOBS", 5_000) do
       {:ok,
        %__MODULE__{
          data_dir: data_dir,
          socket_path: socket_path,
-         initialize: initialize
+         initialize: initialize,
+         max_jobs: max_jobs,
+         max_state_bytes: max_state_bytes,
+         max_state_nodes: max_state_nodes,
+         max_terminal_jobs: max_terminal_jobs
        }}
     end
   end
@@ -79,6 +98,19 @@ defmodule Tay.Standalone.Config do
       value ->
         {:error,
          "TAY_INITIALIZE_IF_MISSING must be one of true, false, TRUE, FALSE, 1, or 0; got: #{inspect(value)}"}
+    end
+  end
+
+  defp nonnegative(environment, name, default) do
+    case Map.get(environment, name, Integer.to_string(default)) do
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {number, ""} when number >= 0 -> {:ok, number}
+          _ -> {:error, "#{name} must be a non-negative integer"}
+        end
+
+      _ ->
+        {:error, "#{name} must be a non-negative integer"}
     end
   end
 end
