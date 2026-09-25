@@ -19,6 +19,7 @@ defmodule Tay.Engine.CompactionEvents do
     :ratio_below_threshold,
     :cooldown,
     :too_few_segments,
+    :active_jobs_present,
     :busy,
     :draining,
     :drained,

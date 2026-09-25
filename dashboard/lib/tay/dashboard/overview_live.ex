@@ -11,6 +11,9 @@ defmodule Tay.Dashboard.OverviewLive do
      |> assign(
        confirm_compaction: false,
        compaction_result: nil,
+       engine_available: false,
+       engine_state: :unavailable,
+       refresh_timer: nil,
        beam_memory: %{total: 0, processes: 0, ets: 0, binary: 0},
        capacity: %{
          jobs: 0,
@@ -76,10 +79,15 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   @impl true
-  def handle_info(:tay_dashboard_refresh, socket), do: {:noreply, refresh(socket)}
+  def handle_info(:tay_dashboard_refresh, socket) do
+    {:noreply, socket |> assign(refresh_timer: nil) |> refresh()}
+  end
 
   @impl true
-  def terminate(_reason, socket), do: Live.terminate(socket)
+  def terminate(_reason, socket) do
+    if socket.assigns.refresh_timer, do: Process.cancel_timer(socket.assigns.refresh_timer)
+    Live.terminate(socket)
+  end
 
   @impl true
   def render(assigns) do
@@ -87,6 +95,9 @@ defmodule Tay.Dashboard.OverviewLive do
     <Live.shell current={:overview} path={@dashboard_path}>
       <h2>Overview</h2>
       <div :if={@flash_error} class="error">{@flash_error}</div>
+      <div :if={!@engine_available} id="engine-unavailable" class="notice">
+        Engine state: {@engine_state}. Capacity and storage values are unavailable until recovery completes.
+      </div>
       <div :if={@compaction_result} id="compaction-result" class="notice">
         {@compaction_result}
       </div>
@@ -125,23 +136,33 @@ defmodule Tay.Dashboard.OverviewLive do
         <div class="cards">
           <div class="card">
             <div>Active jobs</div>
-            <div class="count">{format_ratio(@capacity.active_jobs, @capacity.max_jobs)}</div>
+            <div class="count">
+              {available(@engine_available, format_ratio(@capacity.active_jobs, @capacity.max_jobs))}
+            </div>
           </div>
           <div class="card">
             <div>Terminal history</div>
             <div class="count">
-              {format_ratio(@capacity.terminal_jobs, @capacity.max_terminal_jobs)}
+              {available(
+                @engine_available,
+                format_ratio(@capacity.terminal_jobs, @capacity.max_terminal_jobs)
+              )}
             </div>
           </div>
           <div class="card">
             <div>Charged state</div>
             <div class="count">
-              {format_bytes(@capacity.bytes)} / {format_bytes(@capacity.max_bytes)}
+              {available(
+                @engine_available,
+                "#{format_bytes(@capacity.bytes)} / #{format_bytes(@capacity.max_bytes)}"
+              )}
             </div>
           </div>
           <div class="card">
             <div>Retained nodes</div>
-            <div class="count">{format_ratio(@capacity.nodes, @capacity.max_nodes)}</div>
+            <div class="count">
+              {available(@engine_available, format_ratio(@capacity.nodes, @capacity.max_nodes))}
+            </div>
           </div>
         </div>
         <p style="color:var(--tay-muted)">
@@ -153,15 +174,15 @@ defmodule Tay.Dashboard.OverviewLive do
         <div class="cards">
           <div class="card">
             <div>Canonical history</div>
-            <div class="count">{format_mib(@storage_bytes)}</div>
+            <div class="count">{available(@engine_available, format_mib(@storage_bytes))}</div>
           </div>
           <div class="card">
             <div>Segments</div>
-            <div class="count">{@segment_count}</div>
+            <div class="count">{available(@engine_available, @segment_count)}</div>
           </div>
           <div class="card">
             <div>Configured retention</div>
-            <div class="count">{@configured_retention}</div>
+            <div class="count">{available(@engine_available, @configured_retention)}</div>
           </div>
         </div>
         <p style="color:var(--tay-muted)">
@@ -193,7 +214,11 @@ defmodule Tay.Dashboard.OverviewLive do
             </tbody>
           </table>
         </details>
-        <button :if={!@confirm_compaction} id="prepare-compaction" phx-click="prepare-compaction">
+        <button
+          :if={!@confirm_compaction && @engine_available}
+          id="prepare-compaction"
+          phx-click="prepare-compaction"
+        >
           Run compaction
         </button>
         <form
@@ -232,15 +257,21 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   defp refresh(socket) do
+    status = Tay.status(name: socket.assigns.engine)
+    memory = Map.new(:erlang.memory())
+
     case Tay.stats(name: socket.assigns.engine) do
       {:ok, stats} ->
-        status = Tay.status(name: socket.assigns.engine)
         retention = Map.get(status, :compaction_terminal_retention, {:hours, 24})
         retention_hours = retention_hours(retention)
-        memory = Map.new(:erlang.memory())
+
+        if socket.assigns.refresh_timer, do: Process.cancel_timer(socket.assigns.refresh_timer)
 
         assign(socket,
           stats: stats,
+          engine_available: true,
+          engine_state: Map.get(status, :state, :ready),
+          refresh_timer: nil,
           beam_memory: %{
             total: Map.get(memory, :total, 0),
             processes: Map.get(memory, :processes, 0),
@@ -268,9 +299,29 @@ defmodule Tay.Dashboard.OverviewLive do
         )
 
       {:error, error} ->
-        assign(socket, stats: %{}, flash_error: Live.error_message(error))
+        timer =
+          if Phoenix.LiveView.connected?(socket) and is_nil(socket.assigns.refresh_timer),
+            do: Process.send_after(self(), :tay_dashboard_refresh, 500),
+            else: socket.assigns.refresh_timer
+
+        assign(socket,
+          stats: %{},
+          engine_available: false,
+          engine_state: Map.get(status, :state, :unavailable),
+          refresh_timer: timer,
+          beam_memory: %{
+            total: Map.get(memory, :total, 0),
+            processes: Map.get(memory, :processes, 0),
+            ets: Map.get(memory, :ets, 0),
+            binary: Map.get(memory, :binary, 0)
+          },
+          flash_error: Live.error_message(error)
+        )
     end
   end
+
+  defp available(true, value), do: value
+  defp available(false, _value), do: "—"
 
   defp compacted(stats, retention_hours) do
     expired = Map.get(stats, :expired_jobs, 0)

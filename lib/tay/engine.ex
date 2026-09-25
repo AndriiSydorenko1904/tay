@@ -272,7 +272,7 @@ defmodule Tay.Engine do
             deadline,
             retention,
             Clock.wall(s.config.clock),
-            s.config.compaction.max_terminal_jobs,
+            compaction_terminal_limit(s),
             cancel_flag
           ),
         else: {:error, :compaction_source_changed}
@@ -1540,6 +1540,14 @@ defmodule Tay.Engine do
       do: GenServer.cast(s.guardian, :terminal_pressure)
 
     :ok
+  end
+
+  defp compaction_terminal_limit(s) do
+    limit = s.config.compaction.max_terminal_jobs
+
+    if s.terminal_budget.count > limit,
+      do: Tay.Engine.CompactionConfig.terminal_target(limit),
+      else: limit
   end
 
   defp terminal_statistics(jobs) do

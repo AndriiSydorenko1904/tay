@@ -129,12 +129,14 @@ They therefore do not consume `max_jobs`, `max_state_bytes`, or
 and queue counters remain in memory. The append-only Store remains authoritative
 for both projections and rebuilds them on restart.
 
-`max_terminal_jobs` is a hard history bound in addition to time retention.
-Crossing it wakes the compaction policy immediately and retains the newest
-terminal jobs. This pressure path bypasses the normal size/ratio/cooldown gates,
-but still uses the same fenced, stop-the-world publication path. It prevents
-completed/discarded history from blocking new active work while bounding restart
-and dashboard history.
+`max_terminal_jobs` is the terminal-history high-water mark in addition to time
+retention. Crossing it wakes the compaction policy immediately. Automatic
+maintenance defers while active jobs exist, so inspection history can
+temporarily exceed the mark but can never block admission of new active work.
+Once the Engine is quiescent, pressure compaction bypasses the normal
+size/ratio/cooldown gates and retains the newest 80% of the configured maximum.
+That low-water target prevents a steady stream of completions from causing a
+stop-the-world publication and Engine restart after every new terminal job.
 
 Time retention is eligibility, not an exact-time deletion guarantee: terminal jobs
 expire at `terminal_at <= captured_at - duration`, but actual work waits for
@@ -146,7 +148,7 @@ below thresholds. Live, scheduled, available, executing, retryable and unsettled
 jobs are protected. Expired IDs are not remembered: get/retry/cancel return
 not-found, and a later submission with that ID is a new job.
 
-`compaction: false` disables the policy child/timer, including the hard-count
+`compaction: false` disables the policy child/timer, including the high-water
 wake; terminal history may then grow indefinitely and the operator assumes
 storage management. Manual work
 remains available:
@@ -159,7 +161,8 @@ remains available:
 
 Manual/automatic/stop/restart share one fixed operation slot; a concurrent
 administrative operation returns capacity/busy rather than queuing or forcing a
-switch. Supervisor shutdown cancels the evaluator's timer and asks the owner
+switch. `operation_slot` means one of those operations is already running; it is
+not a RAM or terminal-history capacity failure. Supervisor shutdown cancels the evaluator's timer and asks the owner
 to cancel construction before CURRENT. Once CURRENT is in flight, it waits for
 verification/reconciliation before retiring Engine and defers reclamation.
 No source bytes are deleted to obtain candidate headroom. Payload-free aggregate

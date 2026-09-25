@@ -5,6 +5,7 @@ defmodule Tay.Engine.CompactionEstimate do
   only reduces known expiry and thus increases the candidate upper bound.
   """
   alias Tay.Event.V1
+  alias Tay.Engine.CompactionConfig
   alias Tay.Storage.V2.Retention
   @terminal [:completed, :cancelled, :discarded]
   @bucket_ms 3_600_000
@@ -87,9 +88,16 @@ defmodule Tay.Engine.CompactionEstimate do
         end)
 
       pressure_jobs =
-        if max_terminal_jobs == :infinity,
-          do: 0,
-          else: max(estimate.terminal_jobs - max_terminal_jobs, 0)
+        cond do
+          max_terminal_jobs == :infinity ->
+            0
+
+          estimate.terminal_jobs > max_terminal_jobs ->
+            estimate.terminal_jobs - CompactionConfig.terminal_target(max_terminal_jobs)
+
+          true ->
+            0
+        end
 
       pressure_bound =
         if estimate.terminal_jobs == 0,
@@ -113,6 +121,7 @@ defmodule Tay.Engine.CompactionEstimate do
          candidate_upper_bytes: candidate_bound,
          reclaimable_bytes: reclaimable,
          expired_terminals: expired,
+         active_jobs: max(estimate.jobs - estimate.terminal_jobs, 0),
          terminal_jobs: estimate.terminal_jobs,
          terminal_pressure: pressure_jobs > 0,
          excess_terminal_jobs: pressure_jobs,

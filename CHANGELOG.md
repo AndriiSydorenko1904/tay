@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.11.1 — 2026-09-25
+
+### Changed
+
+- Automatic compaction now defers while active jobs exist, keeping ordinary
+  admission available during sustained workloads.
+- Terminal-count pressure now compacts to an 80% low-water mark instead of the
+  exact configured maximum, preventing restart churn after each completion.
+- The dashboard now explains a busy lifecycle-operation slot, displays unknown
+  capacity instead of false zeroes during recovery, and refreshes automatically
+  when the Engine becomes ready again.
+
+### Fixed
+
+- Prevented terminal-history pressure from repeatedly taking Tay unavailable
+  while a large active workload was still being processed.
+- Prevented a freshly loaded dashboard from remaining permanently empty after
+  mounting during the compaction restart window.
+
 ## 0.11.0 — 2026-09-25
 
 ### Added

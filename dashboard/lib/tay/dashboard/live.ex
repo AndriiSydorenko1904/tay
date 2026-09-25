@@ -41,6 +41,12 @@ defmodule Tay.Dashboard.Live do
 
   def handle_telemetry(_, _, _, _), do: :ok
 
+  def error_message(%Tay.Error{kind: :capacity, reason: :operation_slot}),
+    do: "Storage maintenance or another lifecycle operation is already in progress."
+
+  def error_message(%Tay.Error{kind: :unavailable}),
+    do: "Tay is restarting or recovering. The dashboard will retry automatically."
+
   def error_message(%Tay.Error{kind: kind, reason: reason}), do: "#{kind}: #{inspect(reason)}"
   def error_message(:not_found), do: "Job was not found. It may have been compacted."
   def error_message(other), do: inspect(other)
