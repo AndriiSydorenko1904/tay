@@ -7,6 +7,15 @@ defmodule Tay.Engine.Lifecycle do
   alias Tay.Engine.Operations
   alias Tay.Error
 
+  # Client admission can be much wider than the amount of durable work that
+  # should sit ahead of execution completions and queue demand in the Engine
+  # mailbox. Lifecycle owns both the permits and command delivery, so this FIFO
+  # window bounds that interference without changing public admission capacity.
+  # Writer is already the single serialized durable owner, so one delivered
+  # mutation preserves storage throughput while allowing execution traffic to
+  # interleave at every append boundary.
+  @engine_command_window 1
+
   def start_link(config), do: GenServer.start_link(__MODULE__, config, name: config.name)
 
   def init(config) do
@@ -41,7 +50,10 @@ defmodule Tay.Engine.Lifecycle do
        runtime: nil,
        fence: nil,
        monitors: %{},
-       permits: %{}
+       permits: %{},
+       command_queue: :queue.new(),
+       commands_inflight: 0,
+       command_deliveries: MapSet.new()
      }}
   end
 
@@ -179,8 +191,9 @@ defmodule Tay.Engine.Lifecycle do
       [{^slot, ^token, ^owner, :reserved, expires} = old] ->
         if admission_ready?(s, generation) do
           true = Admission.cas(s.table, old, {slot, token, owner, :submitted, expires})
-          send(s.engine, {:command, generation, {slot, token}, payload, from})
-          {:noreply, s}
+
+          command = {generation, {slot, token}, payload, from}
+          {:noreply, enqueue_command(s, command)}
         else
           {:reply, {:error, Tay.Error.new(:unavailable, :revoked)}, release(s, slot, token)}
         end
@@ -259,6 +272,10 @@ defmodule Tay.Engine.Lifecycle do
           if close_now do
             {:noreply, begin_closing(s)}
           else
+            # Submitted calls predate this lifecycle fence. Deliver every one
+            # in FIFO order before the drain signal so no acknowledged or
+            # unknown-outcome mutation can fall outside the drained frontier.
+            s = flush_commands(s)
             send(s.engine, {:lifecycle_drain, generation, token, self(), expected_source})
             {:noreply, s}
           end
@@ -368,10 +385,11 @@ defmodule Tay.Engine.Lifecycle do
         # Releasing the exact submitted capability before replying is the
         # admission invariant. A caller that observes success can immediately
         # reuse capacity; stale generations/tokens never reach this branch.
+        s = finish_command_delivery(s, {slot, token})
         s = release(s, slot, token)
         GenServer.reply(from, reply)
         send(engine, {:command_replied, self(), slot, token})
-        {:noreply, s}
+        {:noreply, dispatch_commands(s, @engine_command_window)}
 
       _ ->
         {:noreply, s}
@@ -387,6 +405,11 @@ defmodule Tay.Engine.Lifecycle do
     send(engine, {:execution_snapshot_ack, token})
     {:noreply, s}
   end
+
+  def handle_info({:command_yielded, engine, permit}, %{engine: engine} = s),
+    do:
+      {:noreply,
+       s |> finish_command_delivery(permit) |> dispatch_commands(@engine_command_window)}
 
   def handle_info({:execution_child_dead, generation, relay, task}, s) do
     if s.fence && generation == s.meta.generation, do: LocalFence.dead(s.fence, relay, task)
@@ -702,6 +725,47 @@ defmodule Tay.Engine.Lifecycle do
     %{s | permits: permits, monitors: Map.delete(s.monitors, ref)}
   end
 
+  defp enqueue_command(s, command) do
+    s
+    |> Map.update!(:command_queue, &:queue.in(command, &1))
+    |> dispatch_commands(@engine_command_window)
+  end
+
+  defp dispatch_commands(s, limit) when s.commands_inflight < limit do
+    case :queue.out(s.command_queue) do
+      {{:value, {generation, permit, payload, from}}, queue} ->
+        send(s.engine, {:command, generation, permit, payload, from})
+
+        %{
+          s
+          | command_queue: queue,
+            commands_inflight: s.commands_inflight + 1,
+            command_deliveries: MapSet.put(s.command_deliveries, permit)
+        }
+        |> dispatch_commands(limit)
+
+      {:empty, _} ->
+        s
+    end
+  end
+
+  defp dispatch_commands(s, _limit), do: s
+
+  defp flush_commands(s),
+    do: dispatch_commands(s, s.commands_inflight + :queue.len(s.command_queue))
+
+  defp finish_command_delivery(s, permit) do
+    if MapSet.member?(s.command_deliveries, permit) do
+      %{
+        s
+        | commands_inflight: max(s.commands_inflight - 1, 0),
+          command_deliveries: MapSet.delete(s.command_deliveries, permit)
+      }
+    else
+      s
+    end
+  end
+
   defp begin_closing(s) do
     operation = %{s.operation | phase: :closing}
 
@@ -741,6 +805,9 @@ defmodule Tay.Engine.Lifecycle do
         runtime: nil,
         fence: nil,
         permits: %{},
+        command_queue: :queue.new(),
+        commands_inflight: 0,
+        command_deliveries: MapSet.new(),
         monitors: Map.filter(s.monitors, fn {_, kind} -> kind == :operation_driver end)
     }
   end
@@ -803,7 +870,12 @@ defmodule Tay.Engine.Lifecycle do
       spawn(fn -> Tay.Execution.Supervisor.stop_children(runtime) end)
     end
 
-    s
+    %{
+      s
+      | command_queue: :queue.new(),
+        commands_inflight: 0,
+        command_deliveries: MapSet.new()
+    }
   end
 
   def format_status(status),

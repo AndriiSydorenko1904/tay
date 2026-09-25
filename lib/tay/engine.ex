@@ -207,6 +207,7 @@ defmodule Tay.Engine do
 
           next = %{s | mode: :draining, drainers: Map.put(s.drainers, permit, {from, timer})}
           hook(s.config, {:operations, :draining})
+          send(s.guardian, {:command_yielded, self(), permit})
           {:noreply, publish(complete_drains(next))}
 
         _ ->
