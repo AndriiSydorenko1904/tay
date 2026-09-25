@@ -50,7 +50,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.11.1
+docker pull ghcr.io/andriisydorenko1904/tay:0.11.2
 ```
 
 For a ready-made application + Tay example:
@@ -80,7 +80,7 @@ http://localhost:4000/tay
 The dashboard image is published separately:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay-dashboard:0.11.1
+docker pull ghcr.io/andriisydorenko1904/tay-dashboard:0.11.2
 ```
 
 ## Why Tay?
@@ -160,7 +160,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 0.11.1"}
+    {:tay, "~> 0.11.2"}
   ]
 end
 ```
@@ -274,11 +274,11 @@ The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs.
 
 It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.11.1/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.11.2/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.11.1/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.11.2/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
@@ -408,9 +408,13 @@ await tay.every(
 Use `start_at=<UTC milliseconds>` for an absolute first run instead of
 `delay`; those options cannot be combined.
 
-The current listener schedule registry belongs to the live execution
-generation. Durable schedule recovery, restart catch-up, and enforced overlap
-policies are not yet implemented.
+The listener schedule registry belongs to the live execution generation. A
+connected Python client retains successful declarations and recreates them as
+part of every reconnect, including after compaction. A client-process restart
+still requires application startup to declare schedules again. Missed-time
+catch-up and enforced overlap policies are not yet implemented. Once a timer is
+due, temporary admission pressure delays that occurrence instead of dropping
+it; its deterministic job ID makes retries idempotent.
 
 The socket is local only; there is no TCP listener or multi-host worker
 protocol.
@@ -424,7 +428,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:0.11.1
+ghcr.io/andriisydorenko1904/tay:0.11.2
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -434,7 +438,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.11.1
+docker pull ghcr.io/andriisydorenko1904/tay:0.11.2
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -498,7 +502,7 @@ release.
 It is published as:
 
 ```text
-ghcr.io/andriisydorenko1904/tay-dashboard:0.11.1
+ghcr.io/andriisydorenko1904/tay-dashboard:0.11.2
 ```
 
 Start the repository example:

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.11.2 — 2026-09-25
+
+### Changed
+
+- Python clients now retain successful schedule declarations and replay them
+  during every listener reconnect before advertising worker capacity or
+  reporting the connection as ready.
+- Scheduled occurrences now use deterministic job IDs and remain pending while
+  admission is unavailable instead of being silently dropped under pressure.
+
+### Fixed
+
+- Restored cron and interval declarations automatically after compaction or an
+  Engine restart while the declaring Python client remains alive.
+- Prevented one-shot schedule ticks from disappearing when active-state
+  capacity is temporarily exhausted.
+
 ## 0.11.1 — 2026-09-25
 
 ### Changed

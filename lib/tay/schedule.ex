@@ -69,6 +69,27 @@ defmodule Tay.Schedule do
     {:ok, %{schedule | last_at: at, next_at: at + interval}}
   end
 
+  def advance_after_delivery(%__MODULE__{catch_up: "all"} = schedule, at, _now),
+    do: advance(schedule, at)
+
+  def advance_after_delivery(
+        %__MODULE__{kind: :cron, expression: cron, catch_up: "latest"} = schedule,
+        at,
+        now
+      ) do
+    with {:ok, next_at} <- Cron.next(cron, max(at, now)),
+         do: {:ok, %{schedule | last_at: at, next_at: next_at}}
+  end
+
+  def advance_after_delivery(
+        %__MODULE__{kind: :every, expression: interval, catch_up: "latest"} = schedule,
+        at,
+        now
+      ) do
+    skipped = div(max(now - at, 0), interval)
+    {:ok, %{schedule | last_at: at, next_at: at + (skipped + 1) * interval}}
+  end
+
   def cancel(%__MODULE__{} = schedule, at) when is_integer(at) and at >= 0,
     do: %{schedule | cancelled_at: at}
 

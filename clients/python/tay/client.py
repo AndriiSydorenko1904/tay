@@ -80,13 +80,13 @@ class JobHandle:
 
 @dataclass(frozen=True)
 class ScheduleHandle:
-    """A durable schedule reference returned by dynamic schedule APIs."""
+    """A generation-local schedule reference retained by its Tay client."""
 
     id: str
     _tay: Tay
 
     async def cancel(self) -> Any:
-        reply = await self._tay._request("cancel_schedule", {"schedule_id": self.id})
+        reply = await self._tay._cancel_schedule(self.id)
         return reply.get("schedule", reply.get("status", reply))
 
 
@@ -186,6 +186,10 @@ class Tay:
         # separate lets an executor withdraw a task without losing its Python
         # wrapper, and makes reconnect replay deterministic.
         self._registered_task_names: set[str] = set()
+        # Schedule storage in the listener is generation-local. Keep desired
+        # declarations client-side so a reconnect can recreate timers before
+        # the connection is advertised as ready again.
+        self._schedule_declarations: dict[str, dict[str, Any]] = {}
         self._running = False
         self._closing = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -493,6 +497,16 @@ class Tay:
                 "max_concurrency": self.capacity if self.mode != "client" else 0,
             },
         )
+        declarations = dict(self._schedule_declarations)
+        for task in self._tasks.values():
+            declaration = task.static_schedule_declaration()
+            if declaration is not None:
+                declarations[declaration["declaration_id"]] = declaration
+        for declaration_id in sorted(declarations):
+            await self._exchange("schedule", declarations[declaration_id])
+        # Advertise execution capacity only after the control-plane state is
+        # restored. Otherwise a large recovered backlog can begin dispatching
+        # and starve schedule reconciliation on the shared socket.
         if self.mode != "client" and self._registered_task_names:
             await self._exchange(
                 "register_tasks", {"tasks": sorted(self._registered_task_names)}
@@ -781,9 +795,11 @@ class Tay:
         if start_at is not None:
             payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
-        return ScheduleHandle(
-            _extract_identifier(reply, "schedule_id", "schedule"), self
-        )
+        schedule_id = _extract_identifier(reply, "schedule_id", "schedule")
+        retained = dict(payload)
+        retained["declaration_id"] = schedule_id
+        self._schedule_declarations[schedule_id] = retained
+        return ScheduleHandle(schedule_id, self)
 
     async def every(
         self,
@@ -842,9 +858,17 @@ class Tay:
         if start_at is not None:
             payload["start_at"] = start_at
         reply = await self._request("schedule", payload)
-        return ScheduleHandle(
-            _extract_identifier(reply, "schedule_id", "schedule"), self
-        )
+        schedule_id = _extract_identifier(reply, "schedule_id", "schedule")
+        retained = dict(payload)
+        retained["declaration_id"] = schedule_id
+        self._schedule_declarations[schedule_id] = retained
+        return ScheduleHandle(schedule_id, self)
+
+    async def _cancel_schedule(self, schedule_id: str) -> dict[str, Any]:
+        # Desired state is withdrawn before the RPC. An unknown transport
+        # outcome must not resurrect the timer on the next reconnect.
+        self._schedule_declarations.pop(schedule_id, None)
+        return await self._request("cancel_schedule", {"schedule_id": schedule_id})
 
     @staticmethod
     def _validate_schedule_options(

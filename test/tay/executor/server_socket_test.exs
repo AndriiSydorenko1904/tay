@@ -129,4 +129,46 @@ defmodule Tay.Executor.ServerSocketTest do
 
     GenServer.stop(server)
   end
+
+  test "a due occurrence remains pending when durable admission is unavailable", %{
+    socket: socket
+  } do
+    assert {:ok, server} = Server.start_link(options(socket))
+    assert_receive {:executor_server_ready, ^server}
+
+    fields = %{
+      "declaration_id" => "retrying-schedule",
+      "task" => "media.cleanup-orphans.v1",
+      "args" => %{},
+      "every" => %{"seconds" => 30},
+      "options" => %{"queue" => "default"}
+    }
+
+    assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
+    Process.sleep(50)
+    entry = :sys.get_state(server).schedules["retrying-schedule"]
+
+    assert entry.schedule.next_at == first["next_at"]
+    assert is_reference(entry.timer)
+    GenServer.stop(server)
+  end
+
+  test "invalid occurrence options reject the declaration", %{socket: socket} do
+    assert {:ok, server} = Server.start_link(options(socket))
+    assert_receive {:executor_server_ready, ^server}
+
+    assert {:error, "invalid_schedule"} =
+             GenServer.call(server, {
+               :put_schedule,
+               %{
+                 "declaration_id" => "invalid-schedule",
+                 "task" => "media.cleanup-orphans.v1",
+                 "args" => %{},
+                 "every" => %{"seconds" => 30},
+                 "options" => %{"unknown" => true}
+               }
+             })
+
+    GenServer.stop(server)
+  end
 end

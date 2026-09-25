@@ -8,6 +8,7 @@ defmodule Tay.Executor.Server do
 
   @call_timeout 5_000
   @request_timeout 30_000
+  @schedule_retry_ms 1_000
   @max_pending_requests 64
 
   # The listener is deliberately a child of an execution generation.  Jobs are
@@ -154,15 +155,33 @@ defmodule Tay.Executor.Server do
   def handle_info({:schedule_due, id, due}, s) do
     case Map.get(s.schedules, id) do
       %{schedule: %{next_at: ^due} = schedule, options: options} ->
-        enqueue_schedule(s.engine_name, schedule, options)
+        enqueue_schedule(self(), s.engine_name, schedule, options, due)
+        entry = %{schedule: schedule, options: options, timer: nil}
+        {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
 
-        case Schedule.advance(schedule, due) do
-          {:ok, advanced} ->
-            entry = arm_schedule(advanced, options, System.system_time(:millisecond))
+      _ ->
+        {:noreply, s}
+    end
+  end
+
+  def handle_info({:schedule_enqueue_result, id, due, result}, s) do
+    case Map.get(s.schedules, id) do
+      %{schedule: %{next_at: ^due} = schedule, options: options} ->
+        case result do
+          :ok ->
+            case Schedule.advance_after_delivery(schedule, due, System.system_time(:millisecond)) do
+              {:ok, advanced} ->
+                entry = arm_schedule(advanced, options, System.system_time(:millisecond))
+                {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
+
+              {:error, _} ->
+                {:noreply, drop_schedule(s, id)}
+            end
+
+          :retry ->
+            timer = Process.send_after(self(), {:schedule_due, id, due}, @schedule_retry_ms)
+            entry = %{schedule: schedule, options: options, timer: timer}
             {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
-
-          {:error, _} ->
-            {:noreply, drop_schedule(s, id)}
         end
 
       _ ->
@@ -234,23 +253,21 @@ defmodule Tay.Executor.Server do
     id = Map.get(fields, "declaration_id") || schedule_id()
     now = System.system_time(:millisecond)
 
-    case Schedule.new(id, fields, now) do
-      {:ok, schedule} ->
-        options = Map.get(fields, "options", %{})
+    with {:ok, schedule} <- Schedule.new(id, fields, now),
+         options <- Map.get(fields, "options", %{}),
+         {:ok, _} <- enqueue_options(options) do
+      existing_entry = Map.get(s.schedules, id)
 
-        existing_entry = Map.get(s.schedules, id)
-
-        if equivalent_schedule_entry?(existing_entry, schedule, options) do
-          {:reply, {:ok, public_schedule(existing_entry.schedule)}, s}
-        else
-          state = drop_schedule(s, id)
-          entry = arm_schedule(schedule, options, now)
-          next = %{state | schedules: Map.put(state.schedules, id, entry)}
-          {:reply, {:ok, public_schedule(schedule)}, next}
-        end
-
-      {:error, _} ->
-        {:reply, {:error, "invalid_schedule"}, s}
+      if equivalent_schedule_entry?(existing_entry, schedule, options) do
+        {:reply, {:ok, public_schedule(existing_entry.schedule)}, s}
+      else
+        state = drop_schedule(s, id)
+        entry = arm_schedule(schedule, options, now)
+        next = %{state | schedules: Map.put(state.schedules, id, entry)}
+        {:reply, {:ok, public_schedule(schedule)}, next}
+      end
+    else
+      _ -> {:reply, {:error, "invalid_schedule"}, s}
     end
   end
 
@@ -850,17 +867,35 @@ defmodule Tay.Executor.Server do
         s
 
       {%{timer: timer}, schedules} ->
-        Process.cancel_timer(timer)
+        if timer, do: Process.cancel_timer(timer)
         %{s | schedules: schedules}
     end
   end
 
-  defp enqueue_schedule(engine_name, schedule, raw_options) do
+  defp enqueue_schedule(server, engine_name, schedule, raw_options, due) do
     Task.start(fn ->
-      with {:ok, options} <- enqueue_options(raw_options) do
-        _ = Tay.enqueue(schedule.task, schedule.args, [name: engine_name] ++ options)
-      end
+      result =
+        with {:ok, options} <- enqueue_options(raw_options),
+             id <- schedule_job_id(schedule.id, due),
+             options <- Keyword.put(options, :id, id) do
+          case Tay.enqueue(schedule.task, schedule.args, [name: engine_name] ++ options) do
+            {:ok, _} -> :ok
+            _ -> if(match?({:ok, _}, Tay.get_job(id, name: engine_name)), do: :ok, else: :retry)
+          end
+        else
+          _ -> :retry
+        end
+
+      send(server, {:schedule_enqueue_result, schedule.id, due, result})
     end)
+  end
+
+  defp schedule_job_id(id, due) do
+    digest =
+      :crypto.hash(:sha256, ["tay-schedule-occurrence-v1:", id, ":", Integer.to_string(due)])
+
+    raw = binary_part(digest, 0, 16)
+    Tay.JobID.encode(if(raw == <<0::128>>, do: <<0::120, 1>>, else: raw))
   end
 
   defp public_schedule(schedule) do
