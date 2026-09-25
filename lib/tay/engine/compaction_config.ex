@@ -15,6 +15,13 @@ defmodule Tay.Engine.CompactionConfig do
   }
 
   def defaults, do: @defaults
+
+  # Pressure is a high-water mark. Reclaiming to 80% leaves enough headroom
+  # that a steady stream of terminal jobs cannot force a full Engine restart
+  # after every single completion.
+  def terminal_target(0), do: 0
+  def terminal_target(limit) when is_integer(limit) and limit > 0, do: div(limit * 4, 5)
+
   def new(false), do: {:ok, %{@defaults | enabled: false}}
 
   def new(options) when is_list(options) do

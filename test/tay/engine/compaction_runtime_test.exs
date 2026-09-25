@@ -443,19 +443,19 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, stats} =
              Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 24})
 
-    assert stats.pressure_expired_jobs == 2
-    assert stats.retained_terminal_jobs == 2
+    assert stats.pressure_expired_jobs == 3
+    assert stats.retained_terminal_jobs == 1
 
-    for job <- Enum.take(jobs, 2),
+    for job <- Enum.take(jobs, 3),
         do: assert({:error, :not_found} = Tay.get_job(job.id, name: @name))
 
-    for job <- Enum.drop(jobs, 2),
+    for job <- Enum.drop(jobs, 3),
         do: assert({:ok, %{state: :cancelled}} = Tay.get_job(job.id, name: @name))
 
     EngineHelpers.stop(root)
     start(path, compaction: [enabled: false, max_terminal_jobs: 2])
     assert {:ok, stats} = Tay.stats(name: @name)
-    assert stats.cancelled == 2
+    assert stats.cancelled == 1
   end
 
   test "automatic policy compacts fresh terminal pressure without waiting for time retention", %{
@@ -473,8 +473,16 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     assert EngineHelpers.eventually(fn ->
              Tay.status(name: @name).state == :ready and
-               match?({:ok, %{cancelled: 2}}, Tay.stats(name: @name))
+               match?({:ok, %{cancelled: 1}}, Tay.stats(name: @name))
            end)
+
+    current = File.read!(Path.join(path, "CURRENT"))
+    job = insert(%{"at" => 4})
+    assert {:ok, _} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+    assert {:ok, %{cancelled: 2}} = Tay.stats(name: @name)
+    Process.sleep(100)
+    assert :sys.get_state(@name).operation == nil
+    assert File.read!(Path.join(path, "CURRENT")) == current
   end
 
   test "bounded expiry lost-CURRENT reply uses exact retained view", %{path: path} do
@@ -743,7 +751,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(policy(fresh)).pending == nil
   end
 
-  test "shutdown of an eligible automatic request pending execution drain preserves CURRENT", %{
+  test "automatic maintenance defers during active execution and shutdown preserves CURRENT", %{
     path: path
   } do
     root =
@@ -782,9 +790,10 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     evaluate(p)
 
     assert EngineHelpers.eventually(fn ->
-             match?(%{kind: :compact, phase: :draining}, :sys.get_state(@name).operation)
+             :sys.get_state(p).last_result == {:deferred, :active_jobs_present}
            end)
 
+    assert :sys.get_state(@name).operation == nil
     assert Process.alive?(task)
     stop = Task.async(fn -> Supervisor.stop(root) end)
     assert :ok = Task.await(stop, 60_000)
@@ -853,7 +862,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
           90_000_100
         )
 
-      assert :ok =
+      assert {:error, :active_jobs_present} =
                CompactionPolicy.eligible(
                  Map.put(estimate, :last_compaction_at, nil),
                  :sys.get_state(p).config,
@@ -864,28 +873,20 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       evaluate(p)
 
       assert EngineHelpers.eventually(fn ->
-               match?(%{kind: :compact, phase: :draining}, :sys.get_state(@name).operation)
+               :sys.get_state(p).last_result == {:deferred, :active_jobs_present}
              end)
 
-      # Deterministic deadline delivery, never forced callback death/publication.
-      operation = :sys.get_state(@name).operation
-      assert {:error, %{reason: :operation_slot}} = Tay.compact(name: @name)
-      send(@name, {:operation_deadline, operation.token})
-
-      assert EngineHelpers.eventually(fn ->
-               :sys.get_state(p).last_result == {:deferred, :unable_to_drain}
-             end)
-
+      assert :sys.get_state(@name).operation == nil
       assert Process.alive?(task)
       refute File.exists?(Path.join(path, "CURRENT"))
       assert EngineHelpers.eventually(fn -> :sys.get_state(engine).mode == :ready end)
-      evaluate(p)
+      send(task, {:return, :ok})
 
       assert EngineHelpers.eventually(fn ->
-               match?(%{kind: :compact, phase: :draining}, :sys.get_state(@name).operation)
+               match?({:ok, %{state: :completed}}, Tay.get_job(active.id, name: @name))
              end)
 
-      send(task, {:return, :ok})
+      evaluate(p)
 
       assert EngineHelpers.eventually(
                fn -> match?({:ok, _}, :sys.get_state(p).last_result) end,

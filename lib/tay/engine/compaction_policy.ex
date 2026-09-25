@@ -32,6 +32,9 @@ defmodule Tay.Engine.CompactionPolicy do
 
   def eligible(summary, config, now) do
     cond do
+      Map.get(summary, :active_jobs, 0) > 0 ->
+        {:error, :active_jobs_present}
+
       Map.get(summary, :terminal_pressure, false) ->
         :ok
 
@@ -97,7 +100,7 @@ defmodule Tay.Engine.CompactionPolicy do
 
       {:error, reason} ->
         Events.emit(:evaluation_skipped, reason, summary)
-        {:noreply, schedule(%{s | pending: nil})}
+        {:noreply, schedule(%{s | pending: nil, last_result: {:deferred, reason}})}
     end
   end
 

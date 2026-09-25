@@ -63,6 +63,24 @@ defmodule Tay.Dashboard.LiveTest do
     EngineHelpers.stop(root)
   end
 
+  test "unavailable overview shows unknown values and recovers without a reload", %{path: path} do
+    {:ok, view, html} = live(build_conn(), "/tay/")
+    assert html =~ "Tay is restarting or recovering"
+    assert html =~ "Engine state: unavailable"
+    assert has_element?(view, "#engine-unavailable")
+    refute has_element?(view, "#prepare-compaction")
+
+    {:ok, root} = EngineHelpers.start(path, @engine)
+
+    assert EngineHelpers.eventually(fn ->
+             html = render(view)
+             html =~ "100,000" and not has_element?(view, "#engine-unavailable")
+           end)
+
+    assert has_element?(view, "#prepare-compaction")
+    EngineHelpers.stop(root)
+  end
+
   test "lists, filters, paginates, shows details, and cancels", %{path: path} do
     {:ok, root} = EngineHelpers.start(path, @engine)
 
@@ -73,7 +91,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.11.0"
+    assert html =~ "v0.11.1"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

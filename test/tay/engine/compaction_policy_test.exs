@@ -101,7 +101,8 @@ defmodule Tay.Engine.CompactionPolicyTest do
              CompactionEstimate.summarize(estimate, 0, 0, {:hours, 24}, 3, 10)
 
     assert summary.terminal_pressure
-    assert summary.excess_terminal_jobs == 3
+    assert summary.excess_terminal_jobs == 4
+    assert summary.active_jobs == 0
 
     assert :ok =
              CompactionPolicy.eligible(
@@ -109,6 +110,21 @@ defmodule Tay.Engine.CompactionPolicyTest do
                CompactionConfig.defaults(),
                10
              )
+  end
+
+  test "automatic maintenance defers while actionable jobs are present" do
+    config = CompactionConfig.defaults()
+
+    summary = %{
+      active_jobs: 1,
+      terminal_pressure: true,
+      last_compaction_at: nil,
+      sealed_segments: config.min_sealed_segments,
+      reclaimable_bytes: config.min_reclaimable_bytes,
+      ratio: config.dead_ratio_threshold
+    }
+
+    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 10)
   end
 
   test "all gates conjunctive, cooldown equality and minimal generations do not churn" do
