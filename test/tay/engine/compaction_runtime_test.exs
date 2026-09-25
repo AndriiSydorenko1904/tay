@@ -93,6 +93,84 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(engine).last_compaction_at == 100_100
   end
 
+  test "Store-v2 execution and admission continue throughout background preparation", %{
+    path: path
+  } do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          send(owner, {:online_preparation_blocked, self()})
+
+          receive do
+            :finish_online_preparation -> :ok
+          end
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path,
+      writer_hook: hook,
+      test_execution: true,
+      workers: %{
+        "worker.v1" => EngineWorker,
+        "execution.test.v1" => Tay.Test.ExecutionWorker
+      },
+      queues: [default: 1],
+      execution_wake_ms: 10
+    )
+
+    insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    engine = :sys.get_state(@name).engine
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:online_preparation_blocked, builder}, 5_000
+    assert %{state: :compacting, phase: :preparing} = Tay.status(name: @name)
+
+    {intent, execution_token} = ExecutionHelpers.job()
+    assert {:ok, job} = Tay.insert(intent, name: @name)
+    {task, _metadata} = ExecutionHelpers.await_entry(execution_token)
+    send(task, {:return, :ok})
+    ExecutionHelpers.await_job(@name, job.id, :completed)
+    assert :sys.get_state(@name).engine == engine
+
+    send(builder, :finish_online_preparation)
+    assert {:ok, _} = Task.await(compact, 60_000)
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert :sys.get_state(@name).engine == engine
+  end
+
+  test "online compaction expires terminal history without replacing Engine", %{path: path} do
+    start(path, compaction: false)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000, terminal_retention: :infinity)
+
+    ExecutionHelpers.set_clock(100)
+    old = insert(%{"online_expiry" => true})
+    assert {:ok, _} = Tay.cancel(old.id, name: @name, expected_revision: old.revision)
+    engine = :sys.get_state(@name).engine
+
+    ExecutionHelpers.set_clock(3_600_100)
+
+    assert {:ok, stats} =
+             Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 1})
+
+    assert stats.expired_jobs == 1
+    assert stats.retained_terminal_jobs == 0
+    assert :sys.get_state(@name).engine == engine
+    assert {:error, :not_found} = Tay.get_job(old.id, name: @name)
+
+    assert :ok = Tay.restart(name: @name, timeout: 60_000)
+    assert {:error, :not_found} = Tay.get_job(old.id, name: @name)
+  end
+
   # Disposable retained-history fixture: stream frames and CRCs without keeping
   # an 80 MiB segment in the test process. Actual compaction below is automatic,
   # through the production evaluator/permit/Writer/publication/recovery path.

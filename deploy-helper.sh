@@ -6,7 +6,6 @@ readonly CONTAINER_WORKFLOW="publish-container.yml"
 readonly PYTHON_WORKFLOW="publish-python.yml"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CORE_IMAGE="ghcr.io/andriisydorenko1904/tay"
-readonly DASHBOARD_IMAGE="ghcr.io/andriisydorenko1904/tay-dashboard"
 readonly PYTHON_PACKAGE="tay-client"
 
 cd "$SCRIPT_DIR"
@@ -136,8 +135,7 @@ watch_release_workflow() {
 }
 
 images_are_published() {
-  docker buildx imagetools inspect "$CORE_IMAGE:$version" >/dev/null 2>&1 &&
-    docker buildx imagetools inspect "$DASHBOARD_IMAGE:$version" >/dev/null 2>&1
+  docker buildx imagetools inspect "$CORE_IMAGE:$version" >/dev/null 2>&1
 }
 
 python_is_published() {

@@ -9,7 +9,7 @@ the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
 repaired. Store-v1 and released fixtures remain unchanged.
 
-Tay v0.11.3 is a single-node public preview. Record v1, STORE v1, Segment v1,
+Tay v0.12.0 is a single-node public preview. Record v1, STORE v1, Segment v1,
 and Event v1 are fixed compatibility contracts described in [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
 anchors; they are not generated from the current encoder or parsed from public
@@ -43,9 +43,10 @@ restart-durable, while job completion remains durable.
   unvalidated production filesystems are unsupported. Production builds do
   not silently downgrade to `:write`.
 - External effects are at-least-once, not exactly-once. There is no live
-  backup, automatic torn-tail repair, online compaction, durable
-  successful-result backend, cron/interval scheduling, or multi-host executor
-  protocol. The local Unix socket is a same-host trust boundary.
+  backup, automatic torn-tail repair, durable successful-result backend, or
+  multi-host executor protocol. Store-v2 compaction is online during candidate
+  preparation and uses a fenced publication switch; initial Store-v1 adoption
+  still drains. The local Unix socket is a same-host trust boundary.
 
 ## Finite reference profile
 

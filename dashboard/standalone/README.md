@@ -1,6 +1,7 @@
 # Tay Dashboard standalone host
 
-This private Mix project assembles the published dashboard-enabled OCI release.
+This private Mix project assembles the published OCI release. The dashboard is
+bundled but starts only when `ENABLE_DASHBOARD=true`.
 It is not a third Hex package. Its dependencies keep the intended boundaries:
 
 - `tay_standalone` owns and starts the single Tay Engine and executor socket;
@@ -13,7 +14,7 @@ Build and test it from this directory:
 ```sh
 mix deps.get --check-locked
 mix test --warnings-as-errors
-MIX_ENV=prod mix release tay_dashboard_standalone
+MIX_ENV=prod mix release tay_standalone
 ```
 
 Normal users should follow `../guides/docker.md` and run the OCI image rather

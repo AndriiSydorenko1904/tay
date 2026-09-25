@@ -65,7 +65,7 @@ defmodule Tay.Dashboard.LiveTest do
 
   test "unavailable overview shows unknown values and recovers without a reload", %{path: path} do
     {:ok, view, html} = live(build_conn(), "/tay/")
-    assert html =~ "Tay is restarting or recovering"
+    assert html =~ "Tay is temporarily unavailable for lifecycle maintenance or recovery"
     assert html =~ "Engine state: unavailable"
     assert has_element?(view, "#engine-unavailable")
     refute has_element?(view, "#prepare-compaction")
@@ -81,6 +81,43 @@ defmodule Tay.Dashboard.LiveTest do
     EngineHelpers.stop(root)
   end
 
+  test "overview presents online compaction as live maintenance", %{path: path} do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          send(owner, {:dashboard_compaction_preparing, self()})
+          receive do: (:finish_dashboard_compaction -> :ok)
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    {:ok, root} = EngineHelpers.start(path, @engine, writer_hook: hook)
+    {:ok, intent} = EngineWorker.new(%{"retained" => true}, scheduled_at: 5_000_000)
+    assert {:ok, _} = Tay.insert(intent, name: @engine)
+    assert {:ok, _} = Tay.compact(name: @engine, timeout: 60_000)
+
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @engine, timeout: 60_000) end)
+    assert_receive {:dashboard_compaction_preparing, builder}, 5_000
+
+    {:ok, view, html} = live(build_conn(), "/tay/")
+    assert html =~ "Engine state: compacting (preparing)"
+    assert html =~ "Jobs continue to be accepted and executed"
+    assert has_element?(view, "#engine-compacting")
+    refute has_element?(view, "#engine-unavailable")
+
+    send(builder, :finish_dashboard_compaction)
+    assert {:ok, _} = Task.await(compact, 60_000)
+    EngineHelpers.stop(root)
+  end
+
   test "lists, filters, paginates, shows details, and cancels", %{path: path} do
     {:ok, root} = EngineHelpers.start(path, @engine)
 
@@ -91,7 +128,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.11.3"
+    assert html =~ "v0.12.0"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

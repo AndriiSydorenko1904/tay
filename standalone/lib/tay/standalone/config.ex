@@ -10,7 +10,8 @@ defmodule Tay.Standalone.Config do
             max_jobs: 100_000,
             max_state_bytes: 268_435_456,
             max_state_nodes: 2_000_000,
-            max_terminal_jobs: 5_000
+            max_terminal_jobs: 5_000,
+            terminal_retention: {:hours, 24}
 
   @type t :: %__MODULE__{
           data_dir: String.t(),
@@ -19,7 +20,8 @@ defmodule Tay.Standalone.Config do
           max_jobs: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
           max_state_nodes: non_neg_integer(),
-          max_terminal_jobs: non_neg_integer()
+          max_terminal_jobs: non_neg_integer(),
+          terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
 
   @spec load(map()) :: {:ok, t()} | {:error, String.t()}
@@ -36,7 +38,8 @@ defmodule Tay.Standalone.Config do
          {:ok, max_state_nodes} <-
            nonnegative(environment, "TAY_MAX_STATE_NODES", 2_000_000),
          {:ok, max_terminal_jobs} <-
-           nonnegative(environment, "TAY_MAX_TERMINAL_JOBS", 5_000) do
+           nonnegative(environment, "TAY_MAX_TERMINAL_JOBS", 5_000),
+         {:ok, terminal_retention} <- terminal_retention(environment) do
       {:ok,
        %__MODULE__{
          data_dir: data_dir,
@@ -45,7 +48,8 @@ defmodule Tay.Standalone.Config do
          max_jobs: max_jobs,
          max_state_bytes: max_state_bytes,
          max_state_nodes: max_state_nodes,
-         max_terminal_jobs: max_terminal_jobs
+         max_terminal_jobs: max_terminal_jobs,
+         terminal_retention: terminal_retention
        }}
     end
   end
@@ -113,4 +117,24 @@ defmodule Tay.Standalone.Config do
         {:error, "#{name} must be a non-negative integer"}
     end
   end
+
+  defp terminal_retention(environment) do
+    value = Map.get(environment, "TAY_TERMINAL_RETENTION", "24h")
+
+    with value when is_binary(value) <- value,
+         [_, amount, unit] <- Regex.run(~r/\A([1-9][0-9]*)(m|h|d)\z/, value),
+         {amount, ""} <- Integer.parse(amount),
+         retention <- retention(amount, unit),
+         :ok <- Tay.Storage.V2.Retention.validate(retention) do
+      {:ok, retention}
+    else
+      _ ->
+        {:error,
+         "TAY_TERMINAL_RETENTION must use a positive duration such as 30m, 1h, 24h, or 7d"}
+    end
+  end
+
+  defp retention(amount, "m"), do: {:minutes, amount}
+  defp retention(amount, "h"), do: {:hours, amount}
+  defp retention(amount, "d"), do: {:hours, amount * 24}
 end

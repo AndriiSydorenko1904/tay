@@ -10,19 +10,31 @@ defmodule Tay.Dashboard.Standalone.Application do
     environment =
       Application.get_env(:tay_dashboard_standalone, :environment, System.get_env())
 
-    with {:ok, config} <- Config.load(environment) do
-      configure_endpoint(config)
+    case Config.enabled(environment) do
+      {:ok, false} ->
+        Supervisor.start_link([],
+          strategy: :one_for_one,
+          name: Tay.Dashboard.Standalone.Supervisor
+        )
 
-      Supervisor.start_link(
-        [
-          {Phoenix.PubSub, name: Tay.Dashboard.Standalone.PubSub},
-          Endpoint
-        ],
-        strategy: :one_for_one,
-        name: Tay.Dashboard.Standalone.Supervisor
-      )
-    else
-      {:error, message} -> {:error, {:invalid_dashboard_configuration, message}}
+      {:ok, true} ->
+        with {:ok, config} <- Config.load(environment) do
+          configure_endpoint(config)
+
+          Supervisor.start_link(
+            [
+              {Phoenix.PubSub, name: Tay.Dashboard.Standalone.PubSub},
+              Endpoint
+            ],
+            strategy: :one_for_one,
+            name: Tay.Dashboard.Standalone.Supervisor
+          )
+        else
+          {:error, message} -> {:error, {:invalid_dashboard_configuration, message}}
+        end
+
+      {:error, message} ->
+        {:error, {:invalid_dashboard_configuration, message}}
     end
   end
 

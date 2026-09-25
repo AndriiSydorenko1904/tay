@@ -37,6 +37,18 @@ defmodule Tay.Dashboard.Standalone.Config do
 
   def load(_), do: {:error, "environment must be a string map"}
 
+  def enabled(environment \\ System.get_env())
+
+  def enabled(environment) when is_map(environment) do
+    case Map.get(environment, "ENABLE_DASHBOARD", "false") do
+      value when value in ["true", "TRUE", "1"] -> {:ok, true}
+      value when value in ["false", "FALSE", "0"] -> {:ok, false}
+      _ -> {:error, "ENABLE_DASHBOARD must be one of true, false, TRUE, FALSE, 1, or 0"}
+    end
+  end
+
+  def enabled(_), do: {:error, "environment must be a string map"}
+
   defp required(environment, name) do
     case Map.get(environment, name) do
       value when is_binary(value) ->

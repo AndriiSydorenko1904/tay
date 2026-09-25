@@ -1,13 +1,15 @@
 services:
   tay:
-    image: ${TAY_DASHBOARD_IMAGE:-ghcr.io/andriisydorenko1904/tay-dashboard:0.11.3}
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.12.0}
     build:
       context: ../..
-      dockerfile: Dockerfile.dashboard
+      dockerfile: Dockerfile
     environment:
       TAY_DATA_DIR: /var/lib/tay/store
       TAY_SOCKET_PATH: /run/tay/tay.sock
       TAY_INITIALIZE_IF_MISSING: "true"
+      TAY_TERMINAL_RETENTION: ${TAY_TERMINAL_RETENTION:-24h}
+      ENABLE_DASHBOARD: "true"
       TAY_DASHBOARD_HOST: localhost
       TAY_DASHBOARD_PORT: "4000"
       TAY_DASHBOARD_SECRET_KEY_BASE: ${TAY_DASHBOARD_SECRET_KEY_BASE:-development-only-secret-key-base-change-this-before-production-000000}

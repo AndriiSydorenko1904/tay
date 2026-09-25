@@ -22,15 +22,21 @@ COPY config ./config
 COPY c_src ./c_src
 COPY standalone/mix.exs standalone/mix.lock standalone/
 COPY standalone/config standalone/config
+COPY dashboard/mix.exs dashboard/mix.lock dashboard/
+COPY dashboard/config dashboard/config
+COPY dashboard/standalone/mix.exs dashboard/standalone/mix.lock dashboard/standalone/
+COPY dashboard/standalone/config dashboard/standalone/config
 
-WORKDIR /build/standalone
+WORKDIR /build/dashboard/standalone
 RUN mix deps.get --only prod --check-locked
 
 WORKDIR /build
 COPY lib ./lib
 COPY standalone/lib standalone/lib
+COPY dashboard/lib dashboard/lib
+COPY dashboard/standalone/lib dashboard/standalone/lib
 
-WORKDIR /build/standalone
+WORKDIR /build/dashboard/standalone
 RUN mix compile --warnings-as-errors && mix release tay_standalone
 
 FROM ${RUNNER_IMAGE} AS runtime
@@ -44,7 +50,7 @@ RUN apt-get update \
     && install -d -o tay -g tay -m 0700 /tmp/tay
 
 WORKDIR /opt/tay
-COPY --from=build --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
+COPY --from=build --chown=tay:tay /build/dashboard/standalone/_build/prod/rel/tay_standalone ./
 
 USER 10001:10001
 
@@ -56,9 +62,14 @@ ENV HOME=/tmp/tay \
     ELIXIR_ERL_OPTIONS=+fnu \
     TAY_DATA_DIR=/var/lib/tay \
     TAY_SOCKET_PATH=/run/tay/tay.sock \
-    TAY_INITIALIZE_IF_MISSING=false
+    TAY_INITIALIZE_IF_MISSING=false \
+    TAY_TERMINAL_RETENTION=24h \
+    ENABLE_DASHBOARD=false \
+    TAY_DASHBOARD_HOST=localhost \
+    TAY_DASHBOARD_PORT=4000
 
 VOLUME ["/var/lib/tay", "/run/tay"]
+EXPOSE 4000
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
   CMD ["bin/tay_standalone", "rpc", "Tay.Standalone.Health.check!()"]

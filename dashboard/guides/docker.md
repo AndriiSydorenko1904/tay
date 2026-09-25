@@ -1,7 +1,7 @@
 # Dashboard-enabled container
 
-The dashboard image is the operational Tay runtime with the optional web UI
-included. It owns the Store and starts exactly one Tay Engine. It also exposes
+The `tay` image is the operational runtime with the optional web UI included.
+It owns the Store and starts exactly one Tay Engine. It also exposes
 the same Executor Protocol v1 Unix socket as the headless image, so external
 workers connect in the same way.
 
@@ -11,8 +11,8 @@ browser -> HTTP :4000 -> Phoenix LiveView -> Tay public API
 worker  -> /run/tay/tay.sock -> Executor API -> Engine -> /var/lib/tay/store
 ```
 
-It is not a dashboard sidecar. Never attach both `tay` and `tay-dashboard`
-containers to one `/var/lib/tay` volume: Tay is deliberately single-writer.
+It is not a dashboard sidecar. Set `ENABLE_DASHBOARD=true` on the one Tay
+container that owns `/var/lib/tay`; Tay is deliberately single-writer.
 
 ## Compose quick start
 
@@ -45,9 +45,8 @@ export TAY_DASHBOARD_PASSWORD='replace-with-a-long-random-password'
 docker compose -f examples/dashboard/docker-compose.yml up -d
 ```
 
-Pin `TAY_DASHBOARD_IMAGE` to an immutable release tag in production. The
-dashboard image replaces the `tay` service from the headless example; workers
-continue sharing only the `taysocket` volume.
+Pin `TAY_IMAGE` to an immutable release tag in production. Workers continue
+sharing only the `taysocket` volume.
 
 ## Run without Compose
 
@@ -61,7 +60,7 @@ docker volume create taysocket
 Then start the release:
 
 ```sh
-docker run --name tay-dashboard \
+docker run --name tay \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
   --cap-drop ALL \
@@ -69,10 +68,11 @@ docker run --name tay-dashboard \
   -p 127.0.0.1:4000:4000 \
   -e TAY_DATA_DIR=/var/lib/tay/store \
   -e TAY_INITIALIZE_IF_MISSING=true \
+  -e ENABLE_DASHBOARD=true \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay-dashboard:0.11.3
+  ghcr.io/andriisydorenko1904/tay:0.12.0
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -80,19 +80,20 @@ only for a genuinely missing Store and is never a repair operation.
 
 ## Configuration
 
-The dashboard image accepts every variable supported by the headless image,
-plus the HTTP settings below.
+The image accepts the runtime and optional HTTP settings below.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `TAY_DATA_DIR` | `/var/lib/tay` | no | Authoritative Store root. Use `/var/lib/tay/store` with a named volume. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | no | Executor Protocol v1 Unix socket. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | no | Initialize only a genuinely absent Store. |
+| `TAY_TERMINAL_RETENTION` | `24h` | no | Terminal retention such as `30m`, `1h`, `24h`, or `7d`. |
+| `ENABLE_DASHBOARD` | `false` | no | Enable the bundled HTTP dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | no | Public hostname accepted for LiveView origin checks; no scheme, port, or path. |
 | `TAY_DASHBOARD_PORT` | `4000` | no | Container HTTP listen port. |
 | `TAY_DASHBOARD_USERNAME` | none | no | Optional HTTP Basic authentication username; must be paired with the password. |
 | `TAY_DASHBOARD_PASSWORD` | none | no | Optional HTTP Basic authentication password; must be paired with the username. |
-| `TAY_DASHBOARD_SECRET_KEY_BASE` | none | yes | Random Phoenix signing secret of at least 64 bytes. |
+| `TAY_DASHBOARD_SECRET_KEY_BASE` | none | when enabled | Random Phoenix signing secret of at least 64 bytes. |
 
 Basic Auth is disabled when neither credential is set. Supplying only one, or
 supplying a blank value, fails startup. Other invalid or missing required
@@ -139,9 +140,9 @@ Use the same cold backup and restore process as the headless runtime. Stop the
 old container before starting a new image against its volume. Never use a
 rolling deployment with two replicas sharing the Store.
 
-## Choosing an image
+## Choosing a mode
 
-Use `tay:<version>` when no UI is needed or the smallest possible runtime is
-preferred. Use `tay-dashboard:<version>` when non-Elixir workers need the
-official UI. In an existing Phoenix application, use the `tay_dashboard` Hex
-package instead of either standalone web host.
+Use `tay:<version>` without `ENABLE_DASHBOARD` for headless operation, or set
+`ENABLE_DASHBOARD=true` when the official UI is needed. In an existing Phoenix
+application, use the `tay_dashboard` Hex package instead of the standalone web
+host.

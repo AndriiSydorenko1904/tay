@@ -130,6 +130,7 @@ defmodule Tay.Engine do
           drainers: %{},
           lifecycle_operation: nil,
           lifecycle_fenced: nil,
+          online_compaction: nil,
           history_bytes:
             summary.total_segment_bytes +
               44 * (summary.highest.id - inspection.summary.highest.id),
@@ -230,6 +231,88 @@ defmodule Tay.Engine do
       ) do
     hook(s.config, :post_reply)
     {:noreply, s}
+  end
+
+  def handle_info(
+        {:lifecycle_compact_online, generation, token, guardian, deadline, retention,
+         expected_source, cancel_flag},
+        %{generation: generation, guardian: guardian, online_compaction: nil} = s
+      ) do
+    cond do
+      not is_binary(s.epoch_id) ->
+        send(guardian, {:online_compaction_unsupported, self(), token})
+        {:noreply, s}
+
+      not is_nil(expected_source) and expected_source != {s.epoch_id, s.next_sequence} ->
+        send(guardian, {:operation_source_changed, self(), token})
+        {:noreply, s}
+
+      true ->
+        jobs = compaction_jobs(s)
+
+        case Writer.compact_online(
+               s.writer,
+               s.admission,
+               deadline,
+               retention,
+               Clock.wall(s.config.clock),
+               compaction_terminal_limit(s),
+               cancel_flag,
+               jobs,
+               self(),
+               token
+             ) do
+          :ok ->
+            {:noreply, %{s | online_compaction: token}}
+
+          {:error, reason} ->
+            send(guardian, {:online_compaction_result, self(), token, {:error, reason}})
+            {:noreply, s}
+        end
+    end
+  end
+
+  def handle_info(
+        {:compact_online_switch_requested, writer, token},
+        %{writer: writer, online_compaction: token} = s
+      ) do
+    send(s.guardian, {:online_compaction_switch_requested, self(), token})
+    {:noreply, s}
+  end
+
+  def handle_info(
+        {:online_compaction_switch_ack, guardian, token},
+        %{guardian: guardian, online_compaction: token} = s
+      ) do
+    case Writer.finish_online_freeze(s.writer, s.admission, token) do
+      :ok -> {:noreply, s}
+      {:error, reason} -> exit({:online_compaction_freeze_failed, reason})
+    end
+  end
+
+  def handle_info(
+        {:compact_online_result, writer, token, {:ok, stats, false}},
+        %{writer: writer, online_compaction: token} = s
+      ) do
+    next = adopt_online_compaction(s, stats)
+    send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
+    {:noreply, publish(wake_queues(next))}
+  end
+
+  def handle_info(
+        {:compact_online_result, writer, token, {:ok, stats, true}},
+        %{writer: writer, online_compaction: {:switched, token}} = s
+      ) do
+    send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
+    {:noreply, publish(wake_queues(%{s | online_compaction: nil}))}
+  end
+
+  def handle_info(
+        {:compact_online_result, writer, token, {:error, reason}},
+        %{writer: writer, online_compaction: token} = s
+      ) do
+    send(s.guardian, {:online_compaction_result, self(), token, {:error, reason}})
+    {:noreply, %{s | online_compaction: nil}}
   end
 
   def handle_info(
@@ -430,12 +513,19 @@ defmodule Tay.Engine do
 
   defp submitted?(s, {slot, token}, {owner, _}) do
     with {:ok, meta} <- Admission.metadata(s.config.name),
-         true <-
-           meta.generation == s.generation and meta.status.state in [:ready, :draining, :drained],
+         true <- meta.generation == s.generation and command_state?(meta.status),
          [{^slot, ^token, ^owner, :submitted, _}] <- :ets.lookup(s.config.name, slot),
          do: true,
          else: (_ -> false)
   end
+
+  defp command_state?(%{state: state}) when state in [:ready, :draining, :drained], do: true
+
+  defp command_state?(%{state: :compacting, phase: phase})
+       when phase in [:preparing, :switching],
+       do: true
+
+  defp command_state?(_), do: false
 
   defp command({:get, raw}, s) do
     result =
@@ -1352,7 +1442,20 @@ defmodule Tay.Engine do
       hook(s.config, {:execution, 8, :pre_append})
       hook(s.config, :pre_append)
 
-      case Writer.append(s.writer, s.admission, 8, 1, payload) do
+      {writer_result, s} =
+        case Writer.append(s.writer, s.admission, 8, 1, payload) do
+          {:ok, receipt, {:online_compaction, stats}} ->
+            {{:ok, receipt},
+             %{
+               adopt_online_compaction(s, stats)
+               | online_compaction: {:switched, s.online_compaction}
+             }}
+
+          result ->
+            {result, s}
+        end
+
+      case writer_result do
         {:ok, receipt} ->
           expected = expected_position(s, byte_size(payload))
 
@@ -1628,6 +1731,58 @@ defmodule Tay.Engine do
         {add_charge(active, job, 1), terminal}
       end
     end)
+  end
+
+  defp compaction_jobs(s) do
+    active = JobIndex.fold(s.projection.jobs, fn job, acc -> Map.put(acc, job.id, job) end, %{})
+    TerminalStore.fold(s.terminal_store, fn job, acc -> Map.put(acc, job.id, job) end, active)
+  end
+
+  defp adopt_online_compaction(s, %{recovered: recovered} = stats) do
+    jobs = recovered.candidate.jobs
+    retained = MapSet.new(Map.keys(jobs))
+
+    TerminalStore.fold(
+      s.terminal_store,
+      fn job, :ok ->
+        if not MapSet.member?(retained, job.id),
+          do: :ok = TerminalStore.delete(s.terminal_store, job.id)
+
+        :ok
+      end,
+      :ok
+    )
+
+    {active_budget, terminal_budget} = partition_budgets(jobs)
+    budget = recovered.candidate |> Transition.accounting() |> Map.merge(active_budget)
+
+    segment_catalog =
+      recovered.store.segments
+      |> Enum.map(&Map.take(&1, [:id, :state, :bytes, :count, :first_sequence, :last_sequence]))
+      |> Enum.take(-@segment_catalog_limit)
+
+    %{
+      s
+      | epoch_id: recovered.epoch_id,
+        next_sequence: recovered.next_sequence,
+        next_availability_order: recovered.candidate.next_availability_order,
+        segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
+        segment_catalog: segment_catalog,
+        history_bytes: recovered.total_segment_bytes,
+        segment_count: recovered.segment_count,
+        active_budget: active_budget,
+        terminal_budget: terminal_budget,
+        budget: budget,
+        terminal_stats: terminal_statistics(jobs),
+        definition_bytes:
+          Enum.reduce(jobs, 0, fn {_id, job}, total -> total + byte_size(job.definition_bytes) end),
+        compaction_estimate:
+          Enum.reduce(jobs, CompactionEstimate.new(), fn {_id, job}, acc ->
+            CompactionEstimate.replace(acc, nil, job)
+          end),
+        last_compaction_at: max(stats.captured_at, Clock.wall(s.config.clock)),
+        online_compaction: nil
+    }
   end
 
   defp replace_partition(budget, previous, job, kind) do

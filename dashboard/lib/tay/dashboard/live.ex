@@ -45,7 +45,8 @@ defmodule Tay.Dashboard.Live do
     do: "Storage maintenance or another lifecycle operation is already in progress."
 
   def error_message(%Tay.Error{kind: :unavailable}),
-    do: "Tay is restarting or recovering. The dashboard will retry automatically."
+    do:
+      "Tay is temporarily unavailable for lifecycle maintenance or recovery. The dashboard will retry automatically."
 
   def error_message(%Tay.Error{kind: kind, reason: reason}), do: "#{kind}: #{inspect(reason)}"
   def error_message(:not_found), do: "Job was not found. It may have been compacted."

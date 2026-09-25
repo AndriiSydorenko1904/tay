@@ -108,6 +108,31 @@ defmodule Tay.Storage.Writer do
           :infinity
         )
 
+  @doc false
+  def compact_online(
+        writer,
+        admission_ref,
+        deadline,
+        retention,
+        captured_at,
+        max_terminal_jobs,
+        cancel_flag,
+        jobs,
+        notify,
+        token
+      ),
+      do:
+        GenServer.call(
+          writer,
+          {:compact_online, admission_ref, deadline, retention, captured_at, max_terminal_jobs,
+           cancel_flag, jobs, notify, token},
+          :infinity
+        )
+
+  @doc false
+  def finish_online_freeze(writer, admission_ref, token),
+    do: GenServer.call(writer, {:compact_online_freeze_ack, admission_ref, token}, :infinity)
+
   def status(writer), do: GenServer.call(writer, :status, :infinity)
   @doc "Appends opaque physical bytes supplied by an upstream semantic validator."
   def append(writer, type, schema, payload),
@@ -263,6 +288,7 @@ defmodule Tay.Storage.Writer do
       candidate_limits: %{},
       value_limits: Tay.Event.Value.defaults(),
       compacted: false,
+      online_compaction: nil,
       retired_ports: MapSet.new(),
       next_sequence: 1,
       poisoned: nil,
@@ -281,6 +307,187 @@ defmodule Tay.Storage.Writer do
 
   @impl true
   def handle_call(:status, _from, state), do: {:reply, public_status(state), state}
+
+  # Online compaction is orchestrated outside the Writer process, but every
+  # native operation still executes here, in the sole Port owner. Individual
+  # requests therefore interleave with ordinary durable appends without ever
+  # sharing the Port concurrently.
+  def handle_call(
+        {:tay_native_request, generation, delegate, operation, body},
+        {pid, _},
+        %{
+          native: %{generation: generation} = native,
+          online_compaction: %{
+            ref: delegate,
+            pid: pid,
+            deadline: deadline,
+            cancel_flag: cancel_flag
+          }
+        } = state
+      ) do
+    result =
+      cond do
+        :atomics.get(cancel_flag, 1) == 1 ->
+          {:error, %{kind: :resource_limit, reason: :compaction_cancelled}}
+
+        System.monotonic_time(:millisecond) >= deadline ->
+          {:error, %{kind: :resource_limit, reason: :deadline}}
+
+        true ->
+          Native.request_owned(native, operation, body)
+      end
+
+    {:reply, result, state}
+  end
+
+  def handle_call({:tay_native_request, _, _, _, _}, _from, state),
+    do: {:reply, {:error, %{kind: :native_owner, reason: :invalid_delegate}}, state}
+
+  def handle_call(
+        {:compact_online, reference, deadline, retention, captured_at, max_terminal_jobs,
+         cancel_flag, jobs, notify, token},
+        {caller, _},
+        %{recovery: recovery, epoch_id: epoch_id} = state
+      )
+      when is_binary(epoch_id) and is_map(jobs) and is_pid(notify) do
+    valid =
+      recovery.status == :ready and caller == recovery.caller and
+        reference == recovery.admission_ref and is_nil(Map.get(state, :online_compaction)) and
+        is_integer(deadline) and deadline > System.monotonic_time(:millisecond) and
+        Tay.Storage.V2.Retention.validate(retention) == :ok
+
+    if valid do
+      case rotate_segment(state) do
+        {:ok, rotated} ->
+          owner = self()
+          ref = make_ref()
+          compaction_native = %{rotated.native | deadline: deadline, delegate: ref}
+
+          source =
+            %{
+              store_id: rotated.store_id,
+              epoch_id: rotated.epoch_id,
+              current: rotated.v2_current,
+              jobs: jobs,
+              frontier: rotated.next_sequence - 1,
+              exclude_segment_id: rotated.segment.id,
+              rotation_target_bytes: rotated.options.rotation_target_bytes,
+              candidate_limits: rotated.candidate_limits,
+              value_limits: rotated.value_limits,
+              terminal_retention: retention,
+              max_terminal_jobs: max_terminal_jobs,
+              captured_at: captured_at,
+              online_catch_up: fn ->
+                GenServer.call(owner, {:compact_online_freeze, ref}, :infinity)
+              end
+            }
+            |> with_compaction_hook(rotated)
+
+          {pid, monitor} =
+            spawn_monitor(fn ->
+              Tay.Storage.V2.CompactionControl.install(cancel_flag)
+
+              result =
+                try do
+                  Publisher.publish(compaction_native, source)
+                after
+                  Tay.Storage.V2.CompactionControl.clear()
+                end
+
+              send(owner, {:compact_online_result, ref, self(), result})
+            end)
+
+          online = %{
+            ref: ref,
+            pid: pid,
+            monitor: monitor,
+            deadline: deadline,
+            cancel_flag: cancel_flag,
+            delta: [],
+            freezing: false,
+            frozen: false,
+            freeze_from: nil,
+            pending: [],
+            notify: notify,
+            token: token,
+            source: rotated
+          }
+
+          {:reply, :ok, Map.put(rotated, :online_compaction, online)}
+
+        error ->
+          {:reply, error, state}
+      end
+    else
+      {:reply, {:error, :compaction_not_admitted}, state}
+    end
+  end
+
+  def handle_call({:compact_online, _, _, _, _, _, _, _, _, _}, _, state),
+    do: {:reply, {:error, :compaction_not_admitted}, state}
+
+  def handle_call(
+        {:compact_online_freeze, ref},
+        {pid, _} = from,
+        %{online_compaction: %{ref: ref, pid: pid, freezing: false, frozen: false} = online} =
+          state
+      ) do
+    send(online.notify, {:compact_online_switch_requested, self(), online.token})
+
+    {:noreply,
+     %{
+       state
+       | online_compaction: %{online | freezing: true, freeze_from: from}
+     }}
+  end
+
+  def handle_call(
+        {:compact_online_freeze_ack, reference, token},
+        {caller, _},
+        %{
+          recovery: %{caller: caller, admission_ref: reference},
+          online_compaction:
+            %{
+              token: token,
+              freezing: true,
+              frozen: false,
+              freeze_from: freeze_from
+            } = online
+        } = state
+      ) do
+    with :ok <- Native.sync(state.native), :ok <- Native.close_write(state.native) do
+      GenServer.reply(freeze_from, {:ok, Enum.reverse(online.delta)})
+
+      {:reply, :ok,
+       %{
+         state
+         | online_compaction: %{
+             online
+             | freezing: false,
+               frozen: true,
+               freeze_from: nil,
+               delta: []
+           }
+       }}
+    else
+      error ->
+        GenServer.reply(freeze_from, error)
+        {:reply, error, poison(state, error)}
+    end
+  end
+
+  def handle_call(
+        {:admitted, reference, request},
+        from,
+        %{recovery: recovery, online_compaction: %{frozen: true} = online} = state
+      ) do
+    if recovery.status == :ready and reference == recovery.admission_ref do
+      {:noreply,
+       %{state | online_compaction: %{online | pending: [{from, request} | online.pending]}}}
+    else
+      {:reply, {:error, :mutation_not_admitted}, state}
+    end
+  end
 
   def handle_call(:finish_initialization, _, %{initialize_only: true} = state) do
     result =
@@ -414,9 +621,14 @@ defmodule Tay.Storage.Writer do
     case encode_candidate(state, type, schema, payload) do
       {:ok, bytes} ->
         case append_with_capacity(state, bytes, type, schema, payload) do
-          {:ok, next, receipt} -> {:reply, {:ok, receipt}, next}
-          {:reject, reason} -> {:reply, {:error, reason}, state}
-          {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
+          {:ok, next, receipt} ->
+            {:reply, {:ok, receipt}, journal_compaction(next, {type, schema, payload})}
+
+          {:reject, reason} ->
+            {:reply, {:error, reason}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
         end
 
       {:error, _} = error ->
@@ -448,6 +660,27 @@ defmodule Tay.Storage.Writer do
     end
   end
 
+  defp journal_compaction(%{online_compaction: %{frozen: false} = online} = state, record),
+    do: %{state | online_compaction: %{online | delta: [record | online.delta]}}
+
+  defp journal_compaction(state, _record), do: state
+
+  defp resume_pending(state, pending, stats) do
+    Enum.reduce(pending, {state, false}, fn {from, request}, {acc, delivered} ->
+      case mutate(request, from, acc) do
+        {:reply, reply, next} ->
+          reply =
+            case {delivered, reply} do
+              {false, {:ok, value}} -> {:ok, value, {:online_compaction, stats}}
+              _ -> reply
+            end
+
+          GenServer.reply(from, reply)
+          {next, delivered or match?({:ok, _, {:online_compaction, _}}, reply)}
+      end
+    end)
+  end
+
   @impl true
   def handle_info(
         {:recovery_expired, reference},
@@ -463,6 +696,69 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_info({:recovery_expired, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:compact_online_result, ref, pid, {:ok, %{recovered: recovered} = stats}},
+        %{online_compaction: %{ref: ref, pid: pid} = online} = state
+      ) do
+    Process.demonitor(online.monitor, [:flush])
+    native = %{state.native | deadline: nil}
+
+    reclaimed =
+      case Reclaimer.predecessor(native, recovered) do
+        {:ok, details} -> details
+        _ -> %{reclamation: :deferred, reclaimed_bytes: 0}
+      end
+
+    stats = Map.merge(stats, reclaimed)
+
+    case Native.open_active(native, canonical(recovered.highest.id), recovered.highest.identity) do
+      {:ok, _} ->
+        next = %{
+          state
+          | native: native,
+            epoch_id: recovered.epoch_id,
+            v2_current: recovered.current,
+            segment: recovered.highest,
+            next_sequence: recovered.next_sequence,
+            online_compaction: nil
+        }
+
+        {next, delivered} = resume_pending(next, Enum.reverse(online.pending), stats)
+
+        send(
+          online.notify,
+          {:compact_online_result, self(), online.token, {:ok, stats, delivered}}
+        )
+
+        {:noreply, next}
+
+      error ->
+        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
+        {:noreply, poison(state, error)}
+    end
+  end
+
+  def handle_info(
+        {:compact_online_result, ref, pid, {:error, reason}},
+        %{online_compaction: %{ref: ref, pid: pid} = online} = state
+      ) do
+    Process.demonitor(online.monitor, [:flush])
+    send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
+    {:noreply, poison(state, reason)}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, pid, reason},
+        %{online_compaction: %{monitor: monitor, pid: pid} = online} = state
+      ) do
+    send(
+      online.notify,
+      {:compact_online_result, self(), online.token, {:error, {:builder_exit, reason}}}
+    )
+
+    {:noreply, poison(state, {:compaction_builder_exit, reason})}
+  end
 
   def handle_info(
         {:DOWN, monitor, :process, _, _},
