@@ -1,5 +1,48 @@
 # Qualification benchmark harness
 
+## One-command local profiles
+
+For a quick local check, use the profile runner. It creates a unique disposable
+store for every case and preserves the JSON reports, exact commands and stores:
+
+```sh
+./bench/run-profile.sh smoke
+./bench/run-profile.sh load
+./bench/run-profile.sh schedule
+./bench/run-profile.sh recovery
+./bench/run-profile.sh storage
+```
+
+`smoke` normally finishes quickly. The default `load` profile executes 20,000
+jobs; `recovery` executes 50,000 jobs and then measures a cold restart. Override
+the workload without editing the scripts:
+
+```sh
+TAY_BENCH_JOBS=100000 TAY_BENCH_CLIENTS=64 ./bench/run-profile.sh load
+TAY_BENCH_RECOVERY_JOBS=100000 ./bench/run-profile.sh recovery
+TAY_BENCH_ARGS_BYTES=65536 TAY_BENCH_JOBS=10000 ./bench/run-profile.sh load
+```
+
+Run all profiles and select an explicit result directory:
+
+```sh
+TAY_BENCH_OUTPUT_DIR=/private/tmp/tay-bench-full ./bench/run-profile.sh full
+```
+
+The default is development `write` durability, which is appropriate for local
+macOS behavior checks but not storage qualification. Linux `sync` measurements
+require an independently validated local filesystem and an explicit assertion:
+
+```sh
+TAY_BENCH_MODE=sync \
+TAY_BENCH_VALIDATED_FILESYSTEM=1 \
+TAY_BENCH_OUTPUT_DIR=/validated/local/tay-bench \
+./bench/run-profile.sh full
+```
+
+Do not point `TAY_BENCH_OUTPUT_DIR` at production data. The runner refuses an
+existing directory and never deletes generated stores automatically.
+
 Run in a dedicated VM, on disposable synthetic stores. Every `--path` must be
 absolute and **not exist**; the harness never overwrites a store, removes history,
 or deletes its output. `--output` also uses exclusive creation. Preserve the JSON

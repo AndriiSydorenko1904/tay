@@ -22,6 +22,7 @@ defmodule Tay.Bench.Stats do
   defp normalize(nil), do: :null
   defp normalize(value) when is_map(value), do: Map.new(value, fn {k, v} -> {k, normalize(v)} end)
   defp normalize(value) when is_list(value), do: Enum.map(value, &normalize/1)
+  defp normalize(value) when is_tuple(value), do: value |> Tuple.to_list() |> normalize()
   defp normalize(value), do: value
 end
 

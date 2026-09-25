@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.11.3 — 2026-09-25
+
+### Changed
+
+- Added a sustained-ingress regression test proving that a capacity-16 external
+  executor refills a queue to its concurrency limit of 10 while producers
+  continuously enqueue without pauses.
+- Added one-command local benchmark profiles for lifecycle throughput,
+  schedule lag under load, cold recovery, storage rotation and replay.
+
+### Fixed
+
+- Prevented sustained enqueue traffic from filling the Engine mailbox ahead of
+  executor completions and queue demand. Client admission remains unchanged,
+  while a guardian-owned FIFO now delivers one mutation at a time to the
+  already-serialized durable Writer and yields between append boundaries.
+- Fixed benchmark JSON output for tuple-valued status fields such as terminal
+  retention and canonicalized macOS `/tmp` paths for native storage safety.
+
 ## 0.11.2 — 2026-09-25
 
 ### Changed

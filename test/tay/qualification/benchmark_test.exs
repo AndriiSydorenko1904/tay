@@ -18,8 +18,8 @@ defmodule Tay.Qualification.BenchmarkTest do
     assert %{count: 100, p50: 50, p95: 95, p99: 99} = Stats.distribution(Enum.to_list(1..100))
     assert %{count: 1, p95: 7, p99: 7} = Stats.distribution([7])
 
-    assert :json.decode(Stats.json(%{unmeasured: nil, passed: true})) ==
-             %{"unmeasured" => :null, "passed" => true}
+    assert :json.decode(Stats.json(%{unmeasured: nil, passed: true, retention: {:hours, 24}})) ==
+             %{"unmeasured" => :null, "passed" => true, "retention" => ["hours", 24]}
   end
 
   test "literal Event domains prove conservative maximum active-outcome frame sizes" do
