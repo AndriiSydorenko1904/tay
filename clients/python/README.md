@@ -63,8 +63,11 @@ await tay.every("reports.rebuild.v1", minutes=15, delay=600)
 Use `start_at=<UTC milliseconds>` instead of `delay` when the first occurrence
 has an absolute timestamp. The two options are mutually exclusive. Schedule
 creation, execution, and cancellation work against the current listener
-generation. Durable recovery/catch-up and enforced overlap policies are still
-pending in the Tay engine.
+generation. The client retains successful declarations in memory and replays
+them during every reconnect, so compaction and Engine restart do not remove
+schedules while the client remains alive. Application startup must declare
+them again after a client-process restart. Missed-time catch-up and enforced
+overlap policies are still pending.
 
 Run a dedicated worker module with:
 

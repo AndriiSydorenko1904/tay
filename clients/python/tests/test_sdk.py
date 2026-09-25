@@ -169,6 +169,41 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "client mode"):
             await client.unregister_tasks(local)
 
+    async def test_static_schedule_declarations_replay_during_bootstrap(self) -> None:
+        client = Tay(mode="embedded")
+
+        @client.task(
+            name="tests.periodic",
+            every={"seconds": 30},
+            declaration_id="tests-periodic-v1",
+        )
+        def periodic() -> None:
+            return None
+
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def exchange(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            calls.append((kind, dict(fields)))
+            return {"type": "ok"}
+
+        client._exchange = exchange  # type: ignore[method-assign]
+        await client._bootstrap()
+        self.assertEqual(calls[0][0], "hello")
+        self.assertEqual(
+            calls[1],
+            (
+                "schedule",
+                {
+                    "task": "tests.periodic",
+                    "args": {},
+                    "options": {},
+                    "every": {"seconds": 30},
+                    "declaration_id": "tests-periodic-v1",
+                },
+            ),
+        )
+        self.assertEqual(calls[2], ("register_tasks", {"tasks": ["tests.periodic"]}))
+
     async def test_schedule_payload_supports_timezone_catch_up_and_delayed_start(
         self,
     ) -> None:
@@ -205,6 +240,38 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+
+        bootstrap_calls: list[tuple[str, dict[str, object]]] = []
+
+        async def exchange(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            bootstrap_calls.append((kind, dict(fields)))
+            return {"type": "ok"}
+
+        client._exchange = exchange  # type: ignore[method-assign]
+        await client._bootstrap()
+        self.assertIn(
+            (
+                "schedule",
+                {
+                    "task": "tests.report",
+                    "args": {},
+                    "cron": "*/15 * * * *",
+                    "timezone": "+02",
+                    "catch_up": "all",
+                    "delay": 30,
+                    "options": {},
+                    "declaration_id": "schedule-1",
+                },
+            ),
+            bootstrap_calls,
+        )
+
+        client._request = request  # type: ignore[method-assign]
+        await handle.cancel()
+        bootstrap_calls.clear()
+        await client._bootstrap()
+        self.assertFalse(any(kind == "schedule" for kind, _ in bootstrap_calls))
+
         with self.assertRaisesRegex(ValidationError, "either delay or start_at"):
             await client.every("tests.report", minutes=5, delay=1, start_at=2)
 

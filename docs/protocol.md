@@ -81,7 +81,10 @@ bounded current listener generation (`executor_result_bytes` and
 `executor_max_results`). After restart, `result` may be JSON `null` for a
 completed job. Protocol v1 is not a durable result backend. Cron and interval
 schedules can be created and cancelled through `schedule` and
-`cancel_schedule`; their registry currently belongs to the live listener
-generation, so durable recovery, restart catch-up, and overlap enforcement are
-not yet available. Custom retry curves, multi-host leases, and exactly-once
-external effects are unsupported.
+`cancel_schedule`; their registry belongs to the live listener generation.
+The Python client retains successful declarations and replays them on listener
+reconnect. Due occurrences retry temporary admission failure with a stable job
+ID. A client-process restart still requires declaration at application startup;
+missed-time catch-up and overlap enforcement are not yet available. Custom
+retry curves, multi-host leases, and exactly-once external effects are
+unsupported.
