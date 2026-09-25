@@ -8,6 +8,7 @@
 /var/tay/
 /erl_crash.dump
 .DS_Store
+deploy-helper.sh
 *.ez
 *.tar
 clients/python/build/
