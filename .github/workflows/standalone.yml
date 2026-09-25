@@ -6,7 +6,9 @@ on:
       - Dockerfile
       - .dockerignore
       - standalone/**
+      - dashboard/**
       - examples/standalone/**
+      - examples/dashboard/**
       - lib/**
       - mix.exs
       - mix.lock
@@ -16,7 +18,9 @@ on:
       - Dockerfile
       - .dockerignore
       - standalone/**
+      - dashboard/**
       - examples/standalone/**
+      - examples/dashboard/**
       - lib/**
       - mix.exs
       - mix.lock
@@ -27,7 +31,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,6 +52,22 @@ jobs:
           MIX_ENV=prod mix release tay_standalone
       - name: Exercise fresh start, readiness, stop, and recovery
         run: standalone/test/release_smoke.sh
+      - name: Test the dashboard package and build its documentation
+        working-directory: dashboard
+        run: |
+          mix deps.get --check-locked
+          mix format --check-formatted
+          mix test --warnings-as-errors
+          mix docs --warnings-as-errors
+          TAY_DASHBOARD_PACKAGE=1 mix hex.build
+      - name: Test the optional dashboard host
+        working-directory: dashboard/standalone
+        run: |
+          mix deps.get --check-locked
+          mix format --check-formatted
+          mix test --warnings-as-errors
+          MIX_ENV=prod mix compile --warnings-as-errors
+          MIX_ENV=prod mix release tay_standalone
       - name: Build the production image
         run: docker build --tag tay-standalone:test .
       - name: Build the example Python worker
@@ -58,3 +78,5 @@ jobs:
         run: >-
           standalone/test/container_smoke.sh
           tay-standalone:test tay-standalone-worker:test
+      - name: Exercise the optional dashboard in the same image
+        run: dashboard/standalone/test/container_smoke.sh tay-standalone:test

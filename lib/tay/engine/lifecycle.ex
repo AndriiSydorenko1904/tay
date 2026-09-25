@@ -249,7 +249,7 @@ defmodule Tay.Engine.Lifecycle do
             force: force,
             from: from,
             timer: timer,
-            phase: :draining,
+            phase: if(kind == :compact, do: :compacting, else: :draining),
             driver: nil,
             monitor: nil,
             owner: owner,
@@ -267,17 +267,32 @@ defmodule Tay.Engine.Lifecycle do
               do: %{s | operation: operation},
               else:
                 %{s | operation: operation}
-                |> publish(Map.merge(s.meta.status, %{state: :draining}))
+                |> publish(
+                  Map.merge(s.meta.status, %{
+                    state: if(kind == :compact, do: :compacting, else: :draining),
+                    phase: if(kind == :compact, do: :preparing, else: :draining)
+                  })
+                )
 
           if close_now do
             {:noreply, begin_closing(s)}
           else
-            # Submitted calls predate this lifecycle fence. Deliver every one
-            # in FIFO order before the drain signal so no acknowledged or
-            # unknown-outcome mutation can fall outside the drained frontier.
-            s = flush_commands(s)
-            send(s.engine, {:lifecycle_drain, generation, token, self(), expected_source})
-            {:noreply, s}
+            if kind == :compact do
+              send(
+                s.engine,
+                {:lifecycle_compact_online, generation, token, self(), deadline, retention,
+                 expected_source, operation.cancel_flag}
+              )
+
+              {:noreply, s}
+            else
+              # Submitted calls predate this lifecycle fence. Deliver every one
+              # in FIFO order before the drain signal so no acknowledged or
+              # unknown-outcome mutation can fall outside the drained frontier.
+              s = flush_commands(s)
+              send(s.engine, {:lifecycle_drain, generation, token, self(), expected_source})
+              {:noreply, s}
+            end
           end
         else
           Admission.cas(s.table, old, {:operation, nil, nil, :free, 0})
@@ -378,8 +393,8 @@ defmodule Tay.Engine.Lifecycle do
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, ^owner, :submitted, _}] ->
         s =
-          if s.meta.status.state in [:ready, :draining, :drained],
-            do: publish(s, Map.merge(s.meta.status, snapshot)),
+          if s.meta.status.state in [:ready, :compacting, :draining, :drained, :migrating],
+            do: publish(s, merge_runtime_snapshot(s, snapshot)),
             else: s
 
         # Releasing the exact submitted capability before replying is the
@@ -398,8 +413,8 @@ defmodule Tay.Engine.Lifecycle do
 
   def handle_info({:execution_snapshot, engine, token, snapshot}, %{engine: engine} = s) do
     s =
-      if s.meta.status.state in [:ready, :draining, :drained],
-        do: publish(s, Map.merge(s.meta.status, snapshot)),
+      if s.meta.status.state in [:ready, :compacting, :draining, :drained, :migrating],
+        do: publish(s, merge_runtime_snapshot(s, snapshot)),
         else: s
 
     send(engine, {:execution_snapshot_ack, token})
@@ -440,6 +455,14 @@ defmodule Tay.Engine.Lifecycle do
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :draining}} = s
       ) do
     s = publish(s, Map.put(s.meta.status, :state, :ready))
+    {:noreply, finish_operation(s, {:deferred, :source_changed})}
+  end
+
+  def handle_info(
+        {:operation_source_changed, engine, token},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+      ) do
+    s = publish(s, Map.put(s.meta.status, :state, :ready) |> Map.delete(:phase))
     {:noreply, finish_operation(s, {:deferred, :source_changed})}
   end
 
@@ -504,6 +527,54 @@ defmodule Tay.Engine.Lifecycle do
       nil ->
         {:noreply, s}
     end
+  end
+
+  def handle_info(
+        {:online_compaction_unsupported, engine, token},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
+      ) do
+    operation = %{op | phase: :draining}
+
+    s =
+      publish(
+        %{s | operation: operation},
+        Map.merge(s.meta.status, %{state: :migrating, phase: :draining})
+      )
+
+    s = flush_commands(s)
+    send(engine, {:lifecycle_drain, s.meta.generation, token, self(), operation.expected_source})
+    {:noreply, s}
+  end
+
+  def handle_info(
+        {:online_compaction_switch_requested, engine, token},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+      ) do
+    s = publish(s, Map.merge(s.meta.status, %{state: :compacting, phase: :switching}))
+    s = flush_commands(s)
+    send(engine, {:online_compaction_switch_ack, self(), token})
+    {:noreply, s}
+  end
+
+  def handle_info(
+        {:online_compaction_result, engine, token, {:ok, stats}},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+      ) do
+    s = publish(s, Map.merge(s.meta.status, %{state: :ready}) |> Map.delete(:phase))
+    {:noreply, finish_operation(s, {:ok, stats})}
+  end
+
+  def handle_info(
+        {:online_compaction_result, engine, token, {:error, reason}},
+        %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
+      ) do
+    s = publish(s, Map.put(s.meta.status, :state, :ready) |> Map.delete(:phase))
+
+    {:noreply,
+     finish_operation(
+       s,
+       {:error, Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)}
+     )}
   end
 
   def handle_info(
@@ -668,7 +739,9 @@ defmodule Tay.Engine.Lifecycle do
   def handle_info(_, s), do: {:noreply, s}
 
   defp ready?(s, generation),
-    do: s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
+    do:
+      s.meta.generation == generation and
+        s.meta.status.state in [:ready, :compacting, :draining, :drained]
 
   defp policy_ready(s) do
     cond do
@@ -697,8 +770,12 @@ defmodule Tay.Engine.Lifecycle do
 
   defp admission_ready?(s, generation),
     do:
-      (s.operation == nil or s.operation.kind != :compact) and
-        s.meta.generation == generation and s.meta.status.state in [:ready, :draining, :drained]
+      s.meta.generation == generation and
+        ((not match?(%{kind: :compact}, s.operation) and
+            s.meta.status.state in [:ready, :draining, :drained]) or
+           (match?(%{kind: :compact, phase: :compacting}, s.operation) and
+              s.meta.status.state == :compacting and
+              Map.get(s.meta.status, :phase) == :preparing))
 
   defp runtime_live?(%{config: %{execution: false}, runtime: nil, fence: nil}), do: true
 
@@ -712,6 +789,16 @@ defmodule Tay.Engine.Lifecycle do
     meta = %{s.meta | status: status}
     :ets.insert(s.table, {:meta, meta})
     %{s | meta: meta}
+  end
+
+  defp merge_runtime_snapshot(s, snapshot) do
+    merged = Map.merge(s.meta.status, snapshot)
+
+    if match?(%{kind: :compact}, s.operation) do
+      Map.merge(merged, Map.take(s.meta.status, [:state, :phase]))
+    else
+      merged
+    end
   end
 
   defp release(s, slot, token) do

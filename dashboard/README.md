@@ -9,14 +9,12 @@ usable without Phoenix, LiveView, or Plug.
 There are two supported deployment shapes:
 
 1. Add the `tay_dashboard` package to an existing Phoenix application.
-2. Run the dashboard-enabled OCI image, which contains one Tay Engine, its Unix
-   executor socket, and a small Phoenix host.
+2. Run the `tay` OCI image with `ENABLE_DASHBOARD=true`; it contains one Tay
+   Engine, its Unix executor socket, and a small Phoenix host.
 
 The package boundary and container boundary are intentionally different. The
-core `tay` package stays free of web dependencies, while the dashboard image is
-a ready-to-run distribution assembled from `tay`, `tay_dashboard`, and the
-standalone host. Do not run the core image and dashboard image against the same
-data volume at the same time.
+core `tay` package stays free of web dependencies, while the OCI distribution
+is assembled from `tay`, `tay_dashboard`, and the standalone host.
 
 ## Installation
 
@@ -25,13 +23,13 @@ Add both packages to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "~> 0.11.3"},
-    {:tay_dashboard, "~> 0.11.3"}
+    {:tay, "~> 0.12.0"},
+    {:tay_dashboard, "~> 0.12.0"}
   ]
 end
 ```
 
-Tay Dashboard 0.10.x requires Elixir 1.20, Tay 0.10.x, Phoenix 1.8, and Phoenix
+Tay Dashboard 0.12.x requires Elixir 1.20, Tay 0.12.x, Phoenix 1.8, and Phoenix
 LiveView 1.2. The host endpoint must have a working LiveView socket and PubSub,
 as a normal Phoenix LiveView application does.
 
@@ -66,9 +64,9 @@ controls.
 
 ## Dashboard-enabled container
 
-The `ghcr.io/andriisydorenko1904/tay-dashboard:<version>` image is an
-alternative to the headless `tay` image, not a sidecar for it. From the
-repository root, start the complete example with:
+The `ghcr.io/andriisydorenko1904/tay:<version>` image enables its bundled UI
+with `ENABLE_DASHBOARD=true`. From the repository root, start the complete
+example with:
 
 ```sh
 docker compose -f examples/dashboard/docker-compose.yml up --build
@@ -114,7 +112,10 @@ or private engine modules. All mutations go through `Tay.cancel/2`,
 `Tay.retry/2`, `Tay.pause_queue/2`, `Tay.resume_queue/2`, and `Tay.compact/1`.
 It adds no dashboard storage. Manual compaction rewrites the durable store and
 permanently removes terminal jobs that have expired under the configured
-retention policy, so the UI requires an explicit confirmation. Cursor pages are
+retention policy, so the UI requires an explicit confirmation. Store-v2
+candidate preparation keeps admission and execution live and is shown as
+storage maintenance; only the short fenced epoch switch is unavailable. The
+one-time Store-v1 migration is shown separately as `migrating`. Cursor pages are
 weakly consistent under concurrent job changes; refresh to reconcile a changing
 result set.
 

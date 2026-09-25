@@ -194,10 +194,13 @@ defmodule Tay do
   def restart(options \\ []), do: lifecycle_control(:restart, options)
 
   @doc """
-  Stop-the-world Store-v2 compaction through the same drain and storage owner.
-  Uses the Engine's bounded terminal retention by default. Administrative
-  `terminal_retention: :infinity` retains all jobs; `{:hours, n}` overrides the
-  bounded duration. No override bypasses drain, headroom or exact validation.
+  Builds a Store-v2 replacement in the background while ordinary admission and
+  execution continue, then performs a fenced epoch switch. The one-time Store-v1
+  migration still drains and recovers because the frozen v1 format has no online
+  catch-up boundary. Uses the Engine's bounded terminal retention by default. Administrative
+  `terminal_retention: :infinity` retains all jobs; `{:minutes, n}` or
+  `{:hours, n}` overrides the bounded duration. No override bypasses the
+  publication fence, headroom, or exact validation.
   """
   def compact(options \\ []) do
     with true <-
@@ -365,6 +368,9 @@ defmodule Tay do
   defp ready(name) do
     case Admission.metadata(name) do
       {:ok, %{status: %{state: state}} = meta} when state in [:ready, :draining, :drained] ->
+        {:ok, meta}
+
+      {:ok, %{status: %{state: :compacting, phase: :preparing}} = meta} ->
         {:ok, meta}
 
       _ ->

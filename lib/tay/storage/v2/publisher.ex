@@ -1,9 +1,10 @@
 defmodule Tay.Storage.V2.Publisher do
   @moduledoc """
-  Stop-the-world Store-v2 candidate construction and publication inside the
-  sole Writer/native-owner process. The source remains pinned and never loses
-  bytes to make candidate space. A return after CURRENT publication is verified
-  by an independent Store-v2 replay.
+  Store-v2 candidate construction and publication. Online callers build the
+  candidate against a frozen frontier while the Writer journals later mutations,
+  then catch up under a fenced epoch switch. The source remains pinned and never
+  loses bytes to make candidate space. A return after CURRENT publication is
+  verified by an independent Store-v2 replay.
   """
 
   alias Tay.Event.V1
@@ -31,13 +32,14 @@ defmodule Tay.Storage.V2.Publisher do
            (is_nil(source.epoch_id) or V1.id?(source.epoch_id)) ||
              {:error, :source_epoch},
          {:ok, normalized, ids, retention_stats} <-
-           Snapshot.prepare(
+           prepare_snapshot(
              source.jobs,
              source.terminal_retention,
              source.captured_at,
-             source.max_terminal_jobs
+             source.max_terminal_jobs,
+             Map.has_key?(source, :online_catch_up)
            ),
-         {:ok, inventory} <- source_inventory(native, source.store_id),
+         {:ok, inventory} <- source_inventory(native, source.store_id, source),
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
            estimate(normalized, ids, source.rotation_target_bytes, native.deadline),
@@ -59,22 +61,26 @@ defmodule Tay.Storage.V2.Publisher do
            ),
          tail_id <- length(base) + 1,
          tail_first <- length(ids) + 1,
-         {:ok, tail_bytes} <- write_tail(native, source.store_id, tail_id, tail_first),
-         :ok <- Native.sync_dir(native, :candidate_segments),
          manifest <- manifest(source, inventory, epoch_id, base, tail_id, tail_first),
          {:ok, manifest_bytes} <- Authority.encode_manifest(manifest),
          :ok <- write_manifest(native, manifest_bytes),
+         {:ok, tail, tail_bytes} <- write_tail(native, source.store_id, tail_id, tail_first),
+         :ok <- Native.sync_dir(native, :candidate_segments),
          {:ok, candidate} <-
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
            Snapshot.equivalent?(normalized, candidate.candidate.jobs) ||
              {:error, :candidate_mismatch},
+         {:ok, caught_up, _tail, delta_bytes, switch_started} <-
+           catch_up(native, source, candidate, tail, started),
+         :ok <- Native.sync(native),
+         :ok <- Native.close_write(native),
          :ok <- Native.v2_publish_epoch(native, epoch_id),
          :ok <- boundary(source, :epoch_published),
          {:ok, renamed} <-
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
-           Snapshot.equivalent?(normalized, renamed.candidate.jobs) ||
+           Snapshot.equivalent?(caught_up, renamed.candidate.jobs) ||
              {:error, :renamed_candidate_mismatch},
          :ok <- before_current(native, source, epoch_id),
          {:ok, current_bytes} <-
@@ -94,10 +100,12 @@ defmodule Tay.Storage.V2.Publisher do
           source_bytes: inventory.total_bytes,
           admitted_candidate_bytes: admitted_candidate_bytes,
           candidate_bytes:
-            base_bytes + tail_bytes + byte_size(manifest_bytes) + byte_size(current_bytes) +
+            base_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
+              byte_size(current_bytes) +
               if(is_nil(source.epoch_id), do: 56, else: 0),
           peak_writer_process_bytes: peak_memory,
           started: started,
+          switch_started: switch_started,
           previous_epoch_id: source.epoch_id
         }
         |> Map.merge(retention_stats)
@@ -111,7 +119,7 @@ defmodule Tay.Storage.V2.Publisher do
         :ok ->
           :ok = boundary(source, :current_published)
 
-          case verify_published(native, source, normalized, limits, value_limits, publication) do
+          case verify_published(native, source, caught_up, limits, value_limits, publication) do
             {:ok, _} = result ->
               result
 
@@ -132,19 +140,42 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp source_inventory(native, store_id) do
+  defp source_inventory(native, store_id, source) do
     with {:ok, entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(entries, :segments),
          true <- classified.canonical != [] || {:error, :source_segments_missing},
-         {:ok, summaries, sealed} <- scan_source(native, classified.canonical, store_id),
-         {:ok, topology} <- Reader.validate_topology(summaries) do
-      {:ok,
-       %{
-         frontier: topology.next_sequence - 1,
-         sealed: sealed,
-         total_bytes: Enum.sum(Enum.map(summaries, & &1.bytes)),
-         segment_count: length(summaries)
-       }}
+         canonical <- frozen_canonical(classified.canonical, source) do
+      total_bytes = Enum.sum(Enum.map(classified.canonical, fn {_, entry} -> entry.size end))
+      segment_count = length(classified.canonical)
+
+      if canonical == [] and is_binary(Map.get(source, :epoch_id)) do
+        {:ok,
+         %{
+           frontier: source.frontier,
+           sealed: [],
+           total_bytes: total_bytes,
+           segment_count: segment_count
+         }}
+      else
+        with true <- canonical != [] || {:error, :source_segments_missing},
+             {:ok, summaries, sealed} <- scan_source(native, canonical, store_id),
+             {:ok, topology} <- Reader.validate_topology(summaries) do
+          {:ok,
+           %{
+             frontier: topology.next_sequence - 1,
+             sealed: sealed,
+             total_bytes: total_bytes,
+             segment_count: segment_count
+           }}
+        end
+      end
+    end
+  end
+
+  defp frozen_canonical(canonical, source) do
+    case Map.get(source, :exclude_segment_id) do
+      nil -> canonical
+      id -> Enum.reject(canonical, fn {segment_id, _} -> segment_id >= id end)
     end
   end
 
@@ -400,10 +431,80 @@ defmodule Tay.Storage.V2.Publisher do
          {:ok, header} <-
            Segment.encode_header(%{id: id, first_sequence: first, store_id: store_id}),
          {:ok, _} <- Native.create_stage(native, :candidate_segments, name),
-         {:ok, _} <- Native.write(native, 0, header),
-         :ok <- Native.sync(native),
-         :ok <- Native.close_write(native) do
-      {:ok, byte_size(header)}
+         {:ok, %{identity: identity}} <- Native.write(native, 0, header),
+         :ok <- Native.sync(native) do
+      {:ok,
+       %{
+         id: id,
+         first_sequence: first,
+         last_sequence: nil,
+         count: 0,
+         bytes: byte_size(header),
+         store_id: store_id,
+         state: :active,
+         identity: identity,
+         crc_state: CRC32C.update(CRC32C.initial(), header)
+       }, byte_size(header)}
+    end
+  end
+
+  defp prepare_snapshot(jobs, retention, captured_at, max_terminal_jobs, true),
+    do: Snapshot.prepare_online(jobs, retention, captured_at, max_terminal_jobs)
+
+  defp prepare_snapshot(jobs, retention, captured_at, max_terminal_jobs, false),
+    do: Snapshot.prepare(jobs, retention, captured_at, max_terminal_jobs)
+
+  defp catch_up(_native, source, candidate, tail, started)
+       when not is_map_key(source, :online_catch_up),
+       do: {:ok, candidate.candidate.jobs, tail, 0, started}
+
+  defp catch_up(native, source, candidate, tail, _started) do
+    switch_started = System.monotonic_time(:millisecond)
+
+    case source.online_catch_up.() do
+      {:ok, records} when is_list(records) ->
+        Enum.reduce_while(records, {:ok, candidate.candidate, tail, 0}, fn
+          {8, 1, payload}, {:ok, logical, current, bytes} ->
+            with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
+                 {:ok, next_logical} <- Reducer.apply(logical, mutation),
+                 {:ok, frame} <-
+                   Record.encode(%Record{
+                     record_type: 8,
+                     payload_schema_version: 1,
+                     sequence: current.first_sequence + current.count,
+                     payload: payload
+                   }),
+                 true <-
+                   current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
+                     {:error, :online_delta_too_large},
+                 {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
+              next = %{
+                current
+                | count: current.count + 1,
+                  last_sequence: current.first_sequence + current.count,
+                  bytes: current.bytes + byte_size(frame),
+                  identity: identity,
+                  crc_state: CRC32C.update(current.crc_state, frame)
+              }
+
+              {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
+            else
+              error -> {:halt, error}
+            end
+
+          _, _ ->
+            {:halt, {:error, :online_delta_record}}
+        end)
+        |> case do
+          {:ok, logical, current, bytes} ->
+            {:ok, logical.jobs, current, bytes, switch_started}
+
+          error ->
+            error
+        end
+
+      error ->
+        error
     end
   end
 
@@ -535,7 +636,7 @@ defmodule Tay.Storage.V2.Publisher do
            admitted_candidate_bytes: publication.admitted_candidate_bytes,
            peak_writer_process_bytes:
              max(publication.peak_writer_process_bytes, process_memory()),
-           pause_ms: System.monotonic_time(:millisecond) - publication.started,
+           pause_ms: System.monotonic_time(:millisecond) - publication.switch_started,
            reclamation: :deferred,
            previous_epoch_id: source.epoch_id,
            terminal_retention: publication.terminal_retention,

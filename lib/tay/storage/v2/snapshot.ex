@@ -85,6 +85,47 @@ defmodule Tay.Storage.V2.Snapshot do
 
   def prepare(_, _, _, _), do: {:error, :invalid_jobs}
 
+  @doc false
+  def prepare_online(jobs, retention, captured_at, max_terminal_jobs)
+      when is_map(jobs) and
+             (max_terminal_jobs == :infinity or
+                (is_integer(max_terminal_jobs) and max_terminal_jobs >= 0)) do
+    with :ok <- Retention.validate(retention),
+         true <- Tay.Event.V1.time?(captured_at) || {:error, :retention_timestamp_unavailable},
+         :ok <- validate_source(jobs) do
+      Enum.reduce_while(jobs, {:ok, %{}, 0, 0}, fn {id, job}, {:ok, kept, expired, terminals} ->
+        case classify(job, retention, captured_at) do
+          {:ok, :expire} ->
+            {:cont, {:ok, kept, expired + 1, terminals}}
+
+          {:ok, :retain} ->
+            {:cont,
+             {:ok, Map.put(kept, id, job), expired,
+              terminals + if(job.state in @terminal, do: 1, else: 0)}}
+
+          error ->
+            {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, kept, expired, terminals} ->
+          {kept, pressure_expired} = enforce_terminal_limit(kept, max_terminal_jobs)
+
+          {:ok, kept, Enum.sort(Map.keys(kept)),
+           %{
+             expired_jobs: expired + pressure_expired,
+             pressure_expired_jobs: pressure_expired,
+             retained_terminal_jobs: terminals - pressure_expired
+           }}
+
+        error ->
+          error
+      end
+    end
+  end
+
+  def prepare_online(_, _, _, _), do: {:error, :invalid_jobs}
+
   defp enforce_terminal_limit(jobs, :infinity), do: {jobs, 0}
 
   defp enforce_terminal_limit(jobs, limit) do

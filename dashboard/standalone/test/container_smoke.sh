@@ -23,6 +23,7 @@ docker run -d --name "$container" \
   --security-opt no-new-privileges \
   -e TAY_DATA_DIR=/var/lib/tay/store \
   -e TAY_INITIALIZE_IF_MISSING=true \
+  -e ENABLE_DASHBOARD=true \
   -e TAY_DASHBOARD_SECRET_KEY_BASE="$secret" \
   -p 127.0.0.1::4000 \
   -v "$data_volume:/var/lib/tay" \

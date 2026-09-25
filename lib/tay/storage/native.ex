@@ -46,7 +46,7 @@ defmodule Tay.Storage.Native do
     acquire_if_missing: 38,
     fault: 240
   }
-  defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, timeout: 10_000]
+  defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
   @type t :: %__MODULE__{}
 
   @doc "Acquires only existing ownership objects; no creation or sync is allowed."
@@ -277,6 +277,11 @@ defmodule Tay.Storage.Native do
   def close(%__MODULE__{}), do: {:error, %{kind: :native_owner, reason: :not_port_owner}}
 
   @doc false
+  def request_owned(%__MODULE__{owner: owner} = native, operation, body)
+      when owner == self() and is_atom(operation) and is_binary(body),
+      do: request(native, operation, body)
+
+  @doc false
   def closed_by_owner?(port) when is_port(port),
     do: Process.get({__MODULE__, port}) == :closed
 
@@ -455,19 +460,36 @@ defmodule Tay.Storage.Native do
   def close_read(native), do: empty(native, :close_read)
   def sync_read(native), do: empty(native, :sync_read)
 
-  def create_stage(native, scope, name),
-    do: identity_request(native, :create_stage, <<scope(scope), string(name)::binary>>)
+  def create_stage(native, scope, name) do
+    channel = if(scope in [:candidate, :candidate_segments], do: :candidate, else: :source)
 
-  def open_active(native, name, identity),
-    do:
-      identity_request(
-        native,
-        :open_active,
-        <<string(name)::binary, identity.size::64, identity.device::64, identity.inode::64>>
-      )
+    case identity_request(native, :create_stage, <<scope(scope), string(name)::binary>>) do
+      {:ok, _} = result ->
+        Process.put({__MODULE__, native.port, :write_channel}, channel)
+        result
+
+      error ->
+        error
+    end
+  end
+
+  def open_active(native, name, identity) do
+    case identity_request(
+           native,
+           :open_active,
+           <<string(name)::binary, identity.size::64, identity.device::64, identity.inode::64>>
+         ) do
+      {:ok, _} = result ->
+        Process.put({__MODULE__, native.port, :write_channel}, :source)
+        result
+
+      error ->
+        error
+    end
+  end
 
   def write(native, offset, bytes) when is_binary(bytes) do
-    case request(native, :write, <<offset::64, bytes::binary>>) do
+    case request(native, :write, <<channel(native), offset::64, bytes::binary>>) do
       {:ok, metadata, written} when written == byte_size(bytes) ->
         case identity(metadata, cold?(native)) do
           {:ok, id, <<>>} -> {:ok, %{written: written, identity: id}}
@@ -482,8 +504,14 @@ defmodule Tay.Storage.Native do
     end
   end
 
-  def sync(native), do: empty(native, :sync)
-  def close_write(native), do: empty(native, :close_write)
+  def sync(native), do: empty(native, :sync, <<channel(native)>>)
+
+  def close_write(native) do
+    result = empty(native, :close_write, <<channel(native)>>)
+    if result == :ok, do: Process.delete({__MODULE__, native.port, :write_channel})
+    result
+  end
+
   def sync_dir(native, scope), do: empty(native, :sync_dir, <<scope(scope)>>)
   def check(native), do: empty(native, :check)
 
@@ -659,6 +687,13 @@ defmodule Tay.Storage.Native do
   defp cold?(native),
     do: native.cold? || Process.get({__MODULE__, native.port, :cold_source}) == true
 
+  defp channel(native) do
+    case Process.get({__MODULE__, native.port, :write_channel}, :source) do
+      :source -> 0
+      :candidate -> 1
+    end
+  end
+
   defp scope(:root), do: 0
   defp scope(:segments), do: 1
   defp scope(:verify), do: 2
@@ -676,6 +711,19 @@ defmodule Tay.Storage.Native do
 
   defp request(native, operation, body) do
     cond do
+      Tay.Storage.V2.CompactionControl.cancelled?() ->
+        {:error, %{kind: :resource_limit, reason: :compaction_cancelled}}
+
+      is_integer(native.deadline) and System.monotonic_time(:millisecond) >= native.deadline ->
+        {:error, %{kind: :resource_limit, reason: :deadline}}
+
+      self() != native.owner and is_reference(native.delegate) ->
+        GenServer.call(
+          native.owner,
+          {:tay_native_request, native.generation, native.delegate, operation, body},
+          :infinity
+        )
+
       self() != native.owner ->
         {:error, %{kind: :native_owner, reason: :not_port_owner}}
 
@@ -684,12 +732,6 @@ defmodule Tay.Storage.Native do
 
       byte_size(body) > 16_777_244 + 4096 ->
         {:error, %{kind: :native_argument, reason: :packet_too_large}}
-
-      Tay.Storage.V2.CompactionControl.cancelled?() ->
-        {:error, %{kind: :resource_limit, reason: :compaction_cancelled}}
-
-      is_integer(native.deadline) and System.monotonic_time(:millisecond) >= native.deadline ->
-        {:error, %{kind: :resource_limit, reason: :deadline}}
 
       true ->
         op = Map.fetch!(@ops, operation)

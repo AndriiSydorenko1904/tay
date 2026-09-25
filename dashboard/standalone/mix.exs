@@ -30,7 +30,7 @@ defmodule TayDashboardStandalone.MixProject do
       elixirc_options: [debug_info: false],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      releases: [tay_dashboard_standalone: [applications: [runtime_tools: :permanent]]]
+      releases: [tay_standalone: [applications: [runtime_tools: :permanent]]]
     ]
   end
 

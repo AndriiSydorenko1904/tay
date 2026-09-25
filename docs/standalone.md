@@ -26,6 +26,8 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
 | `TAY_MAX_STATE_NODES` | `2000000` | Conservative value-node budget for active jobs. |
 | `TAY_MAX_TERMINAL_JOBS` | `5000` | Maximum retained completed, cancelled, and discarded jobs after pressure compaction. |
+| `TAY_TERMINAL_RETENTION` | `24h` | Time retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. |
+| `ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 
 Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
@@ -77,19 +79,18 @@ filesystem whose durability properties have been validated for the workload.
 The standalone image is not distributed Tay and does not run user job code;
 external worker processes do that over the existing UDS protocol.
 
-## Dashboard-enabled distribution
+## Optional dashboard
 
-The separate `tay-dashboard` OCI image is built from the same standalone host
-and adds the `tay_dashboard` package plus a minimal Phoenix endpoint. It starts
-one Engine and exposes both `/run/tay/tay.sock` and the web UI at `/tay`.
-Application-level authentication is optional. It is a replacement for
-the headless image, not a sidecar.
+The same `tay` OCI image bundles the `tay_dashboard` package and a minimal
+Phoenix endpoint. Set `ENABLE_DASHBOARD=true` to expose both
+`/run/tay/tay.sock` and the web UI at `/tay`. Application-level authentication
+is optional. No second container or image is required.
 
 ```sh
 docker compose -f examples/dashboard/docker-compose.yml up --build
 ```
 
-Both images use the same data and socket volume contracts. Never start one of
-each against the same data volume. See the
+The headless and dashboard-enabled modes use the same data and socket volume
+contracts. See the
 [dashboard container guide](../dashboard/guides/docker.md) for its network
 boundary, optional credentials, HTTP configuration, and Compose example.

@@ -135,8 +135,8 @@ maintenance defers while active jobs exist, so inspection history can
 temporarily exceed the mark but can never block admission of new active work.
 Once the Engine is quiescent, pressure compaction bypasses the normal
 size/ratio/cooldown gates and retains the newest 80% of the configured maximum.
-That low-water target prevents a steady stream of completions from causing a
-stop-the-world publication and Engine restart after every new terminal job.
+That low-water target prevents a steady stream of completions from immediately
+starting another rewrite after every new terminal job.
 
 Time retention is eligibility, not an exact-time deletion guarantee: terminal jobs
 expire at `terminal_at <= captured_at - duration`, but actual work waits for
@@ -168,6 +168,17 @@ verification/reconciliation before retiring Engine and defers reclamation.
 No source bytes are deleted to obtain candidate headroom. Payload-free aggregate
 events are structured Logger debug metadata under `:tay_compaction`; enable
 debug logging to observe evaluation/gate/defer/start/completion/failure events.
+
+On Store v2, candidate construction runs in the background. The public status
+is `state: :compacting, phase: :preparing`; admission, dispatch, and execution
+remain live, and committed mutations are journaled for candidate catch-up. The
+final fenced publication reports `phase: :switching` and closes admission while
+the old tail is synchronized, catch-up is appended, the candidate is revalidated,
+and CURRENT is atomically replaced. The expensive candidate construction remains
+online, but switch duration still depends on retained history and filesystem
+validation throughput. The Engine process is retained. The first Store-v1 to
+Store-v2 adoption instead reports `state: :migrating` and uses the existing
+drain/recovery path because Store v1 has no safe online catch-up boundary.
 The qualification suite covers finite workload measurements and the documented
 operational limits.
 

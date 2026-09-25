@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.12.0 — 2026-09-25
+
+### Added
+
+- Added online Store-v2 compaction with explicit `compacting/preparing` and
+  `compacting/switching` lifecycle phases.
+- Added regression coverage proving admission and job execution continue while
+  a replacement epoch is built in the background.
+- Added `TAY_TERMINAL_RETENTION` duration configuration for the standalone
+  runtime, including minute, hour, and day forms such as `30m`, `24h`, and `7d`.
+- Bundled the optional dashboard into the single `tay` OCI image, enabled with
+  `ENABLE_DASHBOARD=true`.
+
+### Changed
+
+- Store-v2 compaction now rotates to a frozen frontier, builds its candidate in
+  a monitored background process, journals concurrent durable mutations, and
+  catches them up behind an atomic publication fence without restarting
+  the Engine.
+- The first Store-v1 to Store-v2 adoption remains an explicit draining
+  `migrating` operation because the frozen v1 format has no safe online catch-up
+  boundary.
+- The dashboard reports compaction and migration as storage-maintenance states
+  instead of presenting normal compaction as crash recovery.
+- Container publication now produces only `ghcr.io/andriisydorenko1904/tay`;
+  the separate `tay-dashboard` image is retired.
+
 ## 0.11.3 — 2026-09-25
 
 ### Changed

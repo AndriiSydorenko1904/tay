@@ -50,7 +50,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.11.3
+docker pull ghcr.io/andriisydorenko1904/tay:0.12.0
 ```
 
 For a ready-made application + Tay example:
@@ -77,10 +77,11 @@ Then open:
 http://localhost:4000/tay
 ```
 
-The dashboard image is published separately:
+The same image contains the optional dashboard. Enable it with
+`ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay-dashboard:0.11.3
+docker pull ghcr.io/andriisydorenko1904/tay:0.12.0
 ```
 
 ## Why Tay?
@@ -160,7 +161,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 0.11.3"}
+    {:tay, "~> 0.12.0"}
   ]
 end
 ```
@@ -274,11 +275,11 @@ The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs.
 
 It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.11.3/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.12.0/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.11.3/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.12.0/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
@@ -428,7 +429,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:0.11.3
+ghcr.io/andriisydorenko1904/tay:0.12.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -438,7 +439,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.11.3
+docker pull ghcr.io/andriisydorenko1904/tay:0.12.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -496,13 +497,11 @@ details.
 
 Tay Dashboard is an optional operational web UI built with Phoenix LiveView.
 
-The dashboard distribution contains Tay core and a small Phoenix host in one
-release.
-
-It is published as:
+The `tay` image contains Tay core and the small Phoenix host in one release.
+The web endpoint is disabled by default and enabled with:
 
 ```text
-ghcr.io/andriisydorenko1904/tay-dashboard:0.11.3
+ENABLE_DASHBOARD=true
 ```
 
 Start the repository example:
@@ -520,8 +519,7 @@ http://localhost:4000/tay
 The example binds only to host loopback and leaves optional Basic
 authentication disabled.
 
-The dashboard image owns the Store, so never run it beside the headless `tay`
-image on the same data volume.
+The single Tay container owns the Store and optionally serves the dashboard.
 
 See the
 [complete dashboard container guide](dashboard/guides/docker.md)
@@ -559,13 +557,14 @@ validated_filesystem: true
 macOS supports explicit development `:write` only.
 
 Tay evaluates obsolete history automatically through bounded-retention,
-stop-the-world Store-v2 compaction.
+online Store-v2 compaction. Candidate construction keeps admission and execution
+live; a fenced, validated switch publishes the replacement epoch. Initial Store-v1
+adoption still drains and recovers once.
 
 It has no:
 
 - automatic tail repair;
 - live backup;
-- online compaction;
 - exactly-once external effects.
 
 A corrupt or unsupported history refuses writable startup and preserves the

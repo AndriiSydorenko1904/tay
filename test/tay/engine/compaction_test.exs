@@ -230,6 +230,113 @@ defmodule Tay.Engine.CompactionTest do
     EngineHelpers.stop(root)
   end
 
+  test "Store-v2 compaction prepares in background while admission remains live", %{path: path} do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          send(owner, {:online_compaction_preparing, self()})
+
+          receive do
+            :continue_online_compaction -> :ok
+          end
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    {:ok, root} = EngineHelpers.start(path, @name, writer_hook: hook)
+    {:ok, before_intent} = EngineWorker.new(%{"before" => true}, scheduled_at: 5_000_000)
+    assert {:ok, before} = Tay.insert(before_intent, name: @name)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    engine = :sys.get_state(@name).engine
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:online_compaction_preparing, builder}, 5_000
+    assert %{state: :compacting, phase: :preparing} = Tay.status(name: @name)
+
+    {:ok, during_intent} = EngineWorker.new(%{"during" => true}, scheduled_at: 5_000_000)
+    assert {:ok, during} = Tay.insert(during_intent, name: @name)
+    assert :sys.get_state(@name).engine == engine
+
+    send(builder, :continue_online_compaction)
+    assert {:ok, _} = Task.await(compact, 60_000)
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert :sys.get_state(@name).engine == engine
+    assert {:ok, _} = Tay.get_job(before.id, name: @name)
+    assert {:ok, _} = Tay.get_job(during.id, name: @name)
+
+    assert :ok = Tay.restart(name: @name, timeout: 60_000)
+    assert {:ok, _} = Tay.get_job(before.id, name: @name)
+    assert {:ok, _} = Tay.get_job(during.id, name: @name)
+    EngineHelpers.stop(root)
+  end
+
+  test "switch fence catches up a command already submitted to Engine", %{path: path} do
+    owner = self()
+    compaction_gate = :atomics.new(1, [])
+    command_gate = :atomics.new(1, [])
+
+    writer_hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(compaction_gate, 1) == 1 do
+          send(owner, {:candidate_waiting, self()})
+          receive do: (:release_candidate -> :ok)
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    engine_hook = fn
+      :pre_append ->
+        if :atomics.get(command_gate, 1) == 1 do
+          send(owner, {:command_before_writer, self()})
+          receive do: (:release_command -> :ok)
+        end
+
+      _ ->
+        :ok
+    end
+
+    {:ok, root} =
+      EngineHelpers.start(path, @name, writer_hook: writer_hook, test_hook: engine_hook)
+
+    {:ok, anchor_intent} = EngineWorker.new(%{"anchor" => true}, scheduled_at: 5_000_000)
+    assert {:ok, _} = Tay.insert(anchor_intent, name: @name)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    :atomics.put(compaction_gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:candidate_waiting, builder}, 5_000
+
+    :atomics.put(command_gate, 1, 1)
+    {:ok, raced_intent} = EngineWorker.new(%{"at_switch" => true}, scheduled_at: 5_000_000)
+    insert = Task.async(fn -> Tay.insert(raced_intent, name: @name) end)
+    assert_receive {:command_before_writer, engine}, 5_000
+
+    send(builder, :release_candidate)
+    send(engine, :release_command)
+    assert {:ok, raced} = Task.await(insert, 60_000)
+    assert {:ok, _} = Task.await(compact, 60_000)
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert {:ok, %{id: id}} = Tay.get_job(raced.id, name: @name)
+    assert id == raced.id
+
+    assert :ok = Tay.restart(name: @name, timeout: 60_000)
+    assert {:ok, %{id: id}} = Tay.get_job(raced.id, name: @name)
+    assert id == raced.id
+    EngineHelpers.stop(root)
+  end
+
   test "pre-publication disk-admission failure recovers the old authority and resumes", %{
     path: path
   } do

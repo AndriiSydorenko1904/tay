@@ -13,6 +13,7 @@ defmodule Tay.Dashboard.OverviewLive do
        compaction_result: nil,
        engine_available: false,
        engine_state: :unavailable,
+       engine_phase: nil,
        refresh_timer: nil,
        beam_memory: %{total: 0, processes: 0, ets: 0, binary: 0},
        capacity: %{
@@ -96,7 +97,14 @@ defmodule Tay.Dashboard.OverviewLive do
       <h2>Overview</h2>
       <div :if={@flash_error} class="error">{@flash_error}</div>
       <div :if={!@engine_available} id="engine-unavailable" class="notice">
-        Engine state: {@engine_state}. Capacity and storage values are unavailable until recovery completes.
+        {lifecycle_message(@engine_state, @engine_phase)}
+      </div>
+      <div
+        :if={@engine_state == :compacting && @engine_available}
+        id="engine-compacting"
+        class="notice"
+      >
+        {lifecycle_message(@engine_state, @engine_phase)}
       </div>
       <div :if={@compaction_result} id="compaction-result" class="notice">
         {@compaction_result}
@@ -271,6 +279,7 @@ defmodule Tay.Dashboard.OverviewLive do
           stats: stats,
           engine_available: true,
           engine_state: Map.get(status, :state, :ready),
+          engine_phase: Map.get(status, :phase),
           refresh_timer: nil,
           beam_memory: %{
             total: Map.get(memory, :total, 0),
@@ -308,6 +317,7 @@ defmodule Tay.Dashboard.OverviewLive do
           stats: %{},
           engine_available: false,
           engine_state: Map.get(status, :state, :unavailable),
+          engine_phase: Map.get(status, :phase),
           refresh_timer: timer,
           beam_memory: %{
             total: Map.get(memory, :total, 0),
@@ -315,7 +325,7 @@ defmodule Tay.Dashboard.OverviewLive do
             ets: Map.get(memory, :ets, 0),
             binary: Map.get(memory, :binary, 0)
           },
-          flash_error: Live.error_message(error)
+          flash_error: lifecycle_error(status, error)
         )
     end
   end
@@ -347,10 +357,32 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   defp format_retention({:hours, hours}), do: "#{hours} h"
+  defp format_retention({:minutes, minutes}), do: "#{minutes} m"
   defp format_retention(:infinity), do: "Forever"
   defp format_retention(_), do: "Unknown"
   defp retention_hours({:hours, hours}), do: hours
+  defp retention_hours({:minutes, minutes}), do: max(div(minutes + 59, 60), 1)
   defp retention_hours(_), do: 24
+
+  defp lifecycle_message(:compacting, :preparing),
+    do: "Engine state: compacting (preparing). Jobs continue to be accepted and executed."
+
+  defp lifecycle_message(:compacting, :switching),
+    do:
+      "Engine state: compacting (switching). A validated atomic epoch switch is in progress; admission resumes automatically."
+
+  defp lifecycle_message(:migrating, _),
+    do:
+      "Engine state: migrating. The one-time Store-v1 migration is draining and will recover automatically."
+
+  defp lifecycle_message(state, phase) do
+    suffix = if phase, do: " (#{phase})", else: ""
+
+    "Engine state: #{state}#{suffix}. Capacity and storage values are unavailable until recovery completes."
+  end
+
+  defp lifecycle_error(%{state: state}, _error) when state in [:compacting, :migrating], do: nil
+  defp lifecycle_error(_status, error), do: Live.error_message(error)
 
   defp terminal_count(stats),
     do: Enum.sum(for state <- [:completed, :cancelled, :discarded], do: Map.get(stats, state, 0))
