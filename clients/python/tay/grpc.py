@@ -13,6 +13,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
+try:
+    import grpc
+except ModuleNotFoundError as exc:
+    if exc.name != "grpc":
+        raise
+    grpc = None
+
+try:
+    from cryptography import x509
+    from cryptography.exceptions import UnsupportedAlgorithm
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        pkcs12,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "cryptography" and not exc.name.startswith("cryptography."):
+        raise
+    x509 = None
+
 from .client import _extract_identifier, _server_error_from_payload
 from .errors import (
     ConnectionLost,
@@ -175,12 +196,10 @@ class TayGrpc:
             )
 
         if channel is None:
-            try:
-                import grpc
-            except ImportError as exc:
+            if grpc is None:
                 raise RuntimeError(
                     "gRPC support requires grpcio; install tay-client[grpc]"
-                ) from exc
+                )
             if tls_pkcs12_file is not None:
                 roots, private_key, certificate_chain = _pkcs12_credentials(
                     tls_pkcs12_file, tls_pkcs12_password
@@ -330,19 +349,10 @@ def _loopback_target(target: str) -> bool:
 def _pkcs12_credentials(
     bundle_file: str | Path, password: str | bytes | None
 ) -> tuple[bytes, bytes, bytes]:
-    try:
-        from cryptography import x509
-        from cryptography.exceptions import UnsupportedAlgorithm
-        from cryptography.hazmat.primitives.serialization import (
-            Encoding,
-            NoEncryption,
-            PrivateFormat,
-            pkcs12,
-        )
-    except ImportError as exc:
+    if x509 is None:
         raise RuntimeError(
             "PKCS#12 support requires cryptography; install tay-client[grpc-pkcs12]"
-        ) from exc
+        )
 
     if password is not None and not isinstance(password, (str, bytes)):
         raise ValidationError("tls_pkcs12_password must be a string or bytes")
