@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.13.1 — 2026-09-26
+
+### Fixed
+
+- Corrected Python client import ordering and formatting so the tagged source
+  passes its PyPI publication checks.
+- Made optional gRPC and PKCS#12 dependency checks explicit at module scope.
+
 ## 0.13.0 — 2026-09-26
 
 ### Added

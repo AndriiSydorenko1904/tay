@@ -128,7 +128,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v0.13.0"
+    assert html =~ "v0.13.1"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"
