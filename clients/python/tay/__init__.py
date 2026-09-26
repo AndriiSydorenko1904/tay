@@ -1,7 +1,6 @@
 """Public Python SDK for the Tay Protocol v1 local executor endpoint."""
 
 from .client import JobHandle, ScheduleHandle, Tay
-from .grpc import GrpcJobHandle, TayGrpc
 from .errors import (
     ConnectionLost,
     ModeError,
@@ -14,6 +13,7 @@ from .errors import (
     TayError,
     ValidationError,
 )
+from .grpc import GrpcJobHandle, TayGrpc
 from .socket_path import resolve_socket_path
 from .task import Task
 
@@ -31,8 +31,8 @@ __all__ = [
     "TaskNotRegistered",
     "TaskRegistrationError",
     "Tay",
-    "TayGrpc",
     "TayError",
+    "TayGrpc",
     "ValidationError",
     "resolve_socket_path",
 ]
