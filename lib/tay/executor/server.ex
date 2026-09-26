@@ -61,6 +61,27 @@ defmodule Tay.Executor.Server do
   def request(server, connection, message),
     do: GenServer.cast(server, {:request, connection, message})
 
+  @doc false
+  # Shared by the gRPC facade as well as the JSON socket connection. Keeping
+  # request validation and the Tay API calls here prevents the two transports
+  # from drifting in their enqueue, status, cancellation, and result semantics.
+  def protocol_request(server, engine_name, %{"type" => type} = message) do
+    case type do
+      "enqueue" -> enqueue(engine_name, message)
+      "status" -> status(engine_name, message)
+      "cancel" -> cancel_job(engine_name, message)
+      "result" -> result(server, engine_name, message)
+      "schedule" -> schedule(server, message)
+      "cancel_schedule" -> cancel_schedule(server, message)
+      _ -> {:error, "unsupported_request"}
+    end
+  catch
+    :exit, _ -> {:error, "unavailable"}
+    _, _ -> {:error, "invalid_request"}
+  end
+
+  def protocol_request(_, _, _), do: {:error, "invalid_request"}
+
   def disconnected(server, connection), do: GenServer.cast(server, {:disconnected, connection})
 
   @impl true
@@ -731,27 +752,15 @@ defmodule Tay.Executor.Server do
          server,
          engine_name,
          connection,
-         %{"type" => type, "request_id" => request_id} = message
+         %{"type" => _type, "request_id" => request_id} = message
        ) do
-    result =
-      case type do
-        "enqueue" -> enqueue(engine_name, message)
-        "status" -> status(engine_name, message)
-        "cancel" -> cancel_job(engine_name, message)
-        "result" -> result(server, engine_name, message)
-        "schedule" -> schedule(server, message)
-        "cancel_schedule" -> cancel_schedule(server, message)
-        _ -> {:error, "unsupported_request"}
-      end
+    result = protocol_request(server, engine_name, message)
 
     case result do
       {:ok, reply_type, fields} -> Connection.reply(connection, request_id, reply_type, fields)
       {:error, code} -> Connection.error(connection, request_id, code)
       {:error, code, fields} -> Connection.error(connection, request_id, code, fields)
     end
-  catch
-    :exit, _ -> Connection.error(connection, request_id, "unavailable")
-    _, _ -> Connection.error(connection, request_id, "invalid_request")
   end
 
   defp reply_request(_, _, _, _), do: :ok

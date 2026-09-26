@@ -30,7 +30,12 @@ defmodule Tay.Standalone.Application do
               terminal_retention: config.terminal_retention
             ],
             executor_socket: config.socket_path,
-            executor_socket_mode: 0o660
+            executor_socket_mode: 0o660,
+            grpc_port: config.grpc_port,
+            grpc_ip: config.grpc_ip,
+            grpc_tls_certfile: config.grpc_tls_certfile,
+            grpc_tls_keyfile: config.grpc_tls_keyfile,
+            grpc_tls_cacertfile: config.grpc_tls_cacertfile
           )
           |> Map.put(:significant, true)
         ]

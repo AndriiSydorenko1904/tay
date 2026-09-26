@@ -21,6 +21,11 @@ The image runs as UID/GID `10001:10001` and accepts:
 | --- | --- | --- |
 | `TAY_DATA_DIR` | `/var/lib/tay` | Authoritative durable Store root. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | Executor Protocol v1 UDS path. |
+| `TAY_GRPC_PORT` | disabled | Enables the gRPC producer API on this TCP port. |
+| `TAY_GRPC_IP` | `127.0.0.1` | IPv4 or IPv6 address to bind when `TAY_GRPC_PORT` is enabled. |
+| `TAY_GRPC_TLS_CERTFILE` | unset | PEM server certificate chain for mTLS. |
+| `TAY_GRPC_TLS_KEYFILE` | unset | PEM server private key for mTLS. |
+| `TAY_GRPC_TLS_CACERTFILE` | unset | PEM CA certificates trusted for client authentication. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
 | `TAY_MAX_JOBS` | `100000` | Maximum simultaneously active jobs. Terminal history does not consume this budget. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
@@ -33,6 +38,14 @@ Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
 `0660` so a worker can use a shared group where the deployment platform
 supports it.
+
+The gRPC endpoint permits plaintext only on loopback. A non-loopback bind
+requires all three TLS certificate paths and rejects clients without a valid
+certificate signed by the configured CA. Mount the certificate files read-only,
+ensure UID `10001` can read them, and restrict the server private key. The
+server certificate must match the address used by clients. Restrict access to
+the port at the network layer as well. Its schema and methods are documented
+in [`docs/protocol.md`](protocol.md).
 
 Tay deliberately does not interpret a pre-existing empty directory as a
 missing Store. Docker creates a named-volume mount root before the process

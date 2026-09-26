@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.13.0 — 2026-09-26
+
+### Added
+
+- Added an opt-in gRPC producer API for enqueue, status, cancellation, and result retrieval.
+- Added direct mTLS support for non-loopback gRPC listeners and Python clients,
+  including a single PKCS#12 bundle option in the Python SDK.
+
+### Fixed
+
+- Enabled the dashboard endpoint in its HTTP test configuration and refreshed
+  nested dependency locks for the new Tay gRPC dependencies.
+
 ## 0.12.0 — 2026-09-25
 
 ### Added

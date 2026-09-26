@@ -6,6 +6,11 @@ defmodule Tay.Standalone.Config do
 
   defstruct data_dir: @data_default,
             socket_path: @socket_default,
+            grpc_port: nil,
+            grpc_ip: "127.0.0.1",
+            grpc_tls_certfile: nil,
+            grpc_tls_keyfile: nil,
+            grpc_tls_cacertfile: nil,
             initialize: :never,
             max_jobs: 100_000,
             max_state_bytes: 268_435_456,
@@ -16,6 +21,11 @@ defmodule Tay.Standalone.Config do
   @type t :: %__MODULE__{
           data_dir: String.t(),
           socket_path: String.t(),
+          grpc_port: nil | pos_integer(),
+          grpc_ip: String.t(),
+          grpc_tls_certfile: nil | String.t(),
+          grpc_tls_keyfile: nil | String.t(),
+          grpc_tls_cacertfile: nil | String.t(),
           initialize: :never | :if_missing,
           max_jobs: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
@@ -31,6 +41,13 @@ defmodule Tay.Standalone.Config do
     with {:ok, data_dir} <- path(environment, "TAY_DATA_DIR", @data_default, :data),
          {:ok, socket_path} <- path(environment, "TAY_SOCKET_PATH", @socket_default, :socket),
          :ok <- outside_data_dir(socket_path, data_dir),
+         {:ok, grpc_port} <- grpc_port(environment),
+         {:ok, grpc_ip} <- grpc_ip(environment),
+         {:ok, grpc_tls_certfile} <- optional_path(environment, "TAY_GRPC_TLS_CERTFILE"),
+         {:ok, grpc_tls_keyfile} <- optional_path(environment, "TAY_GRPC_TLS_KEYFILE"),
+         {:ok, grpc_tls_cacertfile} <- optional_path(environment, "TAY_GRPC_TLS_CACERTFILE"),
+         :ok <-
+           grpc_tls(grpc_port, grpc_ip, grpc_tls_certfile, grpc_tls_keyfile, grpc_tls_cacertfile),
          {:ok, initialize} <- initialize(environment),
          {:ok, max_jobs} <- nonnegative(environment, "TAY_MAX_JOBS", 100_000),
          {:ok, max_state_bytes} <-
@@ -44,6 +61,11 @@ defmodule Tay.Standalone.Config do
        %__MODULE__{
          data_dir: data_dir,
          socket_path: socket_path,
+         grpc_port: grpc_port,
+         grpc_ip: grpc_ip,
+         grpc_tls_certfile: grpc_tls_certfile,
+         grpc_tls_keyfile: grpc_tls_keyfile,
+         grpc_tls_cacertfile: grpc_tls_cacertfile,
          initialize: initialize,
          max_jobs: max_jobs,
          max_state_bytes: max_state_bytes,
@@ -88,6 +110,58 @@ defmodule Tay.Standalone.Config do
       {:error, "TAY_SOCKET_PATH must be outside TAY_DATA_DIR"}
     else
       :ok
+    end
+  end
+
+  defp grpc_port(environment) do
+    case Map.get(environment, "TAY_GRPC_PORT") do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {port, ""} when port in 1..65_535 -> {:ok, port}
+          _ -> {:error, "TAY_GRPC_PORT must be an integer in 1..65535"}
+        end
+
+      _ ->
+        {:error, "TAY_GRPC_PORT must be an integer in 1..65535"}
+    end
+  end
+
+  defp grpc_ip(environment) do
+    value = Map.get(environment, "TAY_GRPC_IP", "127.0.0.1")
+
+    with value when is_binary(value) <- value,
+         {:ok, _} <- :inet.parse_address(String.to_charlist(value)) do
+      {:ok, value}
+    else
+      _ -> {:error, "TAY_GRPC_IP must be an IPv4 or IPv6 address"}
+    end
+  end
+
+  defp optional_path(environment, name) do
+    case Map.fetch(environment, name) do
+      :error -> {:ok, nil}
+      {:ok, _} -> path(environment, name, nil, :tls)
+    end
+  end
+
+  defp grpc_tls(port, ip, certfile, keyfile, cacertfile) do
+    files = [certfile, keyfile, cacertfile]
+
+    cond do
+      Enum.all?(files, &is_nil/1) and (is_nil(port) or loopback?(ip)) -> :ok
+      Enum.all?(files, &is_binary/1) and not is_nil(port) -> :ok
+      true -> {:error, "non-loopback gRPC requires all three TAY_GRPC_TLS_* certificate paths"}
+    end
+  end
+
+  defp loopback?(ip) do
+    case :inet.parse_address(String.to_charlist(ip)) do
+      {:ok, {127, _, _, _}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      _ -> false
     end
   end
 

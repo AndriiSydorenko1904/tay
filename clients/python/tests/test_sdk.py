@@ -3,11 +3,22 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from tay import ProtocolError, ServerError, Tay, ValidationError, resolve_socket_path
+from tay import (
+    GrpcJobHandle,
+    ProtocolError,
+    ServerError,
+    Tay,
+    TayGrpc,
+    ValidationError,
+    resolve_socket_path,
+)
 from tay.client import _server_error_from_payload
 from tay.protocol import decode_payload, encode_frame, normalize_json
 
@@ -83,6 +94,86 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(error, ServerError)
         self.assertEqual(error.code, "capacity")
         self.assertEqual(error.details["reason"], "client_slots")
+
+    async def test_grpc_client_uses_the_public_service_methods(self) -> None:
+        class Channel:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, bytes]] = []
+
+            def unary_unary(self, path, request_serializer, response_deserializer):
+                async def call(request, *, timeout):
+                    self.calls.append((path, request_serializer(request)))
+                    return response_deserializer(
+                        b'\x0a\x27{"job_id":"grpc-job","type":"enqueued"}'
+                    )
+
+                return call
+
+            def close(self):
+                return None
+
+        channel = Channel()
+        client = TayGrpc(channel=channel)
+        job = await client.enqueue("tests.grpc", {"value": 1})
+        self.assertIsInstance(job, GrpcJobHandle)
+        self.assertEqual(job.id, "grpc-job")
+        self.assertEqual(channel.calls[0][0], "/tay.grpc.v1.Tay/Enqueue")
+        await client.close()
+
+    async def test_grpc_requires_mtls_for_remote_targets_and_uses_secure_channel(self) -> None:
+        with self.assertRaises(ValidationError):
+            TayGrpc("tay.example:50051", channel=object())
+        with self.assertRaises(ValidationError):
+            TayGrpc("tay.example:50051", tls_ca_file="/ca.pem", channel=object())
+        with self.assertRaises(ValidationError):
+            TayGrpc(
+                "tay.example:50051",
+                tls_pkcs12_file="/client.p12",
+                tls_ca_file="/ca.pem",
+                channel=object(),
+            )
+        with self.assertRaises(ValidationError):
+            TayGrpc("tay.example:50051", tls_pkcs12_password="secret", channel=object())
+
+        class Channel:
+            def unary_unary(self, *_args, **_kwargs):
+                return lambda *_args, **_kwargs: None
+
+            def close(self):
+                return None
+
+        calls = []
+        fake_grpc = types.SimpleNamespace(
+            ssl_channel_credentials=lambda **kwargs: calls.append(kwargs) or "credentials",
+            aio=types.SimpleNamespace(
+                secure_channel=lambda target, credentials: calls.append(
+                    (target, credentials)
+                ) or Channel(),
+                insecure_channel=lambda _target: self.fail("insecure channel opened"),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            ca = pathlib.Path(directory, "ca.pem")
+            cert = pathlib.Path(directory, "client.pem")
+            key = pathlib.Path(directory, "client.key")
+            ca.write_bytes(b"CA")
+            cert.write_bytes(b"CERT")
+            key.write_bytes(b"KEY")
+            with patch.dict(sys.modules, {"grpc": fake_grpc}):
+                client = TayGrpc(
+                    "tay.example:50051",
+                    tls_ca_file=ca,
+                    tls_cert_file=cert,
+                    tls_key_file=key,
+                )
+            self.assertEqual(calls[0], {
+                "root_certificates": b"CA",
+                "private_key": b"KEY",
+                "certificate_chain": b"CERT",
+            })
+            self.assertEqual(calls[1], ("tay.example:50051", "credentials"))
+            await client.close()
 
     async def test_listener_bounds_are_validated_before_connecting(self) -> None:
         with self.assertRaises(ValidationError):

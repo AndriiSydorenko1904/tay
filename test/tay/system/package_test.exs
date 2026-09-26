@@ -10,7 +10,8 @@ defmodule Tay.System.PackageTest do
   test "offline source package builds a detached production consumer and compiler-free release" do
     base = System.get_env("TAY_TEST_DATA_ROOT") || System.tmp_dir!()
     {path, 0} = System.cmd("mktemp", ["-d", Path.join(base, "tay-package.XXXXXX")])
-    artifact = String.trim(path)
+    {resolved, 0} = System.cmd("realpath", [String.trim(path)])
+    artifact = String.trim(resolved)
     IO.puts("Package qualification artifacts: #{artifact}")
     consumer = Path.join(artifact, "consumer")
     vendor = Path.join(consumer, "vendor/tay")
@@ -52,7 +53,14 @@ defmodule Tay.System.PackageTest do
         do: refute(File.exists?(Path.join(vendor, forbidden)))
 
     templates = Path.join(@checkout, "test/support/package_consumer")
-    File.cp_r!(Path.join(@checkout, "deps/telemetry"), Path.join(consumer, "vendor/telemetry"))
+
+    for dependency <-
+          ~w(telemetry grpc_server grpc_core protobuf cowboy cowlib ranch flow gen_stage googleapis jason) do
+      File.cp_r!(
+        Path.join(@checkout, "deps/#{dependency}"),
+        Path.join(consumer, "vendor/#{dependency}")
+      )
+    end
 
     for source <- Path.wildcard(Path.join(templates, "**/*.template")) do
       relative = source |> Path.relative_to(templates) |> String.replace_suffix(".template", "")

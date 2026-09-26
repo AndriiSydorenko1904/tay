@@ -22,6 +22,7 @@ defmodule Tay.Engine do
 
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
+  alias Tay.GRPC.Listener, as: GRPCListener
   alias Tay.Storage.{Writer, Segment}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
@@ -786,30 +787,51 @@ defmodule Tay.Engine do
     # with this Engine generation and stale Unix socket state is therefore not
     # durable ownership. Passing `executor_socket: nil` explicitly remains the
     # opt-out for a BEAM-only Engine; otherwise Config resolves a local path.
-    if s.config.executor_socket do
-      {:ok, server} =
+    executor_server =
+      if s.config.executor_socket do
+        {:ok, server} =
+          DynamicSupervisor.start_child(
+            supervisor,
+            {Server,
+             %{
+               engine: self(),
+               socket_path: s.config.executor_socket,
+               socket_mode: s.config.executor_socket_mode,
+               private_directory: s.config.executor_socket_private_directory,
+               max_frame_bytes: s.config.executor_max_frame_bytes,
+               max_connections: s.config.executor_max_connections,
+               max_tasks_per_connection: s.config.executor_max_tasks_per_connection,
+               result_bytes: s.config.executor_result_bytes,
+               error_bytes: s.config.executor_error_bytes,
+               max_results: s.config.executor_max_results,
+               engine_name: s.config.name
+             }}
+          )
+
+        server
+      else
+        nil
+      end
+
+    if s.config.grpc_port do
+      {:ok, _listener} =
         DynamicSupervisor.start_child(
           supervisor,
-          {Server,
+          {GRPCListener,
            %{
-             engine: self(),
-             socket_path: s.config.executor_socket,
-             socket_mode: s.config.executor_socket_mode,
-             private_directory: s.config.executor_socket_private_directory,
-             max_frame_bytes: s.config.executor_max_frame_bytes,
-             max_connections: s.config.executor_max_connections,
-             max_tasks_per_connection: s.config.executor_max_tasks_per_connection,
-             result_bytes: s.config.executor_result_bytes,
-             error_bytes: s.config.executor_error_bytes,
-             max_results: s.config.executor_max_results,
-             engine_name: s.config.name
+             engine_name: s.config.name,
+             executor_server: executor_server,
+             port: s.config.grpc_port,
+             ip: s.config.grpc_ip,
+             max_message_bytes: s.config.grpc_max_message_bytes,
+             tls_certfile: s.config.grpc_tls_certfile,
+             tls_keyfile: s.config.grpc_tls_keyfile,
+             tls_cacertfile: s.config.grpc_tls_cacertfile
            }}
         )
-
-      %{s | controls: controls, executor_server: server}
-    else
-      %{s | controls: controls}
     end
+
+    %{s | controls: controls, executor_server: executor_server}
   end
 
   defp control_member?(s, kind, pid) do
