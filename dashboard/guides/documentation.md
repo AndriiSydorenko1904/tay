@@ -24,18 +24,30 @@ directory can always be regenerated.
 
 ## Publishing
 
-Local development uses the sibling Tay checkout and `mix.lock`. Package builds
-use the published Tay package and the independently committed
-`mix.package.lock`. After publishing the matching Tay release, publish the
-dashboard without modifying either lock file:
+These are separate dependency graphs, even though the packages live in one
+repository:
+
+- `dashboard/mix.lock` is for local dashboard development, where Tay is the
+  sibling path dependency.
+- `dashboard/standalone/mix.lock` is for the standalone host, which combines
+  Tay, the dashboard, and Bandit in one release.
+- `dashboard/mix.package.lock` is for publishing the dashboard, where Tay is a
+  published Hex dependency instead of a path dependency.
+
+The package lock may lag behind a new source release until that Tay version is
+published to Hex. In particular, do not publish the dashboard while its package
+lock still points to an older Tay version. After publishing the matching Tay
+release, refresh the package lock and publish the dashboard:
 
 ```sh
+TAY_DASHBOARD_PACKAGE=1 mix deps.update tay
+TAY_DASHBOARD_PACKAGE=1 mix deps.get --check-locked
 TAY_DASHBOARD_PACKAGE=1 mix hex.publish
 ```
 
-When the minimum Tay version changes, refresh only the package lock with
-`TAY_DASHBOARD_PACKAGE=1 mix deps.update tay` and commit it with the version
-change.
+Commit the refreshed `mix.package.lock` separately once the matching Tay
+release is available on Hex. Local and standalone locks do not need to change
+for that publication step.
 
 When adding a guide, include it in both the `docs[:extras]` and package `files`
 lists in `mix.exs`. Before release, verify that internal links resolve, examples

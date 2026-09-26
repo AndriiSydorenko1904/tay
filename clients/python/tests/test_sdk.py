@@ -120,7 +120,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.calls[0][0], "/tay.grpc.v1.Tay/Enqueue")
         await client.close()
 
-    async def test_grpc_requires_mtls_for_remote_targets_and_uses_secure_channel(self) -> None:
+    async def test_grpc_requires_mtls_for_remote_targets_and_uses_secure_channel(
+        self,
+    ) -> None:
         with self.assertRaises(ValidationError):
             TayGrpc("tay.example:50051", channel=object())
         with self.assertRaises(ValidationError):
@@ -144,11 +146,13 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
         calls = []
         fake_grpc = types.SimpleNamespace(
-            ssl_channel_credentials=lambda **kwargs: calls.append(kwargs) or "credentials",
+            ssl_channel_credentials=lambda **kwargs: (
+                calls.append(kwargs) or "credentials"
+            ),
             aio=types.SimpleNamespace(
-                secure_channel=lambda target, credentials: calls.append(
-                    (target, credentials)
-                ) or Channel(),
+                secure_channel=lambda target, credentials: (
+                    calls.append((target, credentials)) or Channel()
+                ),
                 insecure_channel=lambda _target: self.fail("insecure channel opened"),
             ),
         )
@@ -167,11 +171,14 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
                     tls_cert_file=cert,
                     tls_key_file=key,
                 )
-            self.assertEqual(calls[0], {
-                "root_certificates": b"CA",
-                "private_key": b"KEY",
-                "certificate_chain": b"CERT",
-            })
+            self.assertEqual(
+                calls[0],
+                {
+                    "root_certificates": b"CA",
+                    "private_key": b"KEY",
+                    "certificate_chain": b"CERT",
+                },
+            )
             self.assertEqual(calls[1], ("tay.example:50051", "credentials"))
             await client.close()
 

@@ -152,7 +152,9 @@ class TayGrpc:
         if tls_pkcs12_file is not None and any(
             value is not None for value in (tls_ca_file, tls_cert_file, tls_key_file)
         ):
-            raise ValidationError("use either a PKCS#12 bundle or PEM certificate files")
+            raise ValidationError(
+                "use either a PKCS#12 bundle or PEM certificate files"
+            )
         if tls_pkcs12_file is None and tls_pkcs12_password is not None:
             raise ValidationError("tls_pkcs12_password requires tls_pkcs12_file")
 
@@ -168,7 +170,9 @@ class TayGrpc:
             and all(value is None for value in tls_files)
             and not _loopback_target(target)
         ):
-            raise ValidationError("a non-loopback gRPC target requires mTLS certificates")
+            raise ValidationError(
+                "a non-loopback gRPC target requires mTLS certificates"
+            )
 
         if channel is None:
             try:
@@ -271,7 +275,9 @@ class TayGrpc:
 
     async def _job_request(self, method: str, job_id: str) -> dict[str, Any]:
         if type(job_id) is not str or not job_id or len(job_id.encode("utf-8")) > 128:
-            raise ValidationError("job id must be a non-empty UTF-8 string of at most 128 bytes")
+            raise ValidationError(
+                "job id must be a non-empty UTF-8 string of at most 128 bytes"
+            )
         rpc = {
             "GetJob": self._get_job_rpc,
             "Cancel": self._cancel_rpc,
@@ -301,7 +307,9 @@ def _grpc_error(exc: Exception) -> ServerError:
         return ConnectionLost(str(details))
     if name == "ABORTED":
         return RemoteTaskError(str(details), code="task_failed")
-    return ServerError(str(details), code=name.lower() if isinstance(name, str) else None)
+    return ServerError(
+        str(details), code=name.lower() if isinstance(name, str) else None
+    )
 
 
 def _loopback_target(target: str) -> bool:
@@ -348,7 +356,9 @@ def _pkcs12_credentials(
         raise ValidationError("invalid PKCS#12 bundle or password") from exc
 
     if key is None or certificate is None:
-        raise ValidationError("PKCS#12 bundle must contain a client key and certificate")
+        raise ValidationError(
+            "PKCS#12 bundle must contain a client key and certificate"
+        )
 
     ca_certificates = []
     for candidate in additional or []:
