@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package tay.grpc.v1;
+
+// Producer-facing gRPC API. JSON fields carry the same portable, string-keyed
+// values accepted by Executor Protocol v1, while gRPC supplies framing,
+// deadlines, and typed method names.
+service Tay {
+  rpc Enqueue(EnqueueRequest) returns (OperationReply);
+  rpc GetJob(JobRequest) returns (OperationReply);
+  rpc Cancel(JobRequest) returns (OperationReply);
+  rpc GetResult(JobRequest) returns (OperationReply);
+}
+
+message EnqueueRequest {
+  string task = 1;
+  bytes args_json = 2;
+  bytes options_json = 3;
+}
+
+message JobRequest {
+  string job_id = 1;
+}
+
+// `json` is a UTF-8 JSON object matching the equivalent Protocol v1 reply.
+message OperationReply {
+  bytes json = 1;
+}

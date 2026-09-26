@@ -22,12 +22,26 @@ defmodule Tay.Test.NativeHelpers do
   def canonical(id), do: elem(Tay.Storage.Segment.filename(id), 1)
 
   def child_elixir(script, args \\ []) do
-    ebin = Application.app_dir(:tay, "ebin")
-    telemetry_ebin = Application.app_dir(:telemetry, "ebin")
+    ebins =
+      [
+        :tay,
+        :telemetry,
+        :grpc_server,
+        :grpc_core,
+        :googleapis,
+        :protobuf,
+        :cowboy,
+        :cowlib,
+        :ranch,
+        :flow,
+        :gen_stage,
+        :jason
+      ]
+      |> Enum.map(&Application.app_dir(&1, "ebin"))
 
     System.cmd(
       System.find_executable("elixir"),
-      ["-pa", ebin, "-pa", telemetry_ebin, "-e", script, "--" | args],
+      Enum.flat_map(ebins, &["-pa", &1]) ++ ["-e", script, "--" | args],
       stderr_to_stdout: true
     )
   end

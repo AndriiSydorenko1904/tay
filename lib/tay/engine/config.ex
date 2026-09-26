@@ -35,6 +35,14 @@ defmodule Tay.Engine.Config do
     executor_result_bytes: 65_536,
     executor_error_bytes: 8_192,
     executor_max_results: 10_000,
+    # gRPC is opt-in. The default loopback address keeps an enabled endpoint
+    # local unless a host deliberately chooses otherwise.
+    grpc_port: nil,
+    grpc_ip: "127.0.0.1",
+    grpc_max_message_bytes: 1_048_576,
+    grpc_tls_certfile: nil,
+    grpc_tls_keyfile: nil,
+    grpc_tls_cacertfile: nil,
     start_paused: false,
     max_history_bytes: :infinity,
     max_segments: :infinity,
@@ -118,7 +126,8 @@ defmodule Tay.Engine.Config do
       :executor_max_tasks_per_connection,
       :executor_result_bytes,
       :executor_error_bytes,
-      :executor_max_results
+      :executor_max_results,
+      :grpc_max_message_bytes
     ]
 
     nonnegative = [
@@ -145,6 +154,8 @@ defmodule Tay.Engine.Config do
         c.executor_max_frame_bytes <= 16_777_216 and
         c.executor_result_bytes <= c.executor_max_frame_bytes and
         c.executor_error_bytes <= c.executor_max_frame_bytes and
+        grpc_port?(c.grpc_port) and grpc_ip?(c.grpc_ip) and grpc_tls?(c) and
+        c.grpc_max_message_bytes <= 16_777_216 and
         is_boolean(c.start_paused) and
         Enum.all?([c.max_history_bytes, c.max_segments], fn limit ->
           limit == :infinity or (is_integer(limit) and limit >= 0)
@@ -178,6 +189,49 @@ defmodule Tay.Engine.Config do
   defp executor_socket?(path) when is_binary(path) do
     path != "" and byte_size(path) <= 100 and String.valid?(path) and
       not String.contains?(path, <<0>>) and Path.type(path) == :absolute
+  end
+
+  defp grpc_port?(nil), do: true
+  defp grpc_port?(port), do: is_integer(port) and port in 1..65_535
+
+  defp grpc_ip?(ip) when is_binary(ip) do
+    case :inet.parse_address(String.to_charlist(ip)) do
+      {:ok, {_a, _b, _c, _d}} -> true
+      {:ok, {_a, _b, _c, _d, _e, _f, _g, _h}} -> true
+      _ -> false
+    end
+  end
+
+  defp grpc_ip?(_), do: false
+
+  defp grpc_tls?(c) do
+    files = [c.grpc_tls_certfile, c.grpc_tls_keyfile, c.grpc_tls_cacertfile]
+
+    cond do
+      Enum.all?(files, &is_nil/1) ->
+        is_nil(c.grpc_port) or grpc_loopback?(c.grpc_ip)
+
+      Enum.all?(files, &tls_path?/1) ->
+        not is_nil(c.grpc_port)
+
+      true ->
+        false
+    end
+  end
+
+  defp tls_path?(path) when is_binary(path),
+    do:
+      path != "" and String.valid?(path) and not String.contains?(path, <<0>>) and
+        Path.type(path) == :absolute
+
+  defp tls_path?(_), do: false
+
+  defp grpc_loopback?(ip) do
+    case :inet.parse_address(String.to_charlist(ip)) do
+      {:ok, {127, _, _, _}} -> true
+      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+      _ -> false
+    end
   end
 
   # Storage owns and validates every entry below data_dir. Keep a runtime Unix

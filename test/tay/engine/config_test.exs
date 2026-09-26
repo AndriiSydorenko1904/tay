@@ -72,4 +72,24 @@ defmodule Tay.Engine.ConfigTest do
                )
     end
   end
+
+  test "gRPC requires complete mTLS configuration outside loopback" do
+    base = [data_dir: "tmp/config-only", durability: :write, grpc_port: 50_051]
+
+    assert {:error, _} = Config.new(base ++ [grpc_ip: "0.0.0.0"])
+    assert {:error, _} = Config.new(base ++ [grpc_tls_certfile: "/cert.pem"])
+
+    assert {:ok, config} =
+             Config.new(
+               base ++
+                 [
+                   grpc_ip: "0.0.0.0",
+                   grpc_tls_certfile: "/cert.pem",
+                   grpc_tls_keyfile: "/key.pem",
+                   grpc_tls_cacertfile: "/ca.pem"
+                 ]
+             )
+
+    assert config.grpc_tls_cacertfile == "/ca.pem"
+  end
 end

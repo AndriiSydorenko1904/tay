@@ -7,7 +7,38 @@ defmodule Tay.Standalone.ConfigTest do
     assert {:ok, config} = Config.load(%{})
     assert config.data_dir == "/var/lib/tay"
     assert config.socket_path == "/run/tay/tay.sock"
+    assert config.grpc_port == nil
+    assert config.grpc_ip == "127.0.0.1"
     assert config.initialize == :never
+  end
+
+  test "accepts an explicit gRPC listener and rejects malformed values" do
+    assert {:error, message} =
+             Config.load(%{"TAY_GRPC_PORT" => "50051", "TAY_GRPC_IP" => "0.0.0.0"})
+
+    assert message =~ "TAY_GRPC_TLS"
+
+    assert {:ok, config} =
+             Config.load(%{
+               "TAY_GRPC_PORT" => "50051",
+               "TAY_GRPC_IP" => "0.0.0.0",
+               "TAY_GRPC_TLS_CERTFILE" => "/etc/tay/server.pem",
+               "TAY_GRPC_TLS_KEYFILE" => "/etc/tay/server.key",
+               "TAY_GRPC_TLS_CACERTFILE" => "/etc/tay/ca.pem"
+             })
+
+    assert config.grpc_port == 50_051
+    assert config.grpc_ip == "0.0.0.0"
+    assert config.grpc_tls_certfile == "/etc/tay/server.pem"
+
+    assert {:error, message} = Config.load(%{"TAY_GRPC_PORT" => "0"})
+    assert message =~ "TAY_GRPC_PORT"
+
+    assert {:error, message} = Config.load(%{"TAY_GRPC_IP" => "localhost"})
+    assert message =~ "TAY_GRPC_IP"
+
+    assert {:error, message} = Config.load(%{"TAY_GRPC_TLS_KEYFILE" => "relative.key"})
+    assert message =~ "absolute path"
   end
 
   test "accepts explicit initialization values" do

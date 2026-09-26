@@ -23,8 +23,8 @@ Add both packages to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "~> 0.12.0"},
-    {:tay_dashboard, "~> 0.12.0"}
+    {:tay, "~> 0.13.0"},
+    {:tay_dashboard, "~> 0.13.0"}
   ]
 end
 ```

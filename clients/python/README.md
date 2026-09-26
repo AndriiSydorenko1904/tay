@@ -10,6 +10,66 @@ package:
 python -m pip install tay-client
 ```
 
+## gRPC producer
+
+For a TCP gRPC producer, enable the Engine's `grpc_port` and install the
+optional runtime dependency:
+
+```sh
+python -m pip install 'tay-client[grpc]'
+```
+
+`TayGrpc` is an async producer-only client. It supports `enqueue`, job status,
+cancellation, and result retrieval; workers and schedules remain on the local
+Protocol v1 socket.
+
+```python
+from tay import TayGrpc
+
+async with TayGrpc("127.0.0.1:50051") as tay:
+    job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
+    result = await job.result()
+```
+
+For a Tay server on another host, configure mTLS on the Engine and supply a CA
+certificate, client certificate chain, and client private key:
+
+```python
+async with TayGrpc(
+    "tay.example:50051",
+    tls_ca_file="/etc/tay/server-ca.pem",
+    tls_cert_file="/etc/tay/client.pem",
+    tls_key_file="/etc/tay/client.key",
+) as tay:
+    job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
+```
+
+The Python client can also load those three credentials from one encrypted
+PKCS#12 file. Install `tay-client[grpc-pkcs12]` and export a bundle containing
+the client key, client certificate, and trusted CA certificate:
+
+```sh
+openssl pkcs12 -export -inkey client.key -in client.pem \
+  -certfile ca.pem -out client.p12
+```
+
+OpenSSL prompts for a bundle password. The CA private key must not be included.
+
+```python
+async with TayGrpc(
+    "10.0.0.5:50051",
+    tls_pkcs12_file="/etc/tay/client.p12",
+    tls_pkcs12_password="bundle-password",
+) as tay:
+    job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
+```
+
+Provide the password through your secret manager rather than hard-coding it.
+`TayGrpc` rejects non-loopback targets unless complete mTLS credentials are given.
+The server certificate must match the target hostname (or IP address). Keep
+private keys protected and restrict network access to the gRPC port. The
+loopback endpoint may still be used without TLS on the same host.
+
 From a Tay source checkout, use `python -m pip install ./clients/python`.
 
 Create a `Tay(mode="client")` producer, or a `Tay(mode="worker")` process that

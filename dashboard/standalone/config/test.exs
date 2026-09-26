@@ -6,6 +6,7 @@ config :tay_dashboard_standalone, serve: false
 
 config :tay_dashboard_standalone,
   environment: %{
+    "ENABLE_DASHBOARD" => "true",
     "TAY_DASHBOARD_HOST" => "localhost",
     "TAY_DASHBOARD_PORT" => "4002",
     "TAY_DASHBOARD_USERNAME" => "admin",
