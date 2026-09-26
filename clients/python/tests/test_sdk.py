@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import pathlib
 import sys
 import tempfile
@@ -164,7 +165,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             ca.write_bytes(b"CA")
             cert.write_bytes(b"CERT")
             key.write_bytes(b"KEY")
-            with patch.dict(sys.modules, {"grpc": fake_grpc}):
+            with patch.object(importlib.import_module("tay.grpc"), "grpc", fake_grpc):
                 client = TayGrpc(
                     "tay.example:50051",
                     tls_ca_file=ca,
@@ -181,6 +182,14 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(calls[1], ("tay.example:50051", "credentials"))
             await client.close()
+
+    async def test_pkcs12_extra_is_required_only_for_pkcs12(self) -> None:
+        grpc_module = importlib.import_module("tay.grpc")
+        with (
+            patch.object(grpc_module, "x509", None),
+            self.assertRaisesRegex(RuntimeError, r"tay-client\[grpc-pkcs12\]"),
+        ):
+            grpc_module._pkcs12_credentials("unused.p12", None)
 
     async def test_listener_bounds_are_validated_before_connecting(self) -> None:
         with self.assertRaises(ValidationError):
