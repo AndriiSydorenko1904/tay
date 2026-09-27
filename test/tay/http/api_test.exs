@@ -108,8 +108,8 @@ defmodule Tay.HTTP.APITest do
         @worker.task(name="tests.python.remote.v1")
         def double(value):
             return {"answer": value * 2}
-        await worker.start()
-        runner = asyncio.create_task(worker.run())
+        await worker.register()
+        runner = asyncio.create_task(worker.serve_forever())
         try:
             async with TayHTTP(sys.argv[1]) as producer:
                 job = await producer.enqueue("tests.python.remote.v1", {"value": 4})

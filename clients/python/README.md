@@ -74,7 +74,7 @@ def rebuild(report_id: str) -> dict:
     return {"report_id": report_id, "rebuilt": True}
 
 
-asyncio.run(worker.run())
+asyncio.run(worker.serve_forever())
 ```
 
 The worker continuously long-polls, acknowledges starts and reports bounded
@@ -92,7 +92,13 @@ The producer surface is asynchronous: `enqueue`, `JobHandle.status()`,
 supported Protocol v1 requests. Use a stable `submission_id` when retrying an
 enqueue whose connection outcome is unknown.
 
-Tasks declared before `await tay.start()` are advertised during the handshake.
+For `TayHTTPWorker`, tasks declared before `await worker.register()` are
+advertised when it registers. `register()` only creates the remote worker
+session; use `serve_forever()` to register and then continuously claim and
+execute jobs.
+
+Tasks declared before `await tay.start()` are advertised during the local
+socket handshake.
 For a long-running worker that adds or removes capabilities later, explicitly
 sync the change:
 

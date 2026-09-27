@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -285,7 +286,12 @@ class TayHTTPWorker(TayHTTP):
 
         return register(function) if function is not None else register
 
-    async def start(self) -> None:
+    async def register(self) -> None:
+        """Register this worker's task capabilities and obtain a session token.
+
+        Registration alone does not claim or execute jobs.  Use
+        :meth:`serve_forever` to run the worker loop.
+        """
         if self._token is not None:
             return
         if not self._tasks:
@@ -307,6 +313,16 @@ class TayHTTPWorker(TayHTTP):
             raise ProtocolError("Tay did not return a valid worker token")
         self._token = token
 
+    async def start(self) -> None:
+        """Deprecated alias for :meth:`register`."""
+        warnings.warn(
+            "TayHTTPWorker.start() only registers the worker; use register() "
+            "or serve_forever() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        await self.register()
+
     async def close(self) -> None:
         token, self._token = self._token, None
         if token is not None:
@@ -316,13 +332,22 @@ class TayHTTPWorker(TayHTTP):
                 )
         await super().close()
 
-    async def run(self) -> None:
-        """Poll until cancelled; keep polling while tasks execute."""
-        await self.start()
+    async def serve_forever(self) -> None:
+        """Register, then claim and execute jobs until cancelled."""
+        await self.register()
         try:
             await self._run_loop()
         finally:
             await self.close()
+
+    async def run(self) -> None:
+        """Deprecated alias for :meth:`serve_forever`."""
+        warnings.warn(
+            "TayHTTPWorker.run() is deprecated; use serve_forever() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        await self.serve_forever()
 
     async def _run_loop(self) -> None:
         while True:
@@ -336,7 +361,7 @@ class TayHTTPWorker(TayHTTP):
             except ServerError as exc:
                 if exc.code == "unknown_worker":
                     self._token = None
-                    await self.start()
+                    await self.register()
                     continue
                 if exc.code == "claim_in_progress":
                     await asyncio.sleep(_WORKER_RETRY_DELAY_SECONDS)

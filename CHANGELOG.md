@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.15.2 — 2026-09-27
+
+### Changed
+
+- Renamed the HTTP worker lifecycle methods to `register()` and
+  `serve_forever()` to make explicit that registration alone does not process
+  jobs. Kept `start()` and `run()` as deprecated compatibility aliases.
+
 ## 0.15.1 — 2026-09-27
 
 ### Fixed
