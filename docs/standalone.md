@@ -116,7 +116,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:0.15.0
+  ghcr.io/andriisydorenko1904/tay:0.15.1
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -124,7 +124,7 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v0.15.0/clients/python).
+[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v0.15.1/clients/python).
 
 The health check succeeds only when the Engine reports `ready` and the selected
 transport is available (HTTP if the socket is disabled, otherwise the UDS).

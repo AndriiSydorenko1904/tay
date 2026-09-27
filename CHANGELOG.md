@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.15.1 — 2026-09-27
+
+### Fixed
+
+- Make the HTTP-only health test probe a listening TCP port without starting a
+  production-durability Store on the CI runner's unsupported `/tmp` filesystem.
+  Production standalone durability remains strict `:sync`.
+
 ## 0.15.0 — 2026-09-27
 
 ### Changed

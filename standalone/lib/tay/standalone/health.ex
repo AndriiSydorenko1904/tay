@@ -2,8 +2,12 @@ defmodule Tay.Standalone.Health do
   @moduledoc false
 
   @spec check!() :: :ok
-  def check! do
-    with %{state: :ready} <- Tay.status(),
+  def check!, do: check!(Tay.status())
+
+  @doc false
+  @spec check!(map()) :: :ok
+  def check!(status) do
+    with %{state: :ready} <- status,
          {:ok, config} <- Tay.Standalone.Config.load(),
          {:ok, socket} <- connect(config) do
       :ok = :gen_tcp.close(socket)
