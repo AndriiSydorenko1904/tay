@@ -2,14 +2,27 @@
 
 ## Unreleased
 
+## 0.15.0 — 2026-09-27
+
+### Changed
+
+- Added mTLS-capable remote HTTP workers with long polling, execution
+  acknowledgements, bounded results, cancellation events, and session expiry.
+- Allow standalone HTTP-only operation with `TAY_SOCKET_PATH=off`; the local
+  Unix socket remains available when local workers are desired.
+- Added Python `TayHTTPWorker` for remote task execution and kept the local
+  socket client available. Named the Python HTTP response and worker limits.
+- Merged the dashboard into the single `tay` Hex package and moved its release
+  host under `standalone/`; removed the separate dashboard package.
+
 ## 0.14.0 — 2026-09-27
 
 ### Changed
 
 - Replaced the gRPC/Go gateway with an optional Bandit HTTP/JSON producer API
   in the Elixir Engine; Cowboy and cowlib are not dependencies.
-- Updated the Python producer client to use HTTP/JSON and retained mTLS for
-  remote connections. Consolidated container examples into one Compose file.
+- Added the Python HTTP/JSON producer client with mTLS support and consolidated
+  the container examples into one Compose file.
 
 ## 0.13.1 — 2026-09-26
 
@@ -43,7 +56,7 @@
 - Added `TAY_TERMINAL_RETENTION` duration configuration for the standalone
   runtime, including minute, hour, and day forms such as `30m`, `24h`, and `7d`.
 - Bundled the optional dashboard into the single `tay` OCI image, enabled with
-  `ENABLE_DASHBOARD=true`.
+  `TAY_ENABLE_DASHBOARD=true`.
 
 ### Changed
 

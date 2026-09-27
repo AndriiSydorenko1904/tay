@@ -85,7 +85,7 @@ produce a weakly consistent live view, so refresh after administrative actions
 or engine restart.
 
 `Tay.stats/1` and `Tay.queues/1` use reconstructable runtime counters rather
-than scanning retained history. The optional `tay_dashboard` Hex package mounts
+than scanning retained history. The dashboard included in the `tay` Hex package mounts
 these APIs in a host Phoenix application. It is not an authentication boundary;
 protect its router scope with the host application's administrator pipeline.
 

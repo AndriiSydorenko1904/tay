@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "0.14.0"
+  @version "0.15.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -73,6 +73,12 @@ defmodule Tay.MixProject do
       deps: [
         {:telemetry, "~> 1.3"},
         {:bandit, "~> 1.12"},
+        {:phoenix, "~> 1.8.14"},
+        {:phoenix_live_view, "~> 1.2.11"},
+        {:phoenix_html, "~> 4.3"},
+        {:jason, "~> 1.4"},
+        {:floki, ">= 0.38.0", only: :test},
+        {:lazy_html, ">= 0.1.0", only: :test},
         {:stream_data, "~> 1.2", only: :test},
         {:ex_doc, "~> 0.40.4", only: :dev, runtime: false}
       ]
@@ -108,7 +114,9 @@ defmodule Tay.MixProject do
         "docs/storage.md",
         "docs/operations.md",
         "docs/compatibility.md",
-        "docs/standalone.md"
+        "docs/standalone.md",
+        "docs/dashboard.md",
+        "docs/dashboard-container.md"
       ],
       build_tools: ["mix"],
       links: %{
@@ -131,7 +139,9 @@ defmodule Tay.MixProject do
         "docs/storage.md",
         "docs/operations.md",
         "docs/compatibility.md",
-        "docs/standalone.md"
+        "docs/standalone.md",
+        "docs/dashboard.md",
+        "docs/dashboard-container.md"
       ]
     ]
   end

@@ -6,9 +6,7 @@ on:
       - Dockerfile
       - .dockerignore
       - standalone/**
-      - dashboard/**
       - examples/standalone/**
-      - examples/dashboard/**
       - lib/**
       - compose.yml
       - mix.exs
@@ -19,9 +17,7 @@ on:
       - Dockerfile
       - .dockerignore
       - standalone/**
-      - dashboard/**
       - examples/standalone/**
-      - examples/dashboard/**
       - lib/**
       - compose.yml
       - mix.exs
@@ -54,22 +50,6 @@ jobs:
           MIX_ENV=prod mix release tay_standalone
       - name: Exercise fresh start, readiness, stop, and recovery
         run: standalone/test/release_smoke.sh
-      - name: Test the dashboard package and build its documentation
-        working-directory: dashboard
-        run: |
-          mix deps.get --check-locked
-          mix format --check-formatted
-          mix test --warnings-as-errors
-          mix docs --warnings-as-errors
-          TAY_DASHBOARD_PACKAGE=1 mix hex.build
-      - name: Test the optional dashboard host
-        working-directory: dashboard/standalone
-        run: |
-          mix deps.get --check-locked
-          mix format --check-formatted
-          mix test --warnings-as-errors
-          MIX_ENV=prod mix compile --warnings-as-errors
-          MIX_ENV=prod mix release tay_standalone
       - name: Build the production image
         run: docker build --tag tay-standalone:test .
       - name: Build the example Python worker
@@ -81,4 +61,6 @@ jobs:
           standalone/test/container_smoke.sh
           tay-standalone:test tay-standalone-worker:test
       - name: Exercise the optional dashboard in the same image
-        run: dashboard/standalone/test/container_smoke.sh tay-standalone:test
+        run: standalone/test/dashboard_container_smoke.sh tay-standalone:test
+      - name: Exercise HTTP-only mode without a Unix socket
+        run: standalone/test/http_only_container_smoke.sh tay-standalone:test

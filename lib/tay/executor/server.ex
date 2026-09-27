@@ -4,6 +4,7 @@ defmodule Tay.Executor.Server do
   import Bitwise
 
   alias Tay.Executor.{Connection, Protocol}
+  alias Tay.HTTP.WorkerSession
   alias Tay.Schedule
 
   @call_timeout 5_000
@@ -11,8 +12,8 @@ defmodule Tay.Executor.Server do
   @schedule_retry_ms 1_000
   @max_pending_requests 64
 
-  # The listener is deliberately a child of an execution generation.  Jobs are
-  # durable, but socket handles, registrations and capacity reservations are
+  # Executor sessions are deliberately children of an execution generation. Jobs are
+  # durable, but socket handles, HTTP worker sessions and capacity reservations are
   # not: a restarted Tay starts with no executors until clients reconnect.
   def child_spec(options) do
     %{
@@ -27,7 +28,11 @@ defmodule Tay.Executor.Server do
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
   def available_tasks(server), do: GenServer.call(server, :available_tasks, @call_timeout)
-  def reserve(server, task), do: GenServer.call(server, {:reserve, task}, @call_timeout)
+
+  def reserve(server, task), do: reserve(server, task, :all)
+
+  def reserve(server, task, queue),
+    do: GenServer.call(server, {:reserve, task, queue}, @call_timeout)
 
   def dispatch(server, reservation, job),
     do: GenServer.call(server, {:dispatch, reservation, job}, @call_timeout)
@@ -37,6 +42,16 @@ defmodule Tay.Executor.Server do
 
   def cancel(server, reservation),
     do: GenServer.call(server, {:cancel, reservation}, @call_timeout)
+
+  def register_http_worker(server, runtime_id, tasks, capacity, queue),
+    do:
+      GenServer.call(
+        server,
+        {:register_http_worker, runtime_id, tasks, capacity, queue},
+        @call_timeout
+      )
+
+  def http_worker(server, token), do: GenServer.call(server, {:http_worker, token}, @call_timeout)
 
   def hello(server, connection, session),
     do: GenServer.call(server, {:hello, connection, session}, @call_timeout)
@@ -86,22 +101,13 @@ defmodule Tay.Executor.Server do
   @impl true
   def init(options) do
     with {:ok, config} <- config(options),
-         :ok <- prepare_socket(config.socket_path, config.private_directory),
-         {:ok, listener} <- listen(config.socket_path),
-         :ok <- File.chmod(config.socket_path, config.socket_mode) do
-      server = self()
-      # The acceptor owns the listening port after handoff. Linking it prevents
-      # an orphaned socket/accept loop if this generation is killed before its
-      # orderly terminate callback can remove the ephemeral socket path.
-      acceptor = spawn_link(fn -> acceptor_wait(server, listener) end)
-      :ok = :gen_tcp.controlling_process(listener, acceptor)
-      send(acceptor, :accept)
-
+         {:ok, listener, acceptor, acceptor_monitor} <- start_socket(config) do
       state =
         Map.merge(config, %{
           listener: listener,
           acceptor: acceptor,
-          acceptor_monitor: Process.monitor(acceptor),
+          acceptor_monitor: acceptor_monitor,
+          http_workers: %{},
           connections: %{},
           monitors: %{},
           reservations: %{},
@@ -114,6 +120,20 @@ defmodule Tay.Executor.Server do
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp start_socket(%{socket_path: nil}), do: {:ok, nil, nil, nil}
+
+  defp start_socket(config) do
+    with :ok <- prepare_socket(config.socket_path, config.private_directory),
+         {:ok, listener} <- listen(config.socket_path),
+         :ok <- File.chmod(config.socket_path, config.socket_mode) do
+      server = self()
+      acceptor = spawn_link(fn -> acceptor_wait(server, listener) end)
+      :ok = :gen_tcp.controlling_process(listener, acceptor)
+      send(acceptor, :accept)
+      {:ok, listener, acceptor, Process.monitor(acceptor)}
     end
   end
 
@@ -214,6 +234,48 @@ defmodule Tay.Executor.Server do
   @impl true
   def handle_call(:available_tasks, _from, s), do: {:reply, capabilities(s), s}
 
+  def handle_call({:register_http_worker, runtime_id, tasks, capacity, queue}, _from, s) do
+    valid =
+      Protocol.identifier?(runtime_id) and valid_tasks?(tasks, s.max_tasks_per_connection) and
+        tasks != [] and is_integer(capacity) and capacity in 1..256 and
+        Protocol.task_key?(queue) and map_size(s.connections) < s.max_connections
+
+    if valid do
+      token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+      {:ok, worker} = WorkerSession.start(capacity, self())
+      monitor = Process.monitor(worker)
+
+      entry = %{
+        mode: "worker",
+        runtime_id: runtime_id,
+        capacity: capacity,
+        tasks: MapSet.new(tasks),
+        reservations: MapSet.new(),
+        queue: queue,
+        token: token
+      }
+
+      state = %{
+        s
+        | connections: Map.put(s.connections, worker, entry),
+          monitors: Map.put(s.monitors, monitor, worker),
+          http_workers: Map.put(s.http_workers, token, worker)
+      }
+
+      notify_capacity(state)
+      {:reply, {:ok, token}, state}
+    else
+      {:reply, {:error, "invalid_worker"}, s}
+    end
+  end
+
+  def handle_call({:http_worker, token}, _from, s) do
+    case Map.fetch(s.http_workers, token) do
+      {:ok, pid} -> {:reply, {:ok, pid, s.connections[pid].queue}, s}
+      :error -> {:reply, {:error, "unknown_worker"}, s}
+    end
+  end
+
   def handle_call({:result, job_id}, _from, s) when is_binary(job_id) do
     case Map.fetch(s.results, job_id) do
       {:ok, result} -> {:reply, {:ok, result}, s}
@@ -302,8 +364,8 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  def handle_call({:reserve, task}, _from, s) do
-    case choose_executor(s, task) do
+  def handle_call({:reserve, task, queue}, _from, s) do
+    case choose_executor(s, task, queue) do
       nil ->
         {:reply, {:error, :unavailable}, s}
 
@@ -451,14 +513,16 @@ defmodule Tay.Executor.Server do
       Process.exit(s.acceptor, :shutdown)
     end
 
-    remove_socket(s.socket_path)
+    if s.socket_path, do: remove_socket(s.socket_path)
     :ok
   end
 
   defp config(options) when is_map(options) do
     with true <- is_pid(options.engine) || {:error, :invalid_engine},
          true <- is_atom(options.engine_name) || {:error, :invalid_engine_name},
-         true <- socket_path?(options.socket_path) || {:error, :invalid_socket_path},
+         true <-
+           (is_nil(options.socket_path) or socket_path?(options.socket_path)) ||
+             {:error, :invalid_socket_path},
          true <- options.socket_mode in [0o600, 0o660] || {:error, :invalid_socket_mode},
          true <- is_boolean(options.private_directory) || {:error, :invalid_socket_directory_mode},
          true <-
@@ -633,11 +697,12 @@ defmodule Tay.Executor.Server do
     |> Enum.sort()
   end
 
-  defp choose_executor(s, task) do
+  defp choose_executor(s, task, queue) do
     if Protocol.task_key?(task) do
       s.connections
       |> Enum.filter(fn {_connection, entry} ->
-        executor_available?(entry) and MapSet.member?(entry.tasks, task)
+        executor_available?(entry) and MapSet.member?(entry.tasks, task) and
+          (queue == :all or Map.get(entry, :queue, :all) in [:all, queue])
       end)
       |> Enum.min_by(
         fn {connection, entry} ->
@@ -696,7 +761,12 @@ defmodule Tay.Executor.Server do
         state = %{
           s
           | connections: connections,
-            reservations: Map.drop(s.reservations, MapSet.to_list(entry.reservations))
+            reservations: Map.drop(s.reservations, MapSet.to_list(entry.reservations)),
+            http_workers:
+              if(Map.has_key?(entry, :token),
+                do: Map.delete(s.http_workers, entry.token),
+                else: s.http_workers
+              )
         }
 
         notify_capacity(state)

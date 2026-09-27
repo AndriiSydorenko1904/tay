@@ -153,7 +153,6 @@ defmodule Tay.Engine.Config do
         c.executor_result_bytes <= c.executor_max_frame_bytes and
         c.executor_error_bytes <= c.executor_max_frame_bytes and
         http_port?(c.http_port) and http_ip?(c.http_ip) and http_tls?(c) and
-        (is_nil(c.http_port) or not is_nil(c.executor_socket)) and
         c.http_max_body_bytes <= 16_777_216 and
         is_boolean(c.start_paused) and
         Enum.all?([c.max_history_bytes, c.max_segments], fn limit ->

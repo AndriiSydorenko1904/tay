@@ -10,11 +10,12 @@ package:
 python -m pip install tay-client
 ```
 
-## HTTP/JSON producer
+## HTTP/JSON producer and remote worker
 
 Enable the Bandit listener with `TAY_HTTP_PORT=8080` for a local deployment.
-`TayHTTP` is an async producer-only client for enqueue, status, cancellation,
-and result retrieval; workers and schedules still use the local socket.
+`TayHTTP` is an async producer client for enqueue, status, cancellation,
+and result retrieval. `TayHTTPWorker` runs remote workers over the same HTTP
+listener; schedules still use the local socket.
 
 ```python
 from tay import TayHTTP
@@ -54,6 +55,31 @@ async with TayHTTP(
 The PEM key and certificate are extracted into a private temporary directory
 only while Python loads them into its TLS context, then removed. The CA private
 key must never be included in the bundle.
+
+A worker can connect from another host without a shared filesystem:
+
+```python
+import asyncio
+from tay import TayHTTPWorker
+
+worker = TayHTTPWorker(
+    "https://tay.example:8080",
+    tls_pkcs12_file="/etc/tay/client.p12",
+    tls_pkcs12_password="from-a-secret-manager",
+)
+
+
+@worker.task(name="reports.rebuild.v1")
+def rebuild(report_id: str) -> dict:
+    return {"report_id": report_id, "rebuilt": True}
+
+
+asyncio.run(worker.run())
+```
+
+The worker continuously long-polls, acknowledges starts and reports bounded
+results. Keep it polling while executions run; session expiry causes in-flight
+work to be retried at least once. Make external effects idempotent.
 
 From a Tay source checkout, use `python -m pip install ./clients/python`.
 

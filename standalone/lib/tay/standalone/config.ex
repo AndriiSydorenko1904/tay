@@ -20,7 +20,7 @@ defmodule Tay.Standalone.Config do
 
   @type t :: %__MODULE__{
           data_dir: String.t(),
-          socket_path: String.t(),
+          socket_path: nil | String.t(),
           http_port: nil | pos_integer(),
           http_ip: String.t(),
           http_tls_certfile: nil | String.t(),
@@ -39,13 +39,14 @@ defmodule Tay.Standalone.Config do
 
   def load(environment) when is_map(environment) do
     with {:ok, data_dir} <- path(environment, "TAY_DATA_DIR", @data_default, :data),
-         {:ok, socket_path} <- path(environment, "TAY_SOCKET_PATH", @socket_default, :socket),
+         {:ok, socket_path} <- socket_path(environment),
          :ok <- outside_data_dir(socket_path, data_dir),
          :ok <- legacy_grpc_environment(environment),
          {:ok, http_port} <- optional_port(environment),
          {:ok, http_ip} <- http_ip(environment),
          {:ok, tls} <- http_tls(environment),
          :ok <- validate_http(http_port, http_ip, tls),
+         :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
          {:ok, max_jobs} <- nonnegative(environment, "TAY_MAX_JOBS", 100_000),
          {:ok, max_state_bytes} <-
@@ -174,6 +175,18 @@ defmodule Tay.Standalone.Config do
         {:ok, Path.expand(value)}
     end
   end
+
+  defp socket_path(environment) do
+    case Map.get(environment, "TAY_SOCKET_PATH", @socket_default) do
+      "off" -> {:ok, nil}
+      _ -> path(environment, "TAY_SOCKET_PATH", @socket_default, :socket)
+    end
+  end
+
+  defp require_transport(nil, nil), do: {:error, "enable TAY_HTTP_PORT when TAY_SOCKET_PATH=off"}
+  defp require_transport(_, _), do: :ok
+
+  defp outside_data_dir(nil, _data_dir), do: :ok
 
   defp outside_data_dir(socket_path, data_dir) do
     if socket_path == data_dir or String.starts_with?(socket_path, data_dir <> "/") do

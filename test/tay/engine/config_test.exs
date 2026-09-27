@@ -77,7 +77,10 @@ defmodule Tay.Engine.ConfigTest do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, %{http_port: 8080}} = Config.new(base ++ [http_port: 8080])
     assert {:error, _} = Config.new(base ++ [http_port: 8080, http_ip: "0.0.0.0"])
-    assert {:error, _} = Config.new(base ++ [http_port: 8080, executor_socket: nil])
+
+    assert {:ok, %{executor_socket: nil}} =
+             Config.new(base ++ [http_port: 8080, executor_socket: nil])
+
     assert {:error, _} = Config.new(base ++ [http_port: 0])
     assert {:error, _} = Config.new(base ++ [http_port: 8080, http_tls_certfile: "/cert.pem"])
 

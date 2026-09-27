@@ -50,17 +50,21 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
+docker pull ghcr.io/andriisydorenko1904/tay:0.15.0
 ```
 
-For a ready-made application + Tay example:
+For a ready-made Tay deployment example:
 
 ```sh
 docker compose up --build
 ```
 
+To add the optional local Python socket worker, use
+`docker compose --profile local-worker up --build`.
+
 The Tay container owns durable state at `/var/lib/tay`. Applications and
-language workers communicate with it through the shared `/run/tay` Unix socket.
+language workers can use the shared `/run/tay` Unix socket or the optional
+HTTP/JSON API with mTLS. Set `TAY_SOCKET_PATH=off` for HTTP-only standalone use.
 
 Restarting or replacing the Tay container does not discard jobs as long as the
 data volume is preserved.
@@ -68,7 +72,7 @@ data volume is preserved.
 Want the operational UI as well?
 
 ```sh
-ENABLE_DASHBOARD=true docker compose up --build
+TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open:
@@ -78,10 +82,10 @@ http://localhost:4000/tay
 ```
 
 The same image contains the optional dashboard. Enable it with
-`ENABLE_DASHBOARD=true`:
+`TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
+docker pull ghcr.io/andriisydorenko1904/tay:0.15.0
 ```
 
 ## Why Tay?
@@ -142,9 +146,9 @@ component:
     persistent volume
 ```
 
-Unlike a network message broker, worker execution is deliberately local: Tay
-uses a Unix-domain socket for worker registration and dispatch. An optional
-Bandit optionally exposes HTTP/JSON producer operations over TCP. See
+Tay remains a single-node durable engine, while producers and workers may
+connect through Bandit HTTP/JSON from another host. Local workers can still use
+the Unix-domain socket. See
 [`docs/protocol.md`](docs/protocol.md).
 
 This keeps the single-node trust and failure model explicit while allowing the
@@ -163,7 +167,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 0.14.0"}
+    {:tay, "~> 0.15.0"}
   ]
 end
 ```
@@ -273,16 +277,9 @@ List and summarize jobs through the bounded public inspection API:
 {:ok, queues} = Tay.queues()
 ```
 
-The separately published optional `tay_dashboard` package provides an official
-Phoenix LiveView UI for these APIs.
-
-It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.14.0/dashboard),
-but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
-
-See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.14.0/dashboard/README.md)
-for installation, router mounting, and access-control guidance.
+The `tay` package includes a Phoenix LiveView dashboard for these APIs.
+Its modules live under `lib/tay/dashboard/`; see the
+[dashboard guide](docs/dashboard.md) for router mounting and access control.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
 follow a durable write; reconcile by job ID or resubmit the *same* intent,
@@ -309,8 +306,9 @@ Python processes execute application code.
 When Tay is embedded in Elixir, the Engine starts a local Unix-domain socket
 automatically.
 
-When Tay runs as a standalone container, mount the shared socket volume into
-the Python worker container.
+When Tay runs as a standalone container, local Python workers may share the
+socket volume. Workers on another host instead connect to the mTLS HTTP API;
+no shared socket is needed.
 
 The same `tay-client` SDK is used in both cases.
 
@@ -419,10 +417,10 @@ catch-up and enforced overlap policies are not yet implemented. Once a timer is
 due, temporary admission pressure delays that occurrence instead of dropping
 it; its deterministic job ID makes retries idempotent.
 
-Worker dispatch remains local-only; there is no multi-host worker protocol.
-The optional Bandit HTTP/JSON API exposes producer operations over TCP. It is
+The optional Bandit HTTP/JSON API exposes producer and worker operations over TCP. It is
 disabled by default; plaintext binds only to loopback and remote access
-requires mTLS.
+requires mTLS. Tay's storage remains single-node; remote workers do not turn
+the engine into a distributed Store.
 
 See the [protocol contract](docs/protocol.md) for discovery, security, request
 types, and result retention.
@@ -433,7 +431,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:0.14.0
+ghcr.io/andriisydorenko1904/tay:0.15.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -443,7 +441,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
+docker pull ghcr.io/andriisydorenko1904/tay:0.15.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -474,11 +472,13 @@ Durable state belongs on:
 /var/lib/tay
 ```
 
-The included example starts both services:
+The Compose example starts Tay; the local worker uses an optional profile:
 
 ```sh
 docker compose up --build
 ```
+
+Run `docker compose --profile local-worker up --build` to include that worker.
 
 The container is:
 
@@ -505,13 +505,13 @@ The `tay` image contains Tay core and the small Phoenix host in one release.
 The web endpoint is disabled by default and enabled with:
 
 ```text
-ENABLE_DASHBOARD=true
+TAY_ENABLE_DASHBOARD=true
 ```
 
 Start the repository example:
 
 ```sh
-ENABLE_DASHBOARD=true docker compose up --build
+TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open:
@@ -526,7 +526,7 @@ authentication disabled.
 The single Tay container owns the Store and optionally serves the dashboard.
 
 See the
-[complete dashboard container guide](dashboard/guides/docker.md)
+[complete dashboard container guide](docs/dashboard-container.md)
 for configuration, optional Basic authentication, reverse-proxy guidance,
 persistence, and upgrade rules.
 

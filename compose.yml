@@ -1,20 +1,27 @@
+# Local deployment example, not a complete settings inventory.
+# See docs/standalone.md for all supported variables and mTLS requirements.
+# Durability is fixed to :sync in the standalone runtime; it has no env override.
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.14.0}
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.15.0}
     build: .
     environment:
       TAY_DATA_DIR: /var/lib/tay/store
-      TAY_SOCKET_PATH: /run/tay/tay.sock
+      TAY_SOCKET_PATH: ${TAY_SOCKET_PATH:-/run/tay/tay.sock}
       TAY_INITIALIZE_IF_MISSING: "true"
+      TAY_MAX_JOBS: ${TAY_MAX_JOBS:-100000}
+      TAY_MAX_STATE_BYTES: ${TAY_MAX_STATE_BYTES:-268435456}
+      TAY_MAX_STATE_NODES: ${TAY_MAX_STATE_NODES:-2000000}
+      TAY_MAX_TERMINAL_JOBS: ${TAY_MAX_TERMINAL_JOBS:-5000}
       TAY_TERMINAL_RETENTION: ${TAY_TERMINAL_RETENTION:-24h}
-      ENABLE_DASHBOARD: ${ENABLE_DASHBOARD:-false}
+      TAY_ENABLE_DASHBOARD: ${TAY_ENABLE_DASHBOARD:-false}
       TAY_DASHBOARD_HOST: localhost
       TAY_DASHBOARD_PORT: "4000"
       TAY_DASHBOARD_SECRET_KEY_BASE: ${TAY_DASHBOARD_SECRET_KEY_BASE:-development-only-secret-key-base-change-this-before-production-000000}
       TAY_DASHBOARD_USERNAME: ${TAY_DASHBOARD_USERNAME:-}
       TAY_DASHBOARD_PASSWORD: ${TAY_DASHBOARD_PASSWORD:-}
       TAY_HTTP_PORT: ${TAY_HTTP_PORT:-}
-      TAY_HTTP_IP: ${TAY_HTTP_IP:-127.0.0.1}
+      TAY_HTTP_IP: ${TAY_HTTP_IP:-0.0.0.0}
       TAY_HTTP_TLS_CERTFILE: ${TAY_HTTP_TLS_CERTFILE:-}
       TAY_HTTP_TLS_KEYFILE: ${TAY_HTTP_TLS_KEYFILE:-}
       TAY_HTTP_TLS_CACERTFILE: ${TAY_HTTP_TLS_CACERTFILE:-}
@@ -32,6 +39,7 @@ services:
       - no-new-privileges:true
 
   worker:
+    profiles: [local-worker]
     build:
       context: .
       dockerfile: examples/standalone/worker.Dockerfile

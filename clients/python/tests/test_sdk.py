@@ -15,6 +15,7 @@ from tay import (
     ServerError,
     Tay,
     TayHTTP,
+    TayHTTPWorker,
     ValidationError,
     resolve_socket_path,
 )
@@ -110,6 +111,32 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0:2], ("POST", "/jobs"))
         self.assertEqual(calls[1][0:2], ("GET", "/jobs/http-job/result"))
 
+    async def test_http_response_limit_reads_only_one_extra_byte(self) -> None:
+        module = importlib.import_module("tay.http")
+        client = TayHTTP()
+        requested_sizes = []
+
+        class OversizedResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self, size):
+                requested_sizes.append(size)
+                return b"x" * size
+
+        with (
+            patch.object(client._opener, "open", return_value=OversizedResponse()),
+            self.assertRaisesRegex(ProtocolError, "response is too large"),
+        ):
+            await client._request("GET", "/jobs/test")
+
+        self.assertEqual(requested_sizes, [module._MAX_HTTP_RESPONSE_BYTES + 1])
+
     async def test_http_requires_mtls_for_remote_targets(self) -> None:
         with self.assertRaises(ValidationError):
             TayHTTP("http://tay.example:8080")
@@ -117,6 +144,10 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             TayHTTP("https://tay.example:8080")
         with self.assertRaises(ValidationError):
             TayHTTP("http://127.0.0.1:8080", tls_pkcs12_file="client.p12")
+        with self.assertRaises(ValidationError):
+            TayHTTPWorker("http://127.0.0.1:8080", capacity=0)
+        with self.assertRaises(ValidationError):
+            TayHTTPWorker("http://127.0.0.1:8080", request_timeout=5)
 
     async def test_pkcs12_extra_is_optional_for_socket_and_plain_http(self) -> None:
         module = importlib.import_module("tay.http")

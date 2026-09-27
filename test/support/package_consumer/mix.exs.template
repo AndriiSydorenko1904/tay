@@ -16,7 +16,14 @@ defmodule TayQualification.MixProject do
         {:plug_crypto, path: "vendor/plug_crypto", env: :prod, override: true},
         {:mime, path: "vendor/mime", env: :prod, override: true},
         {:thousand_island, path: "vendor/thousand_island", env: :prod, override: true},
-        {:websock, path: "vendor/websock", env: :prod, override: true}
+        {:websock, path: "vendor/websock", env: :prod, override: true},
+        {:jason, path: "vendor/jason", env: :prod, override: true},
+        {:phoenix, path: "vendor/phoenix", env: :prod, override: true},
+        {:phoenix_html, path: "vendor/phoenix_html", env: :prod, override: true},
+        {:phoenix_live_view, path: "vendor/phoenix_live_view", env: :prod, override: true},
+        {:phoenix_pubsub, path: "vendor/phoenix_pubsub", env: :prod, override: true},
+        {:phoenix_template, path: "vendor/phoenix_template", env: :prod, override: true},
+        {:websock_adapter, path: "vendor/websock_adapter", env: :prod, override: true}
       ],
       releases: [tay_qualification: [include_executables_for: [:unix]]]
     ]

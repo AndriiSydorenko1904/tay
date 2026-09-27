@@ -42,7 +42,9 @@ defmodule Tay.System.PackageTest do
     assert File.regular?(Path.join(vendor, "CHANGELOG.md"))
 
     assert Enum.sort(File.ls!(Path.join(vendor, "docs"))) ==
-             Enum.sort(~w(protocol.md storage.md operations.md compatibility.md standalone.md))
+             Enum.sort(
+               ~w(protocol.md storage.md operations.md compatibility.md standalone.md dashboard.md dashboard-container.md)
+             )
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))
@@ -55,7 +57,7 @@ defmodule Tay.System.PackageTest do
     templates = Path.join(@checkout, "test/support/package_consumer")
 
     for dependency <-
-          ~w(telemetry bandit hpax plug plug_crypto mime thousand_island websock) do
+          ~w(telemetry bandit hpax plug plug_crypto mime thousand_island websock jason phoenix phoenix_html phoenix_live_view phoenix_pubsub phoenix_template websock_adapter) do
       File.cp_r!(
         Path.join(@checkout, "deps/#{dependency}"),
         Path.join(consumer, "vendor/#{dependency}")

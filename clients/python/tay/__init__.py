@@ -1,4 +1,4 @@
-"""Public Python SDK for the Tay Protocol v1 local executor endpoint."""
+"""Public Python SDK for Tay's local socket and HTTP/JSON APIs."""
 
 from .client import JobHandle, ScheduleHandle, Tay
 from .errors import (
@@ -13,7 +13,7 @@ from .errors import (
     TayError,
     ValidationError,
 )
-from .http import HTTPJobHandle, TayHTTP
+from .http import HTTPJobHandle, TayHTTP, TayHTTPWorker
 from .socket_path import resolve_socket_path
 from .task import Task
 
@@ -33,6 +33,7 @@ __all__ = [
     "Tay",
     "TayError",
     "TayHTTP",
+    "TayHTTPWorker",
     "ValidationError",
     "resolve_socket_path",
 ]

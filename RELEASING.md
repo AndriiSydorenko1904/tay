@@ -1,9 +1,8 @@
 # Releasing Tay
 
-Tay is published as three independent public packages with the same version:
+Tay is published as two public packages with the same version:
 
-- `tay` on Hex.pm for the Elixir engine;
-- `tay_dashboard` on Hex.pm for the optional Phoenix LiveView dashboard;
+- `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
 
 Published versions are immutable. Run every check below from a clean checkout
@@ -12,10 +11,10 @@ public.
 
 ## Prepare
 
-1. Set the same SemVer in `mix.exs`, `dashboard/mix.exs`, and
+1. Set the same SemVer in `mix.exs` and
    `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
-3. Update versioned GitHub documentation links in both package metadata files.
+3. Update versioned GitHub documentation links in package metadata.
 4. Commit, create `v<version>`, and push the commit and tag.
 5. Verify that `https://github.com/AndriiSydorenko1904/tay` and the tag are
    accessible without authentication.
@@ -28,13 +27,6 @@ mix compile --warnings-as-errors
 mix test --warnings-as-errors
 TAY_PACKAGE_TEST=1 mix test test/tay/system/package_test.exs --warnings-as-errors
 mix hex.build
-
-cd dashboard
-mix format --check-formatted
-mix compile --warnings-as-errors
-mix test --warnings-as-errors
-TAY_DASHBOARD_PACKAGE=1 mix hex.build
-cd ..
 
 uvx ruff check clients/python
 uvx ruff format --check clients/python
@@ -54,9 +46,6 @@ and publish the package and HexDocs:
 ```sh
 mix hex.user auth
 mix hex.publish
-cd dashboard
-TAY_DASHBOARD_PACKAGE=1 mix hex.publish
-cd ..
 ```
 
 Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow
@@ -83,6 +72,5 @@ uvx twine upload clients/python/dist/*
 ```
 
 Never store Hex or PyPI credentials in this repository. After publishing,
-create clean consumer projects and install `{:tay, "~> <version>"}` and
-`{:tay_dashboard, "~> <version>"}` from Hex and `tay-client==<version>` from
-PyPI.
+create clean consumer projects and install `{:tay, "~> <version>"}` from Hex
+and `tay-client==<version>` from PyPI.

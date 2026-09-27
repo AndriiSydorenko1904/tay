@@ -10,6 +10,12 @@ defmodule Tay.Standalone.ConfigTest do
     assert config.initialize == :never
   end
 
+  test "allows HTTP-only runtime without a Unix socket" do
+    assert {:ok, config} = Config.load(%{"TAY_SOCKET_PATH" => "off", "TAY_HTTP_PORT" => "8080"})
+    assert config.socket_path == nil
+    assert {:error, _} = Config.load(%{"TAY_SOCKET_PATH" => "off"})
+  end
+
   test "rejects legacy gRPC settings on the Elixir runtime" do
     assert {:error, message} = Config.load(%{"TAY_GRPC_PORT" => "50051"})
     assert message =~ "TAY_HTTP_*"

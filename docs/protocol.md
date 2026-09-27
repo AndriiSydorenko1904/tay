@@ -1,17 +1,15 @@
-# Executor Protocol v1 and HTTP/JSON producer API
+# Executor Protocol v1 and HTTP/JSON API
 
 Tay's language-neutral executor boundary is a Unix-domain socket (UDS) on the
 same host. Socket and directory permissions define who may submit, inspect,
 cancel, and execute work. The socket is ephemeral and must stay outside the
 durable `data_dir`. Set `executor_socket: nil` to disable it.
 
-An optional Bandit HTTP/JSON listener exposes producer operations directly from
+An optional Bandit HTTP/JSON listener exposes producer and worker operations from
 the Engine. It is disabled by default. Set `http_port` (or `TAY_HTTP_PORT` in
 standalone) to enable it. Plain HTTP is limited to loopback; a non-loopback bind
-requires mTLS. Workers still use Protocol v1 through the Unix socket.
-HTTP clients need only an HTTP(S) URL; they never open the Unix socket. Tay's
-server keeps the socket because external workers currently register and receive
-jobs there. `http_port` with `executor_socket: nil` is therefore rejected.
+requires mTLS. Producers and workers can both use HTTP; the Unix socket remains
+available for local workers but can be disabled with `executor_socket: nil`.
 
 ## Socket discovery
 
@@ -115,3 +113,21 @@ For remote access, configure `http_ip`, `http_port`, and all three
 all trusted clients currently have the same producer privileges. Restrict
 network access and protect private keys. There is no per-client authorization
 or certificate revocation checking.
+
+## HTTP workers
+
+Workers register with `POST /workers` and a JSON body containing `runtime_id`,
+`tasks` (capability names), `capacity` (1–256), and optional `queue` (default `default`).
+The response contains an opaque `worker_token`. Subsequent worker requests send
+`Authorization: Bearer <worker_token>`. `POST /queues/:queue/claim` long-polls
+for up to 20 seconds and returns an `execute` or `cancel_execution` JSON event,
+or HTTP 204 when no event is ready. `POST /workers/started` acknowledges an
+execution; `POST /workers/complete` reports `outcome: success` with `result`,
+or `outcome: failure` with a bounded `error` object. Both include the received
+`reservation_id` and `execution_id`. `DELETE /workers` closes a session.
+
+The session expires after 60 seconds without a claim. Lost sessions release
+capacity and reconcile in-flight work through Tay's existing at-least-once
+recovery path. Workers must keep polling while tasks run. HTTP workers require
+HTTPS with mTLS when Tay listens on a non-loopback address. The token is a
+session credential; keep it secret and never log it.

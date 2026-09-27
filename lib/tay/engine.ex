@@ -783,12 +783,10 @@ defmodule Tay.Engine do
         Map.put(acc, kind, pid)
       end)
 
-    # The listener is a runtime child, not a foundation child: it is torn down
-    # with this Engine generation and stale Unix socket state is therefore not
-    # durable ownership. Passing `executor_socket: nil` explicitly remains the
-    # opt-out for a BEAM-only Engine; otherwise Config resolves a local path.
+    # The executor server is generation-local; registration and reservations
+    # are never durable. Either transport can keep it alive independently.
     executor_server =
-      if s.config.executor_socket do
+      if s.config.executor_socket || s.config.http_port do
         {:ok, server} =
           DynamicSupervisor.start_child(
             supervisor,
@@ -824,6 +822,8 @@ defmodule Tay.Engine do
              port: s.config.http_port,
              ip: s.config.http_ip,
              max_body_bytes: s.config.http_max_body_bytes,
+             result_bytes: s.config.executor_result_bytes,
+             error_bytes: s.config.executor_error_bytes,
              tls_certfile: s.config.http_tls_certfile,
              tls_keyfile: s.config.http_tls_keyfile,
              tls_cacertfile: s.config.http_tls_cacertfile
@@ -976,7 +976,11 @@ defmodule Tay.Engine do
         {:ok, {:local, worker}}
 
       _ when is_pid(s.executor_server) ->
-        case Server.reserve(s.executor_server, job.definition["worker_key"]) do
+        case Server.reserve(
+               s.executor_server,
+               job.definition["worker_key"],
+               job.definition["queue_key"]
+             ) do
           {:ok, reservation} -> {:ok, {:external, s.executor_server, reservation}}
           _ -> {:error, :no_executor_capacity}
         end
@@ -1627,7 +1631,8 @@ defmodule Tay.Engine do
          not Map.has_key?(config.workers, key))
   end
 
-  defp external_enabled?(config), do: is_binary(config.executor_socket)
+  defp external_enabled?(config),
+    do: is_binary(config.executor_socket) or is_integer(config.http_port)
 
   defp failure(s, kind, reason, raw),
     do: {{:error, Error.new(kind, reason, JobID.encode(raw), :insert)}, s}
