@@ -55,7 +55,7 @@ defmodule Tay.System.PackageTest do
     templates = Path.join(@checkout, "test/support/package_consumer")
 
     for dependency <-
-          ~w(telemetry grpc_server grpc_core protobuf cowboy cowlib ranch flow gen_stage googleapis jason) do
+          ~w(telemetry bandit hpax plug plug_crypto mime thousand_island websock) do
       File.cp_r!(
         Path.join(@checkout, "deps/#{dependency}"),
         Path.join(consumer, "vendor/#{dependency}")

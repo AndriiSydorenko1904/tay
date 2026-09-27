@@ -1,21 +1,17 @@
-# Executor Protocol v1 and gRPC producer API
+# Executor Protocol v1 and HTTP/JSON producer API
 
 Tay's language-neutral executor boundary is a Unix-domain socket (UDS) on the
 same host. Socket and directory permissions define who may submit, inspect,
 cancel, and execute work. The socket is ephemeral and must stay outside the
 durable `data_dir`. Set `executor_socket: nil` to disable it.
 
-An opt-in gRPC producer endpoint is also available. Set `grpc_port` to a port
-in `1..65535`; it binds to `grpc_ip`, which defaults to `127.0.0.1`. A loopback
-listener can use plaintext HTTP/2. Set all three options `grpc_tls_certfile`,
-`grpc_tls_keyfile`, and `grpc_tls_cacertfile` to enable TLS with mandatory client
-certificate verification (mTLS). A non-loopback bind is rejected unless all
-three certificate paths are configured. The server certificate must be valid
-for the DNS name or IP address used by clients; the CA file must trust their
-client certificates. Files must be absolute paths available to the Tay process.
-Keep the private key restricted to that process. The gRPC API supplements the
-UDS transport: task execution workers still connect and register through
-Protocol v1.
+An optional Bandit HTTP/JSON listener exposes producer operations directly from
+the Engine. It is disabled by default. Set `http_port` (or `TAY_HTTP_PORT` in
+standalone) to enable it. Plain HTTP is limited to loopback; a non-loopback bind
+requires mTLS. Workers still use Protocol v1 through the Unix socket.
+HTTP clients need only an HTTP(S) URL; they never open the Unix socket. Tay's
+server keeps the socket because external workers currently register and receive
+jobs there. `http_port` with `executor_socket: nil` is therefore rejected.
 
 ## Socket discovery
 
@@ -100,35 +96,22 @@ missed-time catch-up and overlap enforcement are not yet available. Custom
 retry curves, multi-host leases, and exactly-once external effects are
 unsupported.
 
-## gRPC producer API
+## HTTP/JSON producer API
 
-The checked-in schema is [`proto/tay/grpc/v1/tay.proto`](../proto/tay/grpc/v1/tay.proto).
-It defines service `tay.grpc.v1.Tay` with unary `Enqueue`, `GetJob`, `Cancel`,
-and `GetResult` methods. `EnqueueRequest.args_json` and
-`EnqueueRequest.options_json` are UTF-8 JSON objects; the latter uses the same
-keys and validation as Protocol v1 `enqueue` options. `OperationReply.json` is
-the UTF-8 JSON object from the equivalent Protocol v1 reply, with its `type`
-field retained. gRPC status codes report failures (`NOT_FOUND`,
-`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, `FAILED_PRECONDITION`, or
-`INVALID_ARGUMENT`) rather than embedding a Protocol v1 error envelope.
+The Bandit listener offers `POST /jobs` (enqueue), `GET /jobs/:id` (status),
+`DELETE /jobs/:id` (cancel), and `GET /jobs/:id/result` (result). Enqueue accepts
+`{"task":"billing.capture.v1","args":{},"options":{}}` with
+`Content-Type: application/json`. Successful responses are JSON objects with
+the equivalent Protocol v1 fields and `type`; enqueue returns HTTP 201.
+Failures return `{"error":{"code":"..."}}` and an appropriate HTTP status.
+The request and response body limit defaults to 1 MiB.
+Plaintext loopback does not use socket file permissions: other processes on the
+same host that can reach the port may use the producer API. Use mTLS or host
+isolation when that trust boundary is too broad.
 
-`grpc_max_message_bytes` limits inbound and generated gRPC payloads and
-defaults to 1 MiB. Only one gRPC listener may run in an Erlang VM because the
-current endpoint dispatch is process-global; use one Engine per VM when
-multiple gRPC endpoints are needed.
-
-Example server configuration:
-
-```elixir
-grpc_port: 50_051,
-grpc_ip: "10.0.0.5",
-grpc_tls_certfile: "/etc/tay/server.pem",
-grpc_tls_keyfile: "/etc/tay/server.key",
-grpc_tls_cacertfile: "/etc/tay/clients-ca.pem"
-```
-
-Issue server and client certificates from trusted CAs and protect the private
-keys. Network access controls should restrict who can reach the port. mTLS
-authenticates possession of a certificate trusted by the configured CA; all
-trusted clients currently have the same producer privileges. The listener does
-not provide per-client authorization or certificate revocation checking.
+For remote access, configure `http_ip`, `http_port`, and all three
+`http_tls_certfile`, `http_tls_keyfile`, `http_tls_cacertfile` options (or their
+`TAY_HTTP_*` standalone equivalents). The CA authenticates client certificates;
+all trusted clients currently have the same producer privileges. Restrict
+network access and protect private keys. There is no per-client authorization
+or certificate revocation checking.

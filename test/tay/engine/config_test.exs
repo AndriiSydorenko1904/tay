@@ -73,23 +73,24 @@ defmodule Tay.Engine.ConfigTest do
     end
   end
 
-  test "gRPC requires complete mTLS configuration outside loopback" do
-    base = [data_dir: "tmp/config-only", durability: :write, grpc_port: 50_051]
+  test "HTTP binds to loopback unless complete mTLS is configured" do
+    base = [data_dir: "tmp/config-only", durability: :write]
+    assert {:ok, %{http_port: 8080}} = Config.new(base ++ [http_port: 8080])
+    assert {:error, _} = Config.new(base ++ [http_port: 8080, http_ip: "0.0.0.0"])
+    assert {:error, _} = Config.new(base ++ [http_port: 8080, executor_socket: nil])
+    assert {:error, _} = Config.new(base ++ [http_port: 0])
+    assert {:error, _} = Config.new(base ++ [http_port: 8080, http_tls_certfile: "/cert.pem"])
 
-    assert {:error, _} = Config.new(base ++ [grpc_ip: "0.0.0.0"])
-    assert {:error, _} = Config.new(base ++ [grpc_tls_certfile: "/cert.pem"])
-
-    assert {:ok, config} =
+    assert {:ok, _} =
              Config.new(
                base ++
                  [
-                   grpc_ip: "0.0.0.0",
-                   grpc_tls_certfile: "/cert.pem",
-                   grpc_tls_keyfile: "/key.pem",
-                   grpc_tls_cacertfile: "/ca.pem"
+                   http_port: 8080,
+                   http_ip: "0.0.0.0",
+                   http_tls_certfile: "/cert.pem",
+                   http_tls_keyfile: "/key.pem",
+                   http_tls_cacertfile: "/ca.pem"
                  ]
              )
-
-    assert config.grpc_tls_cacertfile == "/ca.pem"
   end
 end

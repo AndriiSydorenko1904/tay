@@ -62,9 +62,8 @@ defmodule Tay.Executor.Server do
     do: GenServer.cast(server, {:request, connection, message})
 
   @doc false
-  # Shared by the gRPC facade as well as the JSON socket connection. Keeping
-  # request validation and the Tay API calls here prevents the two transports
-  # from drifting in their enqueue, status, cancellation, and result semantics.
+  # The socket connection and HTTP API use this request path.
+  # Both transports retain identical producer semantics.
   def protocol_request(server, engine_name, %{"type" => type} = message) do
     case type do
       "enqueue" -> enqueue(engine_name, message)

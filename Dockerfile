@@ -69,8 +69,9 @@ ENV HOME=/tmp/tay \
     TAY_DASHBOARD_PORT=4000
 
 VOLUME ["/var/lib/tay", "/run/tay"]
-EXPOSE 4000
+EXPOSE 4000 8080
 
+# `rpc` is the OTP release command for checking the running BEAM node, not gRPC.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
   CMD ["bin/tay_standalone", "rpc", "Tay.Standalone.Health.check!()"]
 

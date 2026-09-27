@@ -1,20 +1,26 @@
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.13.1}
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:0.14.0}
+    build: .
     environment:
       TAY_DATA_DIR: /var/lib/tay/store
       TAY_SOCKET_PATH: /run/tay/tay.sock
       TAY_INITIALIZE_IF_MISSING: "true"
       TAY_TERMINAL_RETENTION: ${TAY_TERMINAL_RETENTION:-24h}
-      ENABLE_DASHBOARD: "true"
+      ENABLE_DASHBOARD: ${ENABLE_DASHBOARD:-false}
       TAY_DASHBOARD_HOST: localhost
       TAY_DASHBOARD_PORT: "4000"
       TAY_DASHBOARD_SECRET_KEY_BASE: ${TAY_DASHBOARD_SECRET_KEY_BASE:-development-only-secret-key-base-change-this-before-production-000000}
+      TAY_DASHBOARD_USERNAME: ${TAY_DASHBOARD_USERNAME:-}
+      TAY_DASHBOARD_PASSWORD: ${TAY_DASHBOARD_PASSWORD:-}
+      TAY_HTTP_PORT: ${TAY_HTTP_PORT:-}
+      TAY_HTTP_IP: ${TAY_HTTP_IP:-127.0.0.1}
+      TAY_HTTP_TLS_CERTFILE: ${TAY_HTTP_TLS_CERTFILE:-}
+      TAY_HTTP_TLS_KEYFILE: ${TAY_HTTP_TLS_KEYFILE:-}
+      TAY_HTTP_TLS_CACERTFILE: ${TAY_HTTP_TLS_CACERTFILE:-}
     ports:
       - "127.0.0.1:${TAY_DASHBOARD_HTTP_PORT:-4000}:4000"
+      - "${TAY_HTTP_HOST_BIND:-127.0.0.1}:${TAY_HTTP_HOST_PORT:-8080}:8080"
     volumes:
       - taydata:/var/lib/tay
       - taysocket:/run/tay
@@ -27,7 +33,7 @@ services:
 
   worker:
     build:
-      context: ../..
+      context: .
       dockerfile: examples/standalone/worker.Dockerfile
     environment:
       TAY_SOCKET_PATH: /run/tay/tay.sock

@@ -10,33 +10,26 @@ package:
 python -m pip install tay-client
 ```
 
-## gRPC producer
+## HTTP/JSON producer
 
-For a TCP gRPC producer, enable the Engine's `grpc_port` and install the
-optional runtime dependency:
-
-```sh
-python -m pip install 'tay-client[grpc]'
-```
-
-`TayGrpc` is an async producer-only client. It supports `enqueue`, job status,
-cancellation, and result retrieval; workers and schedules remain on the local
-Protocol v1 socket.
+Enable the Bandit listener with `TAY_HTTP_PORT=8080` for a local deployment.
+`TayHTTP` is an async producer-only client for enqueue, status, cancellation,
+and result retrieval; workers and schedules still use the local socket.
 
 ```python
-from tay import TayGrpc
+from tay import TayHTTP
 
-async with TayGrpc("127.0.0.1:50051") as tay:
+async with TayHTTP("http://127.0.0.1:8080") as tay:
     job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
     result = await job.result()
 ```
 
-For a Tay server on another host, configure mTLS on the Engine and supply a CA
-certificate, client certificate chain, and client private key:
+For remote access, set `TAY_HTTP_IP` to a non-loopback address and configure
+the server certificate, key and client CA. Supply PEM client credentials:
 
 ```python
-async with TayGrpc(
-    "tay.example:50051",
+async with TayHTTP(
+    "https://tay.example:8080",
     tls_ca_file="/etc/tay/server-ca.pem",
     tls_cert_file="/etc/tay/client.pem",
     tls_key_file="/etc/tay/client.key",
@@ -44,31 +37,23 @@ async with TayGrpc(
     job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
 ```
 
-The Python client can also load those three credentials from one encrypted
-PKCS#12 file. Install `tay-client[grpc-pkcs12]` and export a bundle containing
-the client key, client certificate, and trusted CA certificate:
-
-```sh
-openssl pkcs12 -export -inkey client.key -in client.pem \
-  -certfile ca.pem -out client.p12
-```
-
-OpenSSL prompts for a bundle password. The CA private key must not be included.
+Remote targets require mTLS. The server certificate must match the target
+hostname or IP address. Keep keys protected and restrict network access.
+Alternatively install `tay-client[http-pkcs12]` and supply a single encrypted
+bundle containing the client key, client certificate and trusted server CA:
 
 ```python
-async with TayGrpc(
-    "10.0.0.5:50051",
+async with TayHTTP(
+    "https://tay.example:8080",
     tls_pkcs12_file="/etc/tay/client.p12",
-    tls_pkcs12_password="bundle-password",
+    tls_pkcs12_password="from-a-secret-manager",
 ) as tay:
     job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
 ```
 
-Provide the password through your secret manager rather than hard-coding it.
-`TayGrpc` rejects non-loopback targets unless complete mTLS credentials are given.
-The server certificate must match the target hostname (or IP address). Keep
-private keys protected and restrict network access to the gRPC port. The
-loopback endpoint may still be used without TLS on the same host.
+The PEM key and certificate are extracted into a private temporary directory
+only while Python loads them into its TLS context, then removed. The CA private
+key must never be included in the bundle.
 
 From a Tay source checkout, use `python -m pip install ./clients/python`.
 

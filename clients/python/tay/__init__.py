@@ -13,13 +13,13 @@ from .errors import (
     TayError,
     ValidationError,
 )
-from .grpc import GrpcJobHandle, TayGrpc
+from .http import HTTPJobHandle, TayHTTP
 from .socket_path import resolve_socket_path
 from .task import Task
 
 __all__ = [
     "ConnectionLost",
-    "GrpcJobHandle",
+    "HTTPJobHandle",
     "JobHandle",
     "ModeError",
     "ProtocolError",
@@ -32,7 +32,7 @@ __all__ = [
     "TaskRegistrationError",
     "Tay",
     "TayError",
-    "TayGrpc",
+    "TayHTTP",
     "ValidationError",
     "resolve_socket_path",
 ]

@@ -20,7 +20,7 @@ The repository example starts the dashboard-enabled runtime and a Python
 worker:
 
 ```sh
-docker compose -f examples/dashboard/docker-compose.yml up --build
+ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Open <http://localhost:4000/tay>. The example binds HTTP to host loopback and
@@ -33,7 +33,7 @@ sign browser sessions. Supply a random value without editing the Compose file:
 
 ```sh
 export TAY_DASHBOARD_SECRET_KEY_BASE="$(openssl rand -base64 48)"
-docker compose -f examples/dashboard/docker-compose.yml up -d
+ENABLE_DASHBOARD=true docker compose up -d
 ```
 
 To additionally enable built-in HTTP Basic authentication, provide both
@@ -42,7 +42,7 @@ credentials:
 ```sh
 export TAY_DASHBOARD_USERNAME=operator
 export TAY_DASHBOARD_PASSWORD='replace-with-a-long-random-password'
-docker compose -f examples/dashboard/docker-compose.yml up -d
+ENABLE_DASHBOARD=true docker compose up -d
 ```
 
 Pin `TAY_IMAGE` to an immutable release tag in production. Workers continue
@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay:0.13.1
+  ghcr.io/andriisydorenko1904/tay:0.14.0
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is

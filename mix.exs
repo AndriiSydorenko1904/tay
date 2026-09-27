@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "0.13.1"
+  @version "0.14.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -72,8 +72,7 @@ defmodule Tay.MixProject do
       test_ignore_filters: [&String.starts_with?(&1, "test/fixtures/")],
       deps: [
         {:telemetry, "~> 1.3"},
-        {:grpc_server, "~> 1.0"},
-        {:protobuf, "~> 0.17"},
+        {:bandit, "~> 1.12"},
         {:stream_data, "~> 1.2", only: :test},
         {:ex_doc, "~> 0.40.4", only: :dev, runtime: false}
       ]
@@ -105,7 +104,6 @@ defmodule Tay.MixProject do
         "CHANGELOG.md",
         "LICENSE",
         "COMMERCIAL-LICENSING.md",
-        "proto/tay/grpc/v1/tay.proto",
         "docs/protocol.md",
         "docs/storage.md",
         "docs/operations.md",

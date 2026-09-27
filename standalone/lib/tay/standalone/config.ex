@@ -6,11 +6,11 @@ defmodule Tay.Standalone.Config do
 
   defstruct data_dir: @data_default,
             socket_path: @socket_default,
-            grpc_port: nil,
-            grpc_ip: "127.0.0.1",
-            grpc_tls_certfile: nil,
-            grpc_tls_keyfile: nil,
-            grpc_tls_cacertfile: nil,
+            http_port: nil,
+            http_ip: "127.0.0.1",
+            http_tls_certfile: nil,
+            http_tls_keyfile: nil,
+            http_tls_cacertfile: nil,
             initialize: :never,
             max_jobs: 100_000,
             max_state_bytes: 268_435_456,
@@ -21,11 +21,11 @@ defmodule Tay.Standalone.Config do
   @type t :: %__MODULE__{
           data_dir: String.t(),
           socket_path: String.t(),
-          grpc_port: nil | pos_integer(),
-          grpc_ip: String.t(),
-          grpc_tls_certfile: nil | String.t(),
-          grpc_tls_keyfile: nil | String.t(),
-          grpc_tls_cacertfile: nil | String.t(),
+          http_port: nil | pos_integer(),
+          http_ip: String.t(),
+          http_tls_certfile: nil | String.t(),
+          http_tls_keyfile: nil | String.t(),
+          http_tls_cacertfile: nil | String.t(),
           initialize: :never | :if_missing,
           max_jobs: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
@@ -41,13 +41,11 @@ defmodule Tay.Standalone.Config do
     with {:ok, data_dir} <- path(environment, "TAY_DATA_DIR", @data_default, :data),
          {:ok, socket_path} <- path(environment, "TAY_SOCKET_PATH", @socket_default, :socket),
          :ok <- outside_data_dir(socket_path, data_dir),
-         {:ok, grpc_port} <- grpc_port(environment),
-         {:ok, grpc_ip} <- grpc_ip(environment),
-         {:ok, grpc_tls_certfile} <- optional_path(environment, "TAY_GRPC_TLS_CERTFILE"),
-         {:ok, grpc_tls_keyfile} <- optional_path(environment, "TAY_GRPC_TLS_KEYFILE"),
-         {:ok, grpc_tls_cacertfile} <- optional_path(environment, "TAY_GRPC_TLS_CACERTFILE"),
-         :ok <-
-           grpc_tls(grpc_port, grpc_ip, grpc_tls_certfile, grpc_tls_keyfile, grpc_tls_cacertfile),
+         :ok <- legacy_grpc_environment(environment),
+         {:ok, http_port} <- optional_port(environment),
+         {:ok, http_ip} <- http_ip(environment),
+         {:ok, tls} <- http_tls(environment),
+         :ok <- validate_http(http_port, http_ip, tls),
          {:ok, initialize} <- initialize(environment),
          {:ok, max_jobs} <- nonnegative(environment, "TAY_MAX_JOBS", 100_000),
          {:ok, max_state_bytes} <-
@@ -61,11 +59,11 @@ defmodule Tay.Standalone.Config do
        %__MODULE__{
          data_dir: data_dir,
          socket_path: socket_path,
-         grpc_port: grpc_port,
-         grpc_ip: grpc_ip,
-         grpc_tls_certfile: grpc_tls_certfile,
-         grpc_tls_keyfile: grpc_tls_keyfile,
-         grpc_tls_cacertfile: grpc_tls_cacertfile,
+         http_port: http_port,
+         http_ip: http_ip,
+         http_tls_certfile: tls.certfile,
+         http_tls_keyfile: tls.keyfile,
+         http_tls_cacertfile: tls.cacertfile,
          initialize: initialize,
          max_jobs: max_jobs,
          max_state_bytes: max_state_bytes,
@@ -77,6 +75,78 @@ defmodule Tay.Standalone.Config do
   end
 
   def load(_), do: {:error, "environment must be a string map"}
+
+  defp legacy_grpc_environment(environment) do
+    if Enum.any?(Map.keys(environment), fn key ->
+         is_binary(key) and String.starts_with?(key, "TAY_GRPC_")
+       end),
+       do: {:error, "TAY_GRPC_* is unsupported; use TAY_HTTP_* for the Bandit HTTP API"},
+       else: :ok
+  end
+
+  defp optional_port(environment) do
+    case Map.get(environment, "TAY_HTTP_PORT", "") do
+      "" ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {port, ""} when port in 1..65_535 -> {:ok, port}
+          _ -> {:error, "TAY_HTTP_PORT must be a TCP port from 1 to 65535"}
+        end
+
+      _ ->
+        {:error, "TAY_HTTP_PORT must be a TCP port from 1 to 65535"}
+    end
+  end
+
+  defp http_ip(environment) do
+    ip = Map.get(environment, "TAY_HTTP_IP", "127.0.0.1")
+
+    if is_binary(ip) and match?({:ok, _}, :inet.parse_address(String.to_charlist(ip))),
+      do: {:ok, ip},
+      else: {:error, "TAY_HTTP_IP must be an IP address"}
+  end
+
+  defp http_tls(environment) do
+    names = ["TAY_HTTP_TLS_CERTFILE", "TAY_HTTP_TLS_KEYFILE", "TAY_HTTP_TLS_CACERTFILE"]
+    values = Enum.map(names, &Map.get(environment, &1, ""))
+
+    cond do
+      Enum.all?(values, &(&1 == "")) ->
+        {:ok, %{certfile: nil, keyfile: nil, cacertfile: nil}}
+
+      Enum.all?(values, &(is_binary(&1) and &1 != "" and Path.type(&1) == :absolute)) ->
+        [certfile, keyfile, cacertfile] = values
+        {:ok, %{certfile: certfile, keyfile: keyfile, cacertfile: cacertfile}}
+
+      true ->
+        {:error,
+         "TAY_HTTP_TLS_CERTFILE, TAY_HTTP_TLS_KEYFILE and TAY_HTTP_TLS_CACERTFILE must all be absolute paths"}
+    end
+  end
+
+  defp validate_http(port, ip, tls) do
+    secured = not is_nil(tls.certfile)
+
+    loopback =
+      case :inet.parse_address(String.to_charlist(ip)) do
+        {:ok, {127, _, _, _}} -> true
+        {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+        _ -> false
+      end
+
+    cond do
+      is_nil(port) and secured ->
+        {:error, "TAY_HTTP_PORT is required when HTTP TLS is configured"}
+
+      not is_nil(port) and not loopback and not secured ->
+        {:error, "non-loopback TAY_HTTP_IP requires all three HTTP TLS files"}
+
+      true ->
+        :ok
+    end
+  end
 
   defp path(environment, name, default, kind) do
     value = Map.get(environment, name, default)
@@ -110,58 +180,6 @@ defmodule Tay.Standalone.Config do
       {:error, "TAY_SOCKET_PATH must be outside TAY_DATA_DIR"}
     else
       :ok
-    end
-  end
-
-  defp grpc_port(environment) do
-    case Map.get(environment, "TAY_GRPC_PORT") do
-      nil ->
-        {:ok, nil}
-
-      value when is_binary(value) ->
-        case Integer.parse(value) do
-          {port, ""} when port in 1..65_535 -> {:ok, port}
-          _ -> {:error, "TAY_GRPC_PORT must be an integer in 1..65535"}
-        end
-
-      _ ->
-        {:error, "TAY_GRPC_PORT must be an integer in 1..65535"}
-    end
-  end
-
-  defp grpc_ip(environment) do
-    value = Map.get(environment, "TAY_GRPC_IP", "127.0.0.1")
-
-    with value when is_binary(value) <- value,
-         {:ok, _} <- :inet.parse_address(String.to_charlist(value)) do
-      {:ok, value}
-    else
-      _ -> {:error, "TAY_GRPC_IP must be an IPv4 or IPv6 address"}
-    end
-  end
-
-  defp optional_path(environment, name) do
-    case Map.fetch(environment, name) do
-      :error -> {:ok, nil}
-      {:ok, _} -> path(environment, name, nil, :tls)
-    end
-  end
-
-  defp grpc_tls(port, ip, certfile, keyfile, cacertfile) do
-    files = [certfile, keyfile, cacertfile]
-
-    cond do
-      Enum.all?(files, &is_nil/1) and (is_nil(port) or loopback?(ip)) -> :ok
-      Enum.all?(files, &is_binary/1) and not is_nil(port) -> :ok
-      true -> {:error, "non-loopback gRPC requires all three TAY_GRPC_TLS_* certificate paths"}
-    end
-  end
-
-  defp loopback?(ip) do
-    case :inet.parse_address(String.to_charlist(ip)) do
-      {:ok, {127, _, _, _}} -> true
-      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
-      _ -> false
     end
   end
 

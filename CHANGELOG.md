@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.14.0 — 2026-09-27
+
+### Changed
+
+- Replaced the gRPC/Go gateway with an optional Bandit HTTP/JSON producer API
+  in the Elixir Engine; Cowboy and cowlib are not dependencies.
+- Updated the Python producer client to use HTTP/JSON and retained mTLS for
+  remote connections. Consolidated container examples into one Compose file.
+
 ## 0.13.1 — 2026-09-26
 
 ### Fixed

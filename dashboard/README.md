@@ -23,8 +23,8 @@ Add both packages to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "~> 0.13.1"},
-    {:tay_dashboard, "~> 0.13.1"}
+    {:tay, "~> 0.14.0"},
+    {:tay_dashboard, "~> 0.14.0"}
   ]
 end
 ```
@@ -69,7 +69,7 @@ with `ENABLE_DASHBOARD=true`. From the repository root, start the complete
 example with:
 
 ```sh
-docker compose -f examples/dashboard/docker-compose.yml up --build
+ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open <http://localhost:4000/tay>. The example publishes the port only on

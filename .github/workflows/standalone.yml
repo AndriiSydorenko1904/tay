@@ -10,6 +10,7 @@ on:
       - examples/standalone/**
       - examples/dashboard/**
       - lib/**
+      - compose.yml
       - mix.exs
       - mix.lock
   push:
@@ -22,6 +23,7 @@ on:
       - examples/standalone/**
       - examples/dashboard/**
       - lib/**
+      - compose.yml
       - mix.exs
       - mix.lock
 

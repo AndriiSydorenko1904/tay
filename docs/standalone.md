@@ -21,11 +21,9 @@ The image runs as UID/GID `10001:10001` and accepts:
 | --- | --- | --- |
 | `TAY_DATA_DIR` | `/var/lib/tay` | Authoritative durable Store root. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | Executor Protocol v1 UDS path. |
-| `TAY_GRPC_PORT` | disabled | Enables the gRPC producer API on this TCP port. |
-| `TAY_GRPC_IP` | `127.0.0.1` | IPv4 or IPv6 address to bind when `TAY_GRPC_PORT` is enabled. |
-| `TAY_GRPC_TLS_CERTFILE` | unset | PEM server certificate chain for mTLS. |
-| `TAY_GRPC_TLS_KEYFILE` | unset | PEM server private key for mTLS. |
-| `TAY_GRPC_TLS_CACERTFILE` | unset | PEM CA certificates trusted for client authentication. |
+| `TAY_HTTP_PORT` | unset | Enables the Bandit HTTP/JSON producer API. |
+| `TAY_HTTP_IP` | `127.0.0.1` | Listener IP; non-loopback requires mTLS. |
+| `TAY_HTTP_TLS_{CERTFILE,KEYFILE,CACERTFILE}` | unset | Absolute PEM paths for server certificate, private key and client CA. Set all three together. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
 | `TAY_MAX_JOBS` | `100000` | Maximum simultaneously active jobs. Terminal history does not consume this budget. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
@@ -38,20 +36,21 @@ Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
 `0660` so a worker can use a shared group where the deployment platform
 supports it.
+Python HTTP producers need only the HTTP(S) address. The Tay container still
+needs its local socket for worker registration and dispatch; configuring the
+HTTP listener does not replace the worker protocol.
 
-The gRPC endpoint permits plaintext only on loopback. A non-loopback bind
-requires all three TLS certificate paths and rejects clients without a valid
-certificate signed by the configured CA. Mount the certificate files read-only,
-ensure UID `10001` can read them, and restrict the server private key. The
-server certificate must match the address used by clients. Restrict access to
-the port at the network layer as well. Its schema and methods are documented
-in [`docs/protocol.md`](protocol.md).
+The optional HTTP API runs inside the same Engine. Plaintext is permitted only
+on loopback; non-loopback binds require the three TLS files and verify client
+certificates. Mount certificates read-only, ensure UID `10001` can read them,
+and match the server certificate SAN to the client's DNS name or IP. Legacy
+`TAY_GRPC_*` settings fail startup rather than silently disabling the old API.
 
 Tay deliberately does not interpret a pre-existing empty directory as a
 missing Store. Docker creates a named-volume mount root before the process
 starts, so mount the volume at `/var/lib/tay` and set
 `TAY_DATA_DIR=/var/lib/tay/store`, as in
-[`examples/standalone/docker-compose.yml`](../examples/standalone/docker-compose.yml).
+[`compose.yml`](../compose.yml).
 The image creates both volume targets with ownership `10001:10001`; an empty
 Docker named volume inherits that ownership and does not need a root init
 container. Bind mounts and volume drivers that preserve different ownership
@@ -66,8 +65,13 @@ no privileges at startup and never runs as root.
 From the repository root:
 
 ```sh
-docker compose -f examples/standalone/docker-compose.yml up --build
+docker compose up --build
 ```
+
+Set `ENABLE_DASHBOARD=true` in the same Compose deployment to enable the
+dashboard. The HTTP API is opt-in; to expose it outside the container, set
+`TAY_HTTP_PORT=8080`, `TAY_HTTP_IP=0.0.0.0`, mount the three TLS files and add
+an appropriate port mapping. Without mTLS the non-loopback bind is rejected.
 
 The worker example installs the stdlib-only Python client and advertises an
 `example.echo.v1` task. Production workers should pin a `tay-client` version
@@ -100,7 +104,7 @@ Phoenix endpoint. Set `ENABLE_DASHBOARD=true` to expose both
 is optional. No second container or image is required.
 
 ```sh
-docker compose -f examples/dashboard/docker-compose.yml up --build
+ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 The headless and dashboard-enabled modes use the same data and socket volume

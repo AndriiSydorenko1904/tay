@@ -50,13 +50,13 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.13.1
+docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
 ```
 
 For a ready-made application + Tay example:
 
 ```sh
-docker compose -f examples/standalone/docker-compose.yml up --build
+docker compose up --build
 ```
 
 The Tay container owns durable state at `/var/lib/tay`. Applications and
@@ -68,7 +68,7 @@ data volume is preserved.
 Want the operational UI as well?
 
 ```sh
-docker compose -f examples/dashboard/docker-compose.yml up --build
+ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open:
@@ -81,7 +81,7 @@ The same image contains the optional dashboard. Enable it with
 `ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.13.1
+docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
 ```
 
 ## Why Tay?
@@ -143,9 +143,9 @@ component:
 ```
 
 Unlike a network message broker, worker execution is deliberately local: Tay
-uses a Unix-domain socket for worker registration and dispatch. An opt-in,
-loopback-bound gRPC producer API is available for enqueue/status/cancel/result
-operations; see [`docs/protocol.md`](docs/protocol.md).
+uses a Unix-domain socket for worker registration and dispatch. An optional
+Bandit optionally exposes HTTP/JSON producer operations over TCP. See
+[`docs/protocol.md`](docs/protocol.md).
 
 This keeps the single-node trust and failure model explicit while allowing the
 Engine to be packaged and operated independently from application workers.
@@ -163,7 +163,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 0.13.1"}
+    {:tay, "~> 0.14.0"}
   ]
 end
 ```
@@ -277,11 +277,11 @@ The separately published optional `tay_dashboard` package provides an official
 Phoenix LiveView UI for these APIs.
 
 It lives in this repository under the
-[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.13.1/dashboard),
+[`dashboard/` project](https://github.com/AndriiSydorenko1904/tay/tree/v0.14.0/dashboard),
 but Phoenix, LiveView, and Plug are not dependencies of the core `tay` package.
 
 See its
-[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.13.1/dashboard/README.md)
+[README](https://github.com/AndriiSydorenko1904/tay/blob/v0.14.0/dashboard/README.md)
 for installation, router mounting, and access-control guidance.
 
 Keep the original intent until an insertion outcome is known. A lost reply may
@@ -420,9 +420,9 @@ due, temporary admission pressure delays that occurrence instead of dropping
 it; its deterministic job ID makes retries idempotent.
 
 Worker dispatch remains local-only; there is no multi-host worker protocol.
-The optional gRPC producer listener is TCP and must be explicitly enabled with
-`grpc_port`. It defaults to loopback; non-loopback bindings require mTLS server
-and client CA certificates. See the protocol contract for configuration.
+The optional Bandit HTTP/JSON API exposes producer operations over TCP. It is
+disabled by default; plaintext binds only to loopback and remote access
+requires mTLS.
 
 See the [protocol contract](docs/protocol.md) for discovery, security, request
 types, and result retention.
@@ -433,7 +433,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:0.13.1
+ghcr.io/andriisydorenko1904/tay:0.14.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -443,7 +443,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.13.1
+docker pull ghcr.io/andriisydorenko1904/tay:0.14.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -477,7 +477,7 @@ Durable state belongs on:
 The included example starts both services:
 
 ```sh
-docker compose -f examples/standalone/docker-compose.yml up --build
+docker compose up --build
 ```
 
 The container is:
@@ -511,7 +511,7 @@ ENABLE_DASHBOARD=true
 Start the repository example:
 
 ```sh
-docker compose -f examples/dashboard/docker-compose.yml up --build
+ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open:

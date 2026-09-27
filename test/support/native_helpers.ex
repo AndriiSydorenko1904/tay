@@ -26,16 +26,13 @@ defmodule Tay.Test.NativeHelpers do
       [
         :tay,
         :telemetry,
-        :grpc_server,
-        :grpc_core,
-        :googleapis,
-        :protobuf,
-        :cowboy,
-        :cowlib,
-        :ranch,
-        :flow,
-        :gen_stage,
-        :jason
+        :bandit,
+        :hpax,
+        :plug,
+        :plug_crypto,
+        :mime,
+        :thousand_island,
+        :websock
       ]
       |> Enum.map(&Application.app_dir(&1, "ebin"))
 

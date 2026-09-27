@@ -22,7 +22,7 @@ defmodule Tay.Engine do
 
   alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
   alias Tay.Executor.Server
-  alias Tay.GRPC.Listener, as: GRPCListener
+  alias Tay.HTTP.Listener, as: HTTPListener
   alias Tay.Storage.{Writer, Segment}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
@@ -813,20 +813,20 @@ defmodule Tay.Engine do
         nil
       end
 
-    if s.config.grpc_port do
+    if s.config.http_port do
       {:ok, _listener} =
         DynamicSupervisor.start_child(
           supervisor,
-          {GRPCListener,
+          {HTTPListener,
            %{
              engine_name: s.config.name,
              executor_server: executor_server,
-             port: s.config.grpc_port,
-             ip: s.config.grpc_ip,
-             max_message_bytes: s.config.grpc_max_message_bytes,
-             tls_certfile: s.config.grpc_tls_certfile,
-             tls_keyfile: s.config.grpc_tls_keyfile,
-             tls_cacertfile: s.config.grpc_tls_cacertfile
+             port: s.config.http_port,
+             ip: s.config.http_ip,
+             max_body_bytes: s.config.http_max_body_bytes,
+             tls_certfile: s.config.http_tls_certfile,
+             tls_keyfile: s.config.http_tls_keyfile,
+             tls_cacertfile: s.config.http_tls_cacertfile
            }}
         )
     end
