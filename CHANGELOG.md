@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.0.0-rc.2 — 2026-09-29
+
+### Fixed
+
+- Throttled and coalesced Dashboard refreshes under transition-heavy workloads.
+- Kept Dashboard filter controls and cursor pagination stable during live refreshes.
+- Preserved HTTP enqueue rejection diagnostics, including capacity reasons.
+
 ## 1.0.0-rc.1 — 2026-09-29
 
 ### Added

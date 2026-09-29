@@ -188,6 +188,52 @@ defmodule Tay.HTTP.APITest do
              request(:post, base <> "/queues/default/claim", nil, cancel_auth)
   end
 
+  test "enqueue preserves an admission refusal's machine-readable reason" do
+    Process.flag(:trap_exit, true)
+    path = NativeHelpers.path()
+    ExecutionHelpers.initialize(path)
+    on_exit(fn -> File.rm_rf!(path) end)
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, {:ip, {127, 0, 0, 1}}])
+    {:ok, port} = :inet.port(listener)
+    :gen_tcp.close(listener)
+
+    assert {:ok, root} =
+             ExecutionHelpers.start(path, __MODULE__,
+               workers: %{},
+               executor_socket: nil,
+               http_port: port,
+               max_jobs: 0
+             )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    base = "http://127.0.0.1:#{port}"
+
+    assert ExecutionHelpers.eventually(fn ->
+             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
+               {:ok, connection} ->
+                 :gen_tcp.close(connection)
+                 true
+
+               _ ->
+                 false
+             end
+           end)
+
+    assert {429, %{"error" => %{"code" => "capacity", "reason" => "max_jobs"}}} =
+             request(:post, base <> "/jobs", %{
+               task: "tests.remote.v1",
+               args: %{},
+               options: %{}
+             })
+  end
+
   test "Bandit serves producer operations as bounded JSON" do
     Process.flag(:trap_exit, true)
     ExecutionHelpers.install()

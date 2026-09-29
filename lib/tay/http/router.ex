@@ -251,9 +251,9 @@ defmodule Tay.HTTP.Router do
   end
 
   defp respond(conn, {:error, code}, _status, _limit), do: error(conn, code)
-  defp respond(conn, {:error, code, _fields}, _status, _limit), do: error(conn, code)
+  defp respond(conn, {:error, code, fields}, _status, _limit), do: error(conn, code, fields)
 
-  defp error(conn, code) do
+  defp error(conn, code, fields \\ %{}) do
     status =
       case code do
         "not_found" -> 404
@@ -271,7 +271,7 @@ defmodule Tay.HTTP.Router do
         _ -> 400
       end
 
-    json(conn, status, %{"error" => %{"code" => code}})
+    json(conn, status, %{"error" => Map.put(fields, "code", code)})
   end
 
   defp json(conn, status, value) do

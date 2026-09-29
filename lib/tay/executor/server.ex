@@ -845,6 +845,9 @@ defmodule Tay.Executor.Server do
       {:error, %Tay.Error{kind: :capacity, reason: reason}} ->
         {:error, "capacity", %{"reason" => capacity_reason(reason)}}
 
+      {:error, %Tay.Error{kind: :unavailable}} ->
+        {:error, "unavailable"}
+
       {:error, _} ->
         {:error, "invalid_enqueue"}
 
