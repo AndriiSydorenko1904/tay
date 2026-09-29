@@ -22,7 +22,7 @@ Add Tay to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "1.0.0-rc.2"}
+    {:tay, "1.0.0-rc.3"}
   ]
 end
 ```

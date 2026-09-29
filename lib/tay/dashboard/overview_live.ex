@@ -166,7 +166,7 @@ defmodule Tay.Dashboard.OverviewLive do
             </div>
           </div>
           <div class="card">
-            <div>Charged state</div>
+            <div>Active job data size</div>
             <div class="count">
               {available(
                 @engine_available,
@@ -175,14 +175,14 @@ defmodule Tay.Dashboard.OverviewLive do
             </div>
           </div>
           <div class="card">
-            <div>Retained nodes</div>
+            <div>Active job data items</div>
             <div class="count">
               {available(@engine_available, format_ratio(@capacity.nodes, @capacity.max_nodes))}
             </div>
           </div>
         </div>
         <p style="color:var(--tay-muted)">
-          State capacity is conservative admission accounting, not measured RAM. New jobs are rejected before any configured budget is exceeded.
+          These are protective limits for active jobs, not measured RAM. Data items count JSON objects, arrays, and scalar values in job definitions and arguments, plus a small fixed allowance per job. They protect Tay from unusually large or deeply nested payloads; terminal history does not consume these limits.
         </p>
       </section>
       <section style="margin-top:28px">

@@ -52,6 +52,13 @@ defmodule Tay.State.InspectionIndex do
     }
   end
 
+  def candidates(index, jobs, query) do
+    total = matching_count(index.counts, jobs, query)
+    {first, step} = candidate_start(index.order, query)
+    listed = scan(index.order, jobs, first, step, query, query.limit, [])
+    %{jobs: Enum.reverse(listed), total_count: total}
+  end
+
   def entries(index), do: :ets.tab2list(index.order)
   def counts(index), do: Map.new(:ets.tab2list(index.counts))
 
@@ -79,6 +86,11 @@ defmodule Tay.State.InspectionIndex do
 
     {:ets.first(table), :next, max(total - page_size, 0), page_size}
   end
+
+  defp candidate_start(table, %{position: nil}), do: {:ets.last(table), :prev}
+  defp candidate_start(table, %{position: {:after, key, _}}), do: {:ets.prev(table, key), :prev}
+  defp candidate_start(table, %{position: {:before, key, _}}), do: {:ets.next(table, key), :next}
+  defp candidate_start(table, %{position: :last}), do: {:ets.first(table), :next}
 
   defp scan(_table, _jobs, :"$end_of_table", _step, _query, _limit, acc), do: acc
   defp scan(_table, _jobs, _key, _step, _query, limit, acc) when length(acc) >= limit, do: acc

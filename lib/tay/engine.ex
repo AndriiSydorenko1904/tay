@@ -179,6 +179,10 @@ defmodule Tay.Engine do
     do: Writer.initialize_if_missing(Config.storage(config))
 
   def handle_continue(:execution_start, s) do
+    # Recovery necessarily materializes the authoritative job map. At this
+    # point terminal jobs have moved to DETS plus the compact inspection index,
+    # so force one collection before the Engine enters its steady-state loop.
+    :erlang.garbage_collect()
     {:noreply, if(s.config.execution, do: start_controls(s), else: s)}
   end
 
@@ -539,7 +543,14 @@ defmodule Tay.Engine do
   end
 
   defp command({:inspect_jobs, query}, s) do
-    page = CombinedInspection.page(s.projection.jobs, s.terminal_store, query)
+    page =
+      CombinedInspection.page(
+        s.projection.inspection,
+        s.projection.jobs,
+        s.terminal_store,
+        query
+      )
+
     {{:ok, %{page | jobs: Enum.map(page.jobs, &view(s, &1))}}, s}
   end
 

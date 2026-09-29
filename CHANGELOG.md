@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.0.0-rc.3 — 2026-09-29
+
+### Fixed
+
+- Kept terminal job payloads in the disk-backed projection while serving job
+  pages through a compact ordered inspection index.
+- Loaded only the terminal jobs selected for the current cursor page instead
+  of folding and repeatedly sorting the complete terminal history.
+- Released the temporary recovery heap before the Engine enters its
+  steady-state loop.
+- Clarified that Dashboard state-capacity counters describe active-job
+  admission limits rather than measured runtime memory.
+
 ## 1.0.0-rc.2 — 2026-09-29
 
 ### Fixed
