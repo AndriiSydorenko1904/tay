@@ -28,6 +28,22 @@ defmodule Tay.Dashboard.LiveTest do
     %{path: path}
   end
 
+  test "dashboard telemetry coalesces refreshes until the view acknowledges them" do
+    signal = :atomics.new(1, [])
+    config = %{pid: self(), engine: @engine, refresh_signal: signal}
+    metadata = %{engine: @engine}
+
+    for _ <- 1..100,
+        do: Tay.Dashboard.Live.handle_telemetry([], %{}, metadata, config)
+
+    assert_receive {:tay_dashboard_refresh, ^signal}
+    refute_receive {:tay_dashboard_refresh, ^signal}
+
+    :ok = Tay.Dashboard.Live.acknowledge_refresh(signal)
+    Tay.Dashboard.Live.handle_telemetry([], %{}, metadata, config)
+    assert_receive {:tay_dashboard_refresh, ^signal}
+  end
+
   test "mounts overview and updates from lifecycle telemetry", %{path: path} do
     {:ok, root} = EngineHelpers.start(path, @engine)
     {:ok, view, html} = live(build_conn(), "/tay/")
@@ -50,7 +66,10 @@ defmodule Tay.Dashboard.LiveTest do
 
     {:ok, job} = EngineWorker.new(%{"safe" => "value"}) |> Tay.insert(name: @engine)
     assert job.state == :available
-    assert render(view) =~ ~r/Available.*1/s
+
+    assert EngineHelpers.eventually(fn ->
+             render(view) =~ ~r/Available.*1/s
+           end)
 
     assert render_click(view, "prepare-compaction") =~ "cannot be recovered"
     assert has_element?(view, "#confirm-compaction")
@@ -134,16 +153,19 @@ defmodule Tay.Dashboard.LiveTest do
     refute html =~ "Apply filters"
     assert html =~ "state-available"
     assert html =~ "Page 1 of 2 · showing 50 of 52 jobs"
+    assert has_element?(list, "#job-filters[phx-update='ignore']")
     refute has_element?(list, "#first-page")
     refute has_element?(list, "#previous-page")
     last_path = html |> Floki.parse_document!() |> Floki.attribute("#last-page", "href") |> hd()
     assert length(Floki.find(Floki.parse_document!(render(list)), "#jobs tr")) == 50
 
     first_page_ids = job_ids(render(list))
-    redirect = list |> element("#next-page") |> render_click()
-    assert {:error, {:redirect, %{to: next_path}}} = redirect
+    next_path = html |> Floki.parse_document!() |> Floki.attribute("#next-page", "href") |> hd()
+    list |> element("#next-page") |> render_click()
+    assert_patch(list, next_path)
     assert next_path =~ ~r|^/tay/jobs\?cursor=|
-    {:ok, second_page, second_html} = live(build_conn(), next_path)
+    second_page = list
+    second_html = render(second_page)
     assert second_html =~ "Page 2"
     assert second_html =~ "Page 2 of 2 · showing 2 of 52 jobs"
     assert has_element?(second_page, "#first-page")
@@ -151,6 +173,14 @@ defmodule Tay.Dashboard.LiveTest do
     refute has_element?(second_page, "#next-page")
     refute has_element?(second_page, "#last-page")
     assert length(job_ids(second_html)) == 2
+
+    refresh_signal = :atomics.new(1, [])
+    :atomics.put(refresh_signal, 1, 1)
+    send(second_page.pid, {:tay_dashboard_refresh, refresh_signal})
+
+    assert EngineHelpers.eventually(fn ->
+             :atomics.get(refresh_signal, 1) == 0 and render(second_page) =~ "Page 2 of 2"
+           end)
 
     previous_path =
       second_html |> Floki.parse_document!() |> Floki.attribute("#previous-page", "href") |> hd()
@@ -160,12 +190,18 @@ defmodule Tay.Dashboard.LiveTest do
              MapSet.new(job_ids(render(second_page)))
            )
 
-    {:ok, previous_page, previous_html} = live(build_conn(), previous_path)
+    second_page |> element("#previous-page") |> render_click()
+    assert_patch(second_page, previous_path)
+    previous_page = second_page
+    previous_html = render(previous_page)
     assert previous_html =~ "Page 1 of 2"
     assert job_ids(previous_html) == first_page_ids
     refute has_element?(previous_page, "#previous-page")
 
-    {:ok, _last_page, last_html} = live(build_conn(), last_path)
+    {:ok, last_page, _html} = live(build_conn(), "/tay/jobs")
+    last_page |> element("#last-page") |> render_click()
+    assert_patch(last_page, last_path)
+    last_html = render(last_page)
     assert last_html =~ "Page 2 of 2 · showing 2 of 52 jobs"
 
     {:ok, filter_page, _html} = live(build_conn(), "/tay/jobs")

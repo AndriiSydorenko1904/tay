@@ -16,16 +16,21 @@ defmodule Tay.Dashboard.Live do
 
     if Phoenix.LiveView.connected?(socket) do
       handler = "tay-dashboard-#{inspect(self())}"
+      refresh_signal = :atomics.new(1, [])
 
       :ok =
         :telemetry.attach_many(
           handler,
           [[:tay, :job, :transition], [:tay, :queue, :control]],
           &__MODULE__.handle_telemetry/4,
-          %{pid: self(), engine: engine}
+          %{pid: self(), engine: engine, refresh_signal: refresh_signal}
         )
 
-      Phoenix.Component.assign(socket, telemetry_handler: handler)
+      Phoenix.Component.assign(socket,
+        telemetry_handler: handler,
+        refresh_signal: refresh_signal,
+        dashboard_refresh_timer: nil
+      )
     else
       socket
     end
@@ -33,13 +38,42 @@ defmodule Tay.Dashboard.Live do
 
   def terminate(socket) do
     if handler = socket.assigns[:telemetry_handler], do: :telemetry.detach(handler)
+    if timer = socket.assigns[:dashboard_refresh_timer], do: Process.cancel_timer(timer)
     :ok
   end
 
-  def handle_telemetry(_event, _measurements, %{engine: engine}, %{pid: pid, engine: engine}),
-    do: send(pid, :tay_dashboard_refresh)
+  def handle_telemetry(
+        _event,
+        _measurements,
+        %{engine: engine},
+        %{pid: pid, engine: engine, refresh_signal: signal}
+      ) do
+    # Telemetry handlers run in the process emitting the event. Keep both that
+    # process and the LiveView mailbox bounded during transition-heavy loads.
+    if :atomics.compare_exchange(signal, 1, 0, 1) == :ok,
+      do: send(pid, {:tay_dashboard_refresh, signal})
+  end
 
   def handle_telemetry(_, _, _, _), do: :ok
+
+  def acknowledge_refresh(signal) do
+    :atomics.put(signal, 1, 0)
+    :ok
+  end
+
+  def schedule_refresh(socket, signal) do
+    if socket.assigns.dashboard_refresh_timer do
+      socket
+    else
+      timer = Process.send_after(self(), {:tay_dashboard_refresh_tick, signal}, 500)
+      Phoenix.Component.assign(socket, dashboard_refresh_timer: timer)
+    end
+  end
+
+  def finish_refresh(socket, signal) do
+    :ok = acknowledge_refresh(signal)
+    Phoenix.Component.assign(socket, dashboard_refresh_timer: nil)
+  end
 
   def error_message(%Tay.Error{kind: :capacity, reason: :operation_slot}),
     do: "Storage maintenance or another lifecycle operation is already in progress."

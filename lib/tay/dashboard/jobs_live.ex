@@ -25,8 +25,13 @@ defmodule Tay.Dashboard.JobsLive do
   end
 
   @impl true
-  def handle_info(:tay_dashboard_refresh, socket) do
-    {:noreply, load(socket, socket.assigns.filters, nil, 1)}
+  def handle_info({:tay_dashboard_refresh, signal}, socket) do
+    {:noreply, Live.schedule_refresh(socket, signal)}
+  end
+
+  def handle_info({:tay_dashboard_refresh_tick, signal}, socket) do
+    socket = Live.finish_refresh(socket, signal)
+    {:noreply, load(socket, socket.assigns.filters, socket.assigns.cursor, socket.assigns.page)}
   end
 
   @impl true
@@ -42,6 +47,7 @@ defmodule Tay.Dashboard.JobsLive do
         action={@dashboard_path <> "/jobs"}
         method="get"
         phx-change="filter"
+        phx-update="ignore"
         class="actions"
       >
         <label>
@@ -102,25 +108,25 @@ defmodule Tay.Dashboard.JobsLive do
         aria-label="Job pages"
         class="actions pagination"
       >
-        <a :if={@page > 1} id="first-page" href={page_path(@dashboard_path, @filters, nil, 1)}>
+        <.link :if={@page > 1} id="first-page" patch={page_path(@dashboard_path, @filters, nil, 1)}>
           ⇤ First page
-        </a>
-        <a
+        </.link>
+        <.link
           :if={@previous_cursor && @page > 1}
           id="previous-page"
-          href={page_path(@dashboard_path, @filters, @previous_cursor, @page - 1)}
-        >← Previous page</a>
+          patch={page_path(@dashboard_path, @filters, @previous_cursor, @page - 1)}
+        >← Previous page</.link>
         <span aria-current="page">{@page} / {@total_pages}</span>
-        <a
+        <.link
           :if={@next_cursor}
           id="next-page"
-          href={page_path(@dashboard_path, @filters, @next_cursor, @page + 1)}
-        >Next page →</a>
-        <a
+          patch={page_path(@dashboard_path, @filters, @next_cursor, @page + 1)}
+        >Next page →</.link>
+        <.link
           :if={@last_cursor && @page < @total_pages}
           id="last-page"
-          href={page_path(@dashboard_path, @filters, @last_cursor, @total_pages)}
-        >Last page ⇥</a>
+          patch={page_path(@dashboard_path, @filters, @last_cursor, @total_pages)}
+        >Last page ⇥</.link>
       </nav>
     </Live.shell>
     """
@@ -161,6 +167,7 @@ defmodule Tay.Dashboard.JobsLive do
           total_count: total_count,
           total_pages: total_pages,
           page: min(page_number, total_pages),
+          cursor: cursor,
           filters: filters,
           flash_error: nil
         )
@@ -174,6 +181,7 @@ defmodule Tay.Dashboard.JobsLive do
           total_count: 0,
           total_pages: 1,
           page: page_number,
+          cursor: cursor,
           filters: filters,
           flash_error: Live.error_message(error)
         )

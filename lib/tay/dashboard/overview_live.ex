@@ -80,6 +80,14 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   @impl true
+  def handle_info({:tay_dashboard_refresh, signal}, socket) do
+    {:noreply, Live.schedule_refresh(socket, signal)}
+  end
+
+  def handle_info({:tay_dashboard_refresh_tick, signal}, socket) do
+    {:noreply, socket |> Live.finish_refresh(signal) |> assign(refresh_timer: nil) |> refresh()}
+  end
+
   def handle_info(:tay_dashboard_refresh, socket) do
     {:noreply, socket |> assign(refresh_timer: nil) |> refresh()}
   end
