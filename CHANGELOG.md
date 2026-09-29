@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.0.0-rc.4 — 2026-09-30
+
+### Fixed
+
+- Moved online-compaction source recovery out of the Engine mailbox loop so
+  large terminal histories no longer block job admission and execution during
+  the preparing phase.
+- Replayed immutable Store-v2 segments directly in the background compaction
+  builder instead of first materializing and copying the complete job map in
+  Engine at the start of preparation.
+- Released transient recovery and compaction heaps in the processes that own
+  them, preventing terminal-history recovery memory from remaining allocated
+  after activation or compaction.
+- Supported online compaction when the current Store-v2 tail is empty without
+  racing concurrent appends.
+
 ## 1.0.0-rc.3 — 2026-09-29
 
 ### Fixed

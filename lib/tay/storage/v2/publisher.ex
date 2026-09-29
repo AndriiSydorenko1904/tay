@@ -31,6 +31,7 @@ defmodule Tay.Storage.V2.Publisher do
          true <-
            (is_nil(source.epoch_id) or V1.id?(source.epoch_id)) ||
              {:error, :source_epoch},
+         {:ok, source} <- load_source_jobs(native, source, limits, value_limits),
          {:ok, normalized, ids, retention_stats} <-
            prepare_snapshot(
              source.jobs,
@@ -132,6 +133,31 @@ defmodule Tay.Storage.V2.Publisher do
       end
     end
   end
+
+  defp load_source_jobs(_native, %{jobs: jobs} = source, _limits, _value_limits)
+       when is_map(jobs),
+       do: {:ok, source}
+
+  defp load_source_jobs(
+         native,
+         %{epoch_id: epoch_id, exclude_segment_id: exclude, frontier: frontier} = source,
+         limits,
+         value_limits
+       )
+       when is_binary(epoch_id) and is_integer(exclude) and is_integer(frontier) do
+    with {:ok, recovered} <-
+           V2Reader.recover_frozen(
+             native,
+             Reducer.candidate(limits, value_limits),
+             epoch_id,
+             exclude
+           ),
+         true <- recovered.next_sequence - 1 == frontier || {:error, :source_frontier_changed} do
+      {:ok, Map.put(source, :jobs, recovered.candidate.jobs)}
+    end
+  end
+
+  defp load_source_jobs(_, _, _, _), do: {:error, :source_jobs}
 
   defp new_id do
     case :crypto.strong_rand_bytes(16) do

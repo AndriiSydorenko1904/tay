@@ -135,6 +135,9 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert_receive {:online_preparation_blocked, builder}, 5_000
     assert %{state: :compacting, phase: :preparing} = Tay.status(name: @name)
 
+    writer = :sys.get_state(@name).writer
+    refute Map.has_key?(:sys.get_state(writer).online_compaction.source, :jobs)
+
     {intent, execution_token} = ExecutionHelpers.job()
     assert {:ok, job} = Tay.insert(intent, name: @name)
     {task, _metadata} = ExecutionHelpers.await_entry(execution_token)

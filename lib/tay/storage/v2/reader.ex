@@ -77,6 +77,90 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
+  @doc false
+  def recover_frozen(native, candidate, epoch_id, exclude_segment_id)
+      when is_binary(epoch_id) and is_integer(exclude_segment_id) and exclude_segment_id > 0 do
+    with :ok <- Native.check(native),
+         {:ok, root} <- Native.list(native, :root),
+         :ok <- root?(root),
+         {:ok, store_bytes} <- metadata(native, :root, root, "STORE", 28),
+         {:ok, store_id} <- Segment.decode_store(store_bytes),
+         {:ok, marker} <- metadata(native, :root, root, "STORE-V2", 28),
+         {:ok, current} <- metadata(native, :root, root, "CURRENT", 76),
+         {:ok, pointer} <- Authority.decode_current(current),
+         true <- pointer.store_id == store_id || {:error, :store_id_mismatch},
+         true <- pointer.epoch_id == epoch_id || {:error, :source_epoch_changed},
+         {:ok, epoch_entries} <- Native.list(native, :epoch),
+         :ok <- epoch?(epoch_entries),
+         {:ok, manifest_bytes} <-
+           metadata(native, :epoch, epoch_entries, "MANIFEST", @max_metadata),
+         {:ok, manifest} <- Authority.verify_selection(marker, current, manifest_bytes),
+         true <- manifest.store_id == store_id || {:error, :store_id_mismatch},
+         {:ok, segment_entries} <- Native.list(native, :segments),
+         {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
+         true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
+         frozen <-
+           Enum.reject(classified.canonical, fn {segment_id, _} ->
+             segment_id >= exclude_segment_id
+           end),
+         {:ok, result} <-
+           replay_frozen(native, candidate, frozen, manifest, exclude_segment_id),
+         :ok <- revalidate_root(native, root, store_bytes, marker, current),
+         :ok <- Native.check(native) do
+      {:ok,
+       Map.merge(result, %{
+         store_id: store_id,
+         epoch_id: epoch_id,
+         manifest: manifest,
+         current: current
+       })}
+    end
+  end
+
+  defp replay_frozen(native, candidate, canonical, manifest, exclude_segment_id) do
+    base_count = length(manifest.base_segments)
+
+    cond do
+      length(canonical) == base_count + 1 ->
+        replay(native, :segments, candidate, canonical, manifest)
+
+      canonical == [] and base_count == 0 and manifest.tail_first_sequence == 1 and
+          exclude_segment_id == manifest.tail_segment_id ->
+        {:ok,
+         %{
+           candidate: candidate,
+           store: nil,
+           highest: nil,
+           next_sequence: 1,
+           total_segment_bytes: 0,
+           record_count: 0,
+           segment_count: 0
+         }}
+
+      length(canonical) == base_count and exclude_segment_id == manifest.tail_segment_id ->
+        with {:ok, summaries, state} <-
+               scan_all(native, :segments, canonical, manifest, candidate),
+             {:ok, topology} <- Reader.validate_topology(summaries),
+             true <-
+               state.next_sequence == manifest.tail_first_sequence ||
+                 {:error, :tail_frontier} do
+          {:ok,
+           %{
+             candidate: state.candidate,
+             store: topology,
+             highest: List.last(summaries),
+             next_sequence: state.next_sequence,
+             total_segment_bytes: Enum.sum(Enum.map(summaries, & &1.bytes)),
+             record_count: Enum.sum(Enum.map(summaries, & &1.count)),
+             segment_count: length(summaries)
+           }}
+        end
+
+      true ->
+        {:error, :source_segments_missing}
+    end
+  end
+
   @doc "Independently replays a private or just-renamed candidate before CURRENT publication."
   def recover_candidate(native, candidate, manifest) do
     with :ok <- Native.check(native),

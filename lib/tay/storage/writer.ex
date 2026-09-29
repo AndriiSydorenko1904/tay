@@ -117,7 +117,6 @@ defmodule Tay.Storage.Writer do
         captured_at,
         max_terminal_jobs,
         cancel_flag,
-        jobs,
         notify,
         token
       ),
@@ -125,7 +124,7 @@ defmodule Tay.Storage.Writer do
         GenServer.call(
           writer,
           {:compact_online, admission_ref, deadline, retention, captured_at, max_terminal_jobs,
-           cancel_flag, jobs, notify, token},
+           cancel_flag, notify, token},
           :infinity
         )
 
@@ -345,11 +344,11 @@ defmodule Tay.Storage.Writer do
 
   def handle_call(
         {:compact_online, reference, deadline, retention, captured_at, max_terminal_jobs,
-         cancel_flag, jobs, notify, token},
+         cancel_flag, notify, token},
         {caller, _},
         %{recovery: recovery, epoch_id: epoch_id} = state
       )
-      when is_binary(epoch_id) and is_map(jobs) and is_pid(notify) do
+      when is_binary(epoch_id) and is_pid(notify) do
     valid =
       recovery.status == :ready and caller == recovery.caller and
         reference == recovery.admission_ref and is_nil(Map.get(state, :online_compaction)) and
@@ -368,7 +367,6 @@ defmodule Tay.Storage.Writer do
               store_id: rotated.store_id,
               epoch_id: rotated.epoch_id,
               current: rotated.v2_current,
-              jobs: jobs,
               frontier: rotated.next_sequence - 1,
               exclude_segment_id: rotated.segment.id,
               rotation_target_bytes: rotated.options.rotation_target_bytes,
@@ -423,7 +421,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:compact_online, _, _, _, _, _, _, _, _, _}, _, state),
+  def handle_call({:compact_online, _, _, _, _, _, _, _, _}, _, state),
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call(
@@ -731,7 +729,7 @@ defmodule Tay.Storage.Writer do
           {:compact_online_result, self(), online.token, {:ok, stats, delivered}}
         )
 
-        {:noreply, next}
+        {:noreply, next, {:continue, :release_transient_heap}}
 
       error ->
         send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
@@ -1150,7 +1148,9 @@ defmodule Tay.Storage.Writer do
 
       native = %{next.native | deadline: nil, timeout: next.options.timeout}
       if terminal, do: Native.shutdown(native)
-      {:reply, {:ok, summary, candidate}, %{next | native: native, recovery: updated}}
+
+      {:reply, {:ok, summary, candidate}, %{next | native: native, recovery: updated},
+       {:continue, :release_transient_heap}}
     else
       {:error, reason} ->
         error = Error.wrap(reason, :activation)
@@ -1162,6 +1162,12 @@ defmodule Tay.Storage.Writer do
             mutation: :activation_uncertain
         })
     end
+  end
+
+  @impl true
+  def handle_continue(:release_transient_heap, state) do
+    :erlang.garbage_collect()
+    {:noreply, state}
   end
 
   defp open_recovered(state, %{exhausted: true}) do

@@ -186,6 +186,11 @@ defmodule Tay.Engine do
     {:noreply, if(s.config.execution, do: start_controls(s), else: s)}
   end
 
+  def handle_continue(:release_transient_heap, s) do
+    :erlang.garbage_collect()
+    {:noreply, s}
+  end
+
   @doc false
   def activation_capability(%{state: :terminal, admission_ref: nil}),
     do: {:error, Error.new(:capacity, :coordinate_space_exhausted)}
@@ -253,8 +258,6 @@ defmodule Tay.Engine do
         {:noreply, s}
 
       true ->
-        jobs = compaction_jobs(s)
-
         case Writer.compact_online(
                s.writer,
                s.admission,
@@ -263,7 +266,6 @@ defmodule Tay.Engine do
                Clock.wall(s.config.clock),
                compaction_terminal_limit(s),
                cancel_flag,
-               jobs,
                self(),
                token
              ) do
@@ -301,7 +303,7 @@ defmodule Tay.Engine do
       ) do
     next = adopt_online_compaction(s, stats)
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
-    {:noreply, publish(wake_queues(next))}
+    {:noreply, publish(wake_queues(next)), {:continue, :release_transient_heap}}
   end
 
   def handle_info(
@@ -309,7 +311,9 @@ defmodule Tay.Engine do
         %{writer: writer, online_compaction: {:switched, token}} = s
       ) do
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
-    {:noreply, publish(wake_queues(%{s | online_compaction: nil}))}
+
+    {:noreply, publish(wake_queues(%{s | online_compaction: nil})),
+     {:continue, :release_transient_heap}}
   end
 
   def handle_info(
@@ -1769,11 +1773,6 @@ defmodule Tay.Engine do
         {add_charge(active, job, 1), terminal}
       end
     end)
-  end
-
-  defp compaction_jobs(s) do
-    active = JobIndex.fold(s.projection.jobs, fn job, acc -> Map.put(acc, job.id, job) end, %{})
-    TerminalStore.fold(s.terminal_store, fn job, acc -> Map.put(acc, job.id, job) end, active)
   end
 
   defp adopt_online_compaction(s, %{recovered: recovered} = stats) do
