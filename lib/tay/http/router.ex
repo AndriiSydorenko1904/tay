@@ -157,10 +157,9 @@ defmodule Tay.HTTP.Router do
             else: {:error, "result_too_large"}
 
         %{"outcome" => "failure", "error" => value} when is_map(value) ->
-          if not is_struct(value) and
-               match?({:ok, _}, Protocol.json_bytes(value, options.error_bytes)),
-             do: {:ok, {:failure, value}},
-             else: {:error, "error_too_large"}
+          if match?({:ok, _}, Protocol.json_bytes(value, options.error_bytes)),
+            do: {:ok, {:failure, value}},
+            else: {:error, "error_too_large"}
 
         _ ->
           {:error, "invalid_completion"}
