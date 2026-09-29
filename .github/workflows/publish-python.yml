@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish, for example v0.10.0
+        description: Existing release tag to publish, for example v1.0.0-rc.1
         required: true
         type: string
 
@@ -45,12 +45,22 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          case "$RELEASE_TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "Invalid release tag: $RELEASE_TAG" >&2; exit 1 ;;
-          esac
+          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
+          test -n "$mix_version"
+          test "$RELEASE_TAG" = "v$mix_version"
           package_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("clients/python/pyproject.toml").read_text())["project"]["version"])')
-          test "$RELEASE_TAG" = "v$package_version"
+          expected_python_version=$(python - "$mix_version" <<'PY'
+          import re
+          import sys
+
+          match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-rc\.(\d+))?", sys.argv[1])
+          if match is None:
+              raise SystemExit(f"unsupported Mix release version: {sys.argv[1]}")
+          base, candidate = match.groups()
+          print(base if candidate is None else f"{base}rc{candidate}")
+          PY
+          )
+          test "$package_version" = "$expected_python_version"
 
       - name: Qualify Python client
         run: |

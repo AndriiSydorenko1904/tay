@@ -253,7 +253,10 @@ class Tay:
         def decorate(candidate: Callable[..., Any]) -> Task:
             if not callable(candidate):
                 raise TaskRegistrationError("only callables can be registered as tasks")
-            task_name = name or f"{candidate.__module__}.{candidate.__qualname__}"
+            # Keep the implicit identity easy to discover and stable across
+            # restarts.  Nested/local functions should use an explicit name,
+            # because their lexical path is an implementation detail.
+            task_name = name or f"{candidate.__module__}.{candidate.__name__}"
             task_name = validate_task_name(task_name)
             existing = self._tasks.get(task_name)
             if existing is not None:

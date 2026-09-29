@@ -50,7 +50,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.15.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.1
 ```
 
 For a ready-made Tay deployment example:
@@ -85,7 +85,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.15.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.1
 ```
 
 ## Why Tay?
@@ -167,7 +167,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 0.15.2"}
+    {:tay, "1.0.0-rc.1"}
   ]
 end
 ```
@@ -431,7 +431,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:0.15.2
+ghcr.io/andriisydorenko1904/tay:1.0.0-rc.1
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -441,7 +441,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:0.15.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.1
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -532,8 +532,10 @@ persistence, and upgrade rules.
 
 ## Project status
 
-Tay is currently a public preview with a deliberately constrained,
-target-validated operating profile.
+Tay 1.0 is currently a release candidate with a deliberately constrained,
+target-validated operating profile. Release-candidate feedback may lead to
+compatible fixes and documentation changes before the final 1.0.0 release;
+the documented persistent-format contracts are already fixed.
 
 The storage format, recovery behavior, supported filesystems, and durability
 requirements are documented explicitly.
@@ -546,6 +548,7 @@ Before production use, read:
 - [Operations](docs/operations.md)
 - [Storage contract](docs/storage.md)
 - [Compatibility](docs/compatibility.md)
+- [Idempotency and external effects](docs/idempotency.md)
 - [Standalone runtime](docs/standalone.md)
 - [Worker protocol](docs/protocol.md)
 

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 1.0.0-rc.1 — 2026-09-29
+
+### Added
+
+- Added ergonomic Python task decorators with stable automatic or explicit
+  public names, local registry lookup, argument serialization through
+  `task.enqueue()`, duplicate-name protection, and synchronous/asynchronous
+  handler execution.
+- Added a production idempotency guide for at-least-once jobs and financial
+  operations.
+- Added a repeatable Tay 1.0 readiness audit harness with explicit
+  PASS/FAIL/SKIP/UNKNOWN classification and isolated release artifacts.
+
+### Fixed
+
+- Passed the parent test build's complete dependency code path to independent
+  BEAM VMs so whole-VM crash tests can start every Tay application dependency.
+- Corrected the Python dependency audit to inspect the fully resolved input
+  without misclassifying command-line or environment failures as
+  vulnerabilities.
+
+### Changed
+
+- Declared the documented single-node, single-writer contracts as the Tay 1.0
+  release-candidate surface. Record v1, STORE v1, Segment v1, Event v1, and the
+  existing fail-closed recovery policy remain unchanged.
+
 ## 0.15.2 — 2026-09-27
 
 ### Changed

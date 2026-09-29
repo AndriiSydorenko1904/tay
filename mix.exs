@@ -54,14 +54,14 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "0.15.2"
+  @version "1.0.0-rc.1"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
     [
       app: :tay,
       version: @version,
-      description: "Public-preview single-node durable job engine with fail-closed recovery",
+      description: "Release-candidate single-node durable job engine with fail-closed recovery",
       source_url: @source_url,
       package: package(),
       docs: docs(),
@@ -114,6 +114,7 @@ defmodule Tay.MixProject do
         "docs/storage.md",
         "docs/operations.md",
         "docs/compatibility.md",
+        "docs/idempotency.md",
         "docs/standalone.md",
         "docs/dashboard.md",
         "docs/dashboard-container.md"
@@ -139,6 +140,7 @@ defmodule Tay.MixProject do
         "docs/storage.md",
         "docs/operations.md",
         "docs/compatibility.md",
+        "docs/idempotency.md",
         "docs/standalone.md",
         "docs/dashboard.md",
         "docs/dashboard-container.md"

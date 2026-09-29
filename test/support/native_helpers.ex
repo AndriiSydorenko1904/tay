@@ -22,19 +22,18 @@ defmodule Tay.Test.NativeHelpers do
   def canonical(id), do: elem(Tay.Storage.Segment.filename(id), 1)
 
   def child_elixir(script, args \\ []) do
+    build_lib = :tay |> Application.app_dir() |> Path.dirname() |> Path.expand()
+
     ebins =
-      [
-        :tay,
-        :telemetry,
-        :bandit,
-        :hpax,
-        :plug,
-        :plug_crypto,
-        :mime,
-        :thousand_island,
-        :websock
-      ]
-      |> Enum.map(&Application.app_dir(&1, "ebin"))
+      :code.get_path()
+      |> Enum.map(&List.to_string/1)
+      |> Enum.filter(fn path ->
+        expanded = Path.expand(path)
+
+        Path.basename(expanded) == "ebin" and
+          Path.dirname(Path.dirname(expanded)) == build_lib
+      end)
+      |> Enum.sort()
 
     System.cmd(
       System.find_executable("elixir"),

@@ -13,6 +13,7 @@ from tay import (
     HTTPJobHandle,
     ProtocolError,
     ServerError,
+    TaskRegistrationError,
     Tay,
     TayHTTP,
     TayHTTPWorker,
@@ -87,6 +88,104 @@ class SocketPathTests(unittest.TestCase):
 
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_task_decorator_uses_module_function_name_and_metadata(self) -> None:
+        client = Tay(mode="client")
+
+        @client.task
+        def refresh(account_id: str) -> str:
+            """Refresh one account."""
+            return account_id
+
+        expected_name = f"{refresh.__module__}.refresh"
+        self.assertEqual(refresh.name, expected_name)
+        self.assertEqual(refresh.__name__, "refresh")
+        self.assertEqual(refresh.__doc__, "Refresh one account.")
+        self.assertIs(client.tasks[expected_name], refresh)
+        self.assertEqual(refresh("account-1"), "account-1")
+
+    async def test_task_decorator_accepts_explicit_public_name(self) -> None:
+        client = Tay(mode="client")
+
+        @client.task(name="accounts.refresh.v1")
+        def refresh(account_id: str) -> None:
+            return None
+
+        self.assertEqual(refresh.name, "accounts.refresh.v1")
+        self.assertIs(client.tasks["accounts.refresh.v1"], refresh)
+
+    async def test_decorated_task_enqueue_serializes_call_arguments(self) -> None:
+        client = Tay(mode="client")
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def request(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            calls.append((kind, fields))
+            return {"job_id": "job-1"}
+
+        client._request = request  # type: ignore[method-assign]
+
+        @client.task(name="accounts.refresh.v1")
+        def refresh(account_id: str, *, force: bool = False) -> None:
+            return None
+
+        job = await refresh.enqueue("account-1", force=True, delay=5)
+        self.assertEqual(job.id, "job-1")
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "enqueue",
+                    {
+                        "task": "accounts.refresh.v1",
+                        "args": {"account_id": "account-1", "force": True},
+                        "options": {"delay": 5},
+                    },
+                )
+            ],
+        )
+
+    async def test_task_decorator_rejects_duplicate_names(self) -> None:
+        client = Tay(mode="client")
+
+        @client.task(name="accounts.refresh.v1")
+        def first() -> None:
+            return None
+
+        with self.assertRaisesRegex(TaskRegistrationError, "accounts.refresh.v1"):
+
+            @client.task(name="accounts.refresh.v1")
+            def second() -> None:
+                return None
+
+        self.assertIs(client.tasks["accounts.refresh.v1"], first)
+
+    async def test_async_decorated_handler_executes_from_registry(self) -> None:
+        client = Tay(mode="embedded", client_id="worker-async")
+        events: list[tuple[str, dict[str, object]]] = []
+
+        @client.task(name="accounts.async_refresh.v1")
+        async def refresh(account_id: str) -> dict[str, str]:
+            await asyncio.sleep(0)
+            return {"account_id": account_id}
+
+        async def send_event(kind: str, fields: dict[str, object]) -> None:
+            events.append((kind, dict(fields)))
+
+        client._send_event = send_event  # type: ignore[method-assign]
+        await client._accept_execution(
+            {
+                "reservation_id": "reservation-async",
+                "execution_id": "execution-async",
+                "job_id": "job-async",
+                "task": refresh.name,
+                "args": {"account_id": "account-1"},
+            }
+        )
+        while client._executions:
+            await asyncio.sleep(0)
+
+        self.assertEqual([kind for kind, _ in events], ["started", "succeeded"])
+        self.assertEqual(events[-1][1]["result"], {"account_id": "account-1"})
+
     async def test_capacity_error_preserves_machine_readable_reason(self) -> None:
         error = _server_error_from_payload(
             {"code": "capacity", "reason": "client_slots"}

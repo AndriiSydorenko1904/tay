@@ -6,7 +6,7 @@ import hashlib
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from functools import update_wrapper
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 
 from .errors import ValidationError
@@ -77,7 +77,10 @@ class Task:
             self.signature = inspect.signature(function)
         except (TypeError, ValueError):
             self.signature = None
-        update_wrapper(self, function)
+        # ``Task`` is a callable decorator result rather than a nested wrapper
+        # function. Applying ``wraps`` to it preserves the same public metadata
+        # and ``__wrapped__`` chain that ordinary function decorators expose.
+        wraps(function)(self)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run the original function locally; no socket operation occurs."""

@@ -99,6 +99,44 @@ execute jobs.
 
 Tasks declared before `await tay.start()` are advertised during the local
 socket handshake.
+
+## Decorated tasks
+
+Use `@tay.task` for an ergonomic handler and producer API.  The default job
+name is `<module>.<function_name>`; choose an explicit name for a public,
+versioned contract.  The decorated object still calls the original function
+locally, while `enqueue()` serializes its call arguments and submits the job.
+
+```python
+from tay import Tay
+
+tay = Tay()
+
+
+@tay.task
+def refresh(account_id: str, force: bool = False) -> None:
+    # default name: "my_module.refresh"
+    ...
+
+
+@tay.task(name="accounts.refresh.v1")
+def public_refresh(account_id: str) -> None: ...
+
+
+job = await refresh.enqueue("acct-42", force=True)
+```
+
+Registered handlers are available in `tay.tasks`, keyed by job name.  Calling
+`await tay.enqueue("accounts.refresh.v1", {"account_id": "acct-42"})`
+remains fully supported.
+
+For payments and other external effects, pass the same stable business
+operation identifier as Tay's `submission_id` and the provider's idempotency
+key. A Tay retry can then repeat delivery without repeating the external
+effect. See the repository's
+[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.0.0-rc.1/docs/idempotency.md)
+for crash cases and a complete financial-operation example.
+
 For a long-running worker that adds or removes capabilities later, explicitly
 sync the change:
 

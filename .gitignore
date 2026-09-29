@@ -14,4 +14,6 @@ clients/python/build/
 clients/python/dist/
 clients/python/*.egg-info/
 clients/python/**/__pycache__/
+/clients/python/uv.lock
+/result.txt
 deploy-helper.sh

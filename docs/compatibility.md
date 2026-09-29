@@ -9,8 +9,9 @@ the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
 repaired. Store-v1 and released fixtures remain unchanged.
 
-Tay v0.15.2 is a single-node public preview. Record v1, STORE v1, Segment v1,
-and Event v1 are fixed compatibility contracts described in [storage](storage.md).
+Tay v1.0.0-rc.1 is a single-node release candidate. Record v1, STORE v1,
+Segment v1, and Event v1 are fixed compatibility contracts described in
+[storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
 anchors; they are not generated from the current encoder or parsed from public
 documentation. A newer binary must read every older supported byte and

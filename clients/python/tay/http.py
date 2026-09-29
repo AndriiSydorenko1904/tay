@@ -35,7 +35,13 @@ except ModuleNotFoundError as exc:
     x509 = None
 
 from .client import _extract_identifier, _server_error_from_payload
-from .errors import ConnectionLost, ProtocolError, ServerError, ValidationError
+from .errors import (
+    ConnectionLost,
+    ProtocolError,
+    ServerError,
+    TaskRegistrationError,
+    ValidationError,
+)
 from .protocol import json_bytes, normalize_json, validate_task_name
 from .task import Task, TaskConfig
 
@@ -273,13 +279,28 @@ class TayHTTPWorker(TayHTTP):
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
 
+    @property
+    def tasks(self) -> Mapping[str, Task]:
+        """Read-only view of handlers registered on this worker."""
+
+        return self._tasks.copy()
+
     def task(
         self, function: Callable[..., Any] | None = None, *, name: str | None = None
-    ):
+    ) -> Task | Callable[[Callable[..., Any]], Task]:
+        """Register a callable, either as ``@worker.task`` or ``@worker.task(...)``."""
+
         def register(fn: Callable[..., Any]) -> Task:
+            if not callable(fn):
+                raise TaskRegistrationError("only callables can be registered as tasks")
             key = validate_task_name(name or f"{fn.__module__}.{fn.__name__}")
-            if key in self._tasks:
-                raise ValidationError(f"task {key!r} is already registered")
+            existing = self._tasks.get(key)
+            if existing is not None:
+                if existing.function is fn:
+                    return existing
+                raise TaskRegistrationError(
+                    f"task name {key!r} is already registered to another callable"
+                )
             declared = Task(self, fn, name=key, config=TaskConfig())
             self._tasks[key] = declared
             return declared

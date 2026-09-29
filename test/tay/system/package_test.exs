@@ -43,7 +43,7 @@ defmodule Tay.System.PackageTest do
 
     assert Enum.sort(File.ls!(Path.join(vendor, "docs"))) ==
              Enum.sort(
-               ~w(protocol.md storage.md operations.md compatibility.md standalone.md dashboard.md dashboard-container.md)
+               ~w(protocol.md storage.md operations.md compatibility.md idempotency.md standalone.md dashboard.md dashboard-container.md)
              )
 
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==

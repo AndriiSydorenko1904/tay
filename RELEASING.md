@@ -1,9 +1,17 @@
 # Releasing Tay
 
-Tay is published as two public packages with the same version:
+Tay is published as two public packages from the same release line:
 
 - `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
+
+Stable versions have identical text in both ecosystems. Pre-releases use each
+ecosystem's canonical spelling:
+
+| Release | Mix/Hex and Git tag | Python/PyPI |
+| --- | --- | --- |
+| First 1.0 release candidate | `1.0.0-rc.1`, `v1.0.0-rc.1` | `1.0.0rc1` |
+| Stable 1.0 | `1.0.0`, `v1.0.0` | `1.0.0` |
 
 Published versions are immutable. Run every check below from a clean checkout
 of the release tag, and publish only after the GitHub repository and tag are
@@ -11,11 +19,11 @@ public.
 
 ## Prepare
 
-1. Set the same SemVer in `mix.exs` and
+1. Set the release version in `mix.exs` and its PEP 440 equivalent in
    `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
 3. Update versioned GitHub documentation links in package metadata.
-4. Commit, create `v<version>`, and push the commit and tag.
+4. Commit, create `v<mix-version>`, and push the commit and tag.
 5. Verify that `https://github.com/AndriiSydorenko1904/tay` and the tag are
    accessible without authentication.
 
