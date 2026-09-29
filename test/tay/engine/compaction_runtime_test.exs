@@ -166,6 +166,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     start(path, writer_hook: hook)
     insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+    retained = insert(%{"rotation_before_failure" => true}, scheduled_at: 100_000)
 
     engine = :sys.get_state(@name).engine
     writer = :sys.get_state(@name).writer
@@ -178,9 +179,51 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert Process.alive?(engine)
     assert Process.alive?(writer)
     assert %{state: :ready} = Tay.Storage.Writer.status(writer)
+    assert {:ok, %{id: retained_id}} = Tay.get_job(retained.id, name: @name)
+    assert retained_id == retained.id
     job = insert(%{"after_failed_compaction" => true})
     assert {:ok, %{id: id}} = Tay.get_job(job.id, name: @name)
     assert id == job.id
+  end
+
+  test "background compaction publishes its source rotation to Engine", %{path: path} do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          :atomics.put(gate, 1, 2)
+          send(owner, {:online_preparation_blocked, self()})
+
+          receive do
+            :finish_online_preparation -> :ok
+          end
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path, writer_hook: hook)
+    insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+    insert(%{"rotation_anchor" => true}, scheduled_at: 100_000)
+
+    engine = :sys.get_state(@name).engine
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:online_preparation_blocked, builder}, 5_000
+
+    job = insert(%{"during_preparation" => true})
+    send(builder, :finish_online_preparation)
+    assert {:ok, _} = Task.await(compact, 60_000)
+    assert {:ok, %{id: id}} = Tay.get_job(job.id, name: @name)
+    assert id == job.id
+    assert :sys.get_state(@name).engine == engine
+    assert %{state: :ready} = Tay.status(name: @name)
   end
 
   test "online compaction expires terminal history without replacing Engine", %{path: path} do

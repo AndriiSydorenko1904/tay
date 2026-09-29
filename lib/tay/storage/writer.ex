@@ -411,7 +411,13 @@ defmodule Tay.Storage.Writer do
             source: rotated
           }
 
-          {:reply, :ok, Map.put(rotated, :online_compaction, online)}
+          rotation = %{
+            previous: Map.take(state.segment, [:id, :state, :bytes, :count]),
+            segment: Map.take(rotated.segment, [:id, :state, :bytes, :count]),
+            next_sequence: rotated.next_sequence
+          }
+
+          {:reply, {:ok, rotation}, Map.put(rotated, :online_compaction, online)}
 
         error ->
           {:reply, error, state}

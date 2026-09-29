@@ -269,8 +269,14 @@ defmodule Tay.Engine do
                self(),
                token
              ) do
-          :ok ->
-            {:noreply, %{s | online_compaction: token}}
+          {:ok, rotation} ->
+            case adopt_online_rotation(s, rotation) do
+              {:ok, next} ->
+                {:noreply, %{next | online_compaction: token}}
+
+              {:error, reason} ->
+                exit({:invalid_online_compaction_rotation, reason})
+            end
 
           {:error, reason} ->
             send(guardian, {:online_compaction_result, self(), token, {:error, reason}})
@@ -1821,6 +1827,68 @@ defmodule Tay.Engine do
         online_compaction: nil
     }
   end
+
+  defp adopt_online_rotation(
+         s,
+         %{
+           previous: previous,
+           segment: %{id: id, state: :active, bytes: 44, count: 0} = segment,
+           next_sequence: next_sequence
+         }
+       ) do
+    current = Map.take(s.segment, [:id, :state, :bytes, :count])
+
+    cond do
+      previous != current ->
+        {:error, :previous_segment}
+
+      next_sequence != s.next_sequence ->
+        {:error, :next_sequence}
+
+      id == s.segment.id ->
+        {:ok, s}
+
+      id != s.segment.id + 1 ->
+        {:error, :segment_id}
+
+      true ->
+        sealed =
+          s.segment_catalog
+          |> List.last()
+          |> Map.merge(%{
+            state: :sealed,
+            bytes: s.segment.bytes + if(s.segment.state == :active, do: 64, else: 0)
+          })
+
+        active = %{
+          id: id,
+          state: :active,
+          bytes: 44,
+          count: 0,
+          first_sequence: s.next_sequence,
+          last_sequence: nil
+        }
+
+        catalog =
+          s.segment_catalog
+          |> List.replace_at(-1, sealed)
+          |> Kernel.++([active])
+          |> Enum.take(-@segment_catalog_limit)
+
+        added = 44 + if(s.segment.state == :active, do: 64, else: 0)
+
+        {:ok,
+         %{
+           s
+           | segment: segment,
+             segment_catalog: catalog,
+             segment_count: s.segment_count + 1,
+             history_bytes: s.history_bytes + added
+         }}
+    end
+  end
+
+  defp adopt_online_rotation(_s, _rotation), do: {:error, :shape}
 
   defp replace_partition(budget, previous, job, kind) do
     budget =
