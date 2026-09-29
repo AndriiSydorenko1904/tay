@@ -151,6 +151,38 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(@name).engine == engine
   end
 
+  test "background preparation failure preserves the live generation", %{path: path} do
+    fail = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(fail, 1) == 1, do: exit(:injected_preparation_failure)
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path, writer_hook: hook)
+    insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    engine = :sys.get_state(@name).engine
+    writer = :sys.get_state(@name).writer
+    :atomics.put(fail, 1, 1)
+
+    assert {:error, %Tay.Error{kind: :unknown_outcome}} =
+             Tay.compact(name: @name, timeout: 60_000)
+
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert Process.alive?(engine)
+    assert Process.alive?(writer)
+    assert %{state: :ready} = Tay.Storage.Writer.status(writer)
+    job = insert(%{"after_failed_compaction" => true})
+    assert {:ok, %{id: id}} = Tay.get_job(job.id, name: @name)
+    assert id == job.id
+  end
+
   test "online compaction expires terminal history without replacing Engine", %{path: path} do
     start(path, compaction: false)
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000, terminal_retention: :infinity)

@@ -742,20 +742,27 @@ defmodule Tay.Storage.Writer do
         %{online_compaction: %{ref: ref, pid: pid} = online} = state
       ) do
     Process.demonitor(online.monitor, [:flush])
-    send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-    {:noreply, poison(state, reason)}
+
+    if not online.freezing and not online.frozen do
+      abort_online_preparation(state, online, reason)
+    else
+      send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
+      {:noreply, poison(state, reason)}
+    end
   end
 
   def handle_info(
         {:DOWN, monitor, :process, pid, reason},
         %{online_compaction: %{monitor: monitor, pid: pid} = online} = state
       ) do
-    send(
-      online.notify,
-      {:compact_online_result, self(), online.token, {:error, {:builder_exit, reason}}}
-    )
+    error = {:builder_exit, reason}
 
-    {:noreply, poison(state, {:compaction_builder_exit, reason})}
+    if not online.freezing and not online.frozen do
+      abort_online_preparation(state, online, error)
+    else
+      send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
+      {:noreply, poison(state, {:compaction_builder_exit, reason})}
+    end
   end
 
   def handle_info(
@@ -800,6 +807,23 @@ defmodule Tay.Storage.Writer do
     do: {:noreply, poison(state, :unsolicited_native_reply)}
 
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
+
+  defp abort_online_preparation(state, online, reason) do
+    native = %{state.native | deadline: nil}
+
+    case Native.v2_abort(native) do
+      :ok ->
+        send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
+
+        {:noreply, %{state | native: native, online_compaction: nil},
+         {:continue, :release_transient_heap}}
+
+      {:error, abort_reason} ->
+        error = {:compaction_abort_failed, reason, abort_reason}
+        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
+        {:noreply, poison(state, error)}
+    end
+  end
 
   @impl true
   def terminate(_reason, state) do

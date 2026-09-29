@@ -3,7 +3,7 @@
 # Durability is fixed to :sync in the standalone runtime; it has no env override.
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:1.0.0-rc.4}
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:1.0.0-rc.5}
     build: .
     environment:
       TAY_DATA_DIR: /var/lib/tay/store

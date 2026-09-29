@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.0.0-rc.5 — 2026-09-30
+
+### Fixed
+
+- Replayed Store-v2 segments through a bounded chunk cache instead of issuing
+  native-owner calls for every record, keeping Writer admission responsive
+  while online compaction prepares its candidate.
+- Aborted failed pre-switch candidates without poisoning the authoritative
+  Writer or retiring the live Engine generation.
+- Preserved the existing generation and returned lifecycle state to `ready`
+  when a background compaction builder fails before the atomic switch.
+
 ## 1.0.0-rc.4 — 2026-09-30
 
 ### Fixed

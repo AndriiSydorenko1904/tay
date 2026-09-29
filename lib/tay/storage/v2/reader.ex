@@ -9,6 +9,7 @@ defmodule Tay.Storage.V2.Reader do
 
   @max_metadata 16_777_216
   @digest_chunk 1_048_576
+  @replay_chunk 1_048_576
 
   @doc "Rolls back an interrupted first adoption under the retained ownership lock."
   def reconcile_adoption(native) do
@@ -293,8 +294,8 @@ defmodule Tay.Storage.V2.Reader do
             with_file(native, scope, entry, fn ->
               with :ok <- maybe_digest(native, entry, manifest, ordinal),
                    {:ok, summary, next} <-
-                     Segment.reduce_while(
-                       &Native.read(native, &1, &2),
+                     buffered_reduce(
+                       native,
                        entry.size,
                        state,
                        fn record, _offset, acc -> consume(record, base?, acc) end,
@@ -418,6 +419,66 @@ defmodule Tay.Storage.V2.Reader do
       {:ok, bytes} when byte_size(bytes) == length -> {:ok, bytes}
       {:ok, _} -> {:error, :short_read}
       error -> error
+    end
+  end
+
+  defp buffered_reduce(native, size, accumulator, visitor, options) do
+    cache = {__MODULE__, make_ref()}
+
+    try do
+      Segment.reduce_while(
+        &buffered_read(native, cache, size, &1, &2),
+        size,
+        accumulator,
+        visitor,
+        options
+      )
+    after
+      Process.delete(cache)
+    end
+  end
+
+  defp buffered_read(_native, _cache, _size, _offset, 0), do: {:ok, <<>>}
+
+  defp buffered_read(native, cache, size, offset, length)
+       when offset >= 0 and length > 0 and offset + length <= size do
+    buffered_read(native, cache, size, offset, length, [])
+  end
+
+  defp buffered_read(_native, _cache, _size, _offset, _length),
+    do: {:error, :invalid_read_range}
+
+  defp buffered_read(_native, _cache, _size, _offset, 0, chunks),
+    do: {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+
+  defp buffered_read(native, cache, size, offset, remaining, chunks) do
+    chunk_offset = div(offset, @replay_chunk) * @replay_chunk
+
+    with {:ok, bytes} <- replay_chunk(native, cache, size, chunk_offset) do
+      within = offset - chunk_offset
+      take = min(remaining, byte_size(bytes) - within)
+
+      buffered_read(
+        native,
+        cache,
+        size,
+        offset + take,
+        remaining - take,
+        [binary_part(bytes, within, take) | chunks]
+      )
+    end
+  end
+
+  defp replay_chunk(native, cache, size, offset) do
+    case Process.get(cache) do
+      {^offset, bytes} ->
+        {:ok, bytes}
+
+      _ ->
+        with {:ok, bytes} <- exact_read(native, offset, min(@replay_chunk, size - offset)) do
+          Process.put(cache, {offset, bytes})
+          {:ok, bytes}
+        end
     end
   end
 end

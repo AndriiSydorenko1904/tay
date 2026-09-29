@@ -44,6 +44,7 @@ defmodule Tay.Storage.Native do
     v2_clear_adoption: 36,
     v2_reclaim: 37,
     acquire_if_missing: 38,
+    v2_abort: 39,
     fault: 240
   }
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
@@ -403,6 +404,9 @@ defmodule Tay.Storage.Native do
   def v2_restore_v1(_, _), do: {:error, %{kind: :native_argument, reason: :adoption_nonce}}
 
   def v2_clear_adoption(native), do: empty(native, :v2_clear_adoption)
+
+  @doc false
+  def v2_abort(native), do: empty(native, :v2_abort)
 
   def v2_publish_current(native, stage, source, previous) do
     if is_binary(stage) and Regex.match?(~r/\A\.tay-current-[0-9a-f]{32}\.tmp\z/, stage) and

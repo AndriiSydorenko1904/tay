@@ -44,7 +44,8 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
   V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31, V2_ADOPT_V1=32,
   V2_PUBLISH_CURRENT=33, V2_SPACE=34, V2_RESTORE_V1=35,
-  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, FAULT=240 };
+  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39,
+  FAULT=240 };
 
 /* Fault-site values are part of the test protocol. Keep their numeric values
  * stable even though they are not production request opcodes. */
@@ -682,6 +683,20 @@ static int v2_begin(void) {
     candidate_name[0]=0;
   }
   return e;
+}
+
+static int v2_abort(void) {
+  int e=release_owned_fd(&read_fd);
+  int close_error=release_owned_fd(&candidate_write_fd);
+  if (!e) e=close_error;
+  close_error=release_owned_fd(&candidate_segments_fd);
+  if (!e) e=close_error;
+  close_error=release_owned_fd(&candidate_fd);
+  if (!e) e=close_error;
+  candidate_write_kind=0;
+  candidate_write_name[0]=0;
+  candidate_name[0]=0;
+  return e?e:check_paths();
 }
 
 static int v2_publish_epoch(void) {
@@ -1357,6 +1372,7 @@ static int dispatch(unsigned op) {
     case V2_PUBLISH_CURRENT: return v2_publish_current();
     case V2_SPACE: return v2_space();
     case V2_RECLAIM: return v2_reclaim();
+    case V2_ABORT: return v2_abort();
     case V2_RESTORE_V1: return v2_restore_v1();
     case V2_CLEAR_ADOPTION: return v2_clear_adoption();
     case LIST: return list_directory();
@@ -1476,7 +1492,7 @@ static int validate_request(unsigned op) {
       pos++; break;
     case MKDIR_SEGMENTS: case CLOSE_READ:
     case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS: case V2_SPACE:
-    case V2_CLEAR_ADOPTION:
+    case V2_CLEAR_ADOPTION: case V2_ABORT:
     case COLD_SYNC_STAGING: case COLD_PUBLISH: case COLD_SYNC_CATALOG:
     case COLD_CHECK: case COLD_SOURCE: break;
 #ifdef TAY_TEST_FAULTS

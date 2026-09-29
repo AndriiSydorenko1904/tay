@@ -60,6 +60,7 @@ Type is regular=1, directory=2, symlink=3, other=4.
 | 18 acquire existing | strict:u8, operator_validated:u8, max_directory_entries:u32, absolute_path:str | root_created:u8=0, filesystem_type:u64, helper_pid:u64; inspection-only session |
 | 19 enable mutations | empty | empty, after deferred barriers; same helper and lock |
 | 38 acquire if missing | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64; mutation session only when the root was created |
+| 39 abort v2 candidate | — | closes private candidate/read descriptors while preserving the authoritative source |
 | 240 test fault | opcode:u8, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
 
 Fault actions are before-call error=1, short pwrite/pread=2, crash after=3, drop reply=4,
