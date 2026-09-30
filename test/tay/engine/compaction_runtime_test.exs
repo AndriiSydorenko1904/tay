@@ -184,6 +184,14 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     job = insert(%{"after_failed_compaction" => true})
     assert {:ok, %{id: id}} = Tay.get_job(job.id, name: @name)
     assert id == job.id
+
+    # The failed preparation rotated the manifest tail and left its successor
+    # as the live segment. A retry must replay that complete frozen chain, not
+    # assume that an epoch can only contain its original manifest tail.
+    :atomics.put(fail, 1, 0)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert {:ok, %{id: ^id}} = Tay.get_job(job.id, name: @name)
   end
 
   test "background compaction publishes its source rotation to Engine", %{path: path} do

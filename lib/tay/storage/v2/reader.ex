@@ -122,7 +122,7 @@ defmodule Tay.Storage.V2.Reader do
     base_count = length(manifest.base_segments)
 
     cond do
-      length(canonical) == base_count + 1 ->
+      length(canonical) >= base_count + 1 ->
         replay(native, :segments, candidate, canonical, manifest)
 
       canonical == [] and base_count == 0 and manifest.tail_first_sequence == 1 and
