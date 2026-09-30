@@ -134,7 +134,7 @@ For payments and other external effects, pass the same stable business
 operation identifier as Tay's `submission_id` and the provider's idempotency
 key. A Tay retry can then repeat delivery without repeating the external
 effect. See the repository's
-[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.0.0-rc.6/docs/idempotency.md)
+[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.0.0-rc.7/docs/idempotency.md)
 for crash cases and a complete financial-operation example.
 
 For a long-running worker that adds or removes capabilities later, explicitly

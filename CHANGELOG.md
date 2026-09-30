@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.0.0-rc.7 — 2026-09-30
+
+### Fixed
+
+- Allowed online compaction to replay epochs containing multiple valid
+  post-manifest source rotations instead of rejecting them as
+  `source_segments_missing`.
+- Made compaction retries publish successfully after an earlier preparation
+  failure rotated the live tail while preserving the authoritative epoch.
+
 ## 1.0.0-rc.6 — 2026-09-30
 
 ### Fixed
