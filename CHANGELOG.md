@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.0.0-rc.6 — 2026-09-30
+
+### Fixed
+
+- Synchronized Engine's physical segment frontier with Writer's source
+  rotation before background compaction admits further mutations.
+- Prevented valid post-rotation receipts from being rejected as
+  `invalid_writer_receipt`, which previously revoked the live generation while
+  compaction was preparing its candidate.
+- Preserved fail-open behavior after a preparation failure even when online
+  compaction had first rotated a non-empty active tail.
+
 ## 1.0.0-rc.5 — 2026-09-30
 
 ### Fixed
