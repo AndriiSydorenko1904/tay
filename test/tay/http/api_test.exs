@@ -190,6 +190,7 @@ defmodule Tay.HTTP.APITest do
 
   test "enqueue preserves an admission refusal's machine-readable reason" do
     Process.flag(:trap_exit, true)
+    ExecutionHelpers.install()
     path = NativeHelpers.path()
     ExecutionHelpers.initialize(path)
     on_exit(fn -> File.rm_rf!(path) end)
@@ -226,7 +227,7 @@ defmodule Tay.HTTP.APITest do
              end
            end)
 
-    assert {429, %{"error" => %{"code" => "capacity", "reason" => "max_jobs"}}} =
+    assert {429, %{"error" => %{"code" => "capacity", "reason" => "retained_jobs"}}} =
              request(:post, base <> "/jobs", %{
                task: "tests.remote.v1",
                args: %{},
