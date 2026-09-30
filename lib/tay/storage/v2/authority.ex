@@ -10,7 +10,8 @@ defmodule Tay.Storage.V2.Authority do
   alias Tay.Storage.V2.Retention
 
   @max 18_446_744_073_709_551_615
-  @manifest_keys ~w(store_id epoch_id source_epoch_id source_frontier captured_at terminal_retention source_segments base_segments tail_segment_id tail_first_sequence)
+  @legacy_manifest_keys ~w(store_id epoch_id source_epoch_id source_frontier captured_at terminal_retention source_segments base_segments tail_segment_id tail_first_sequence)
+  @manifest_keys @legacy_manifest_keys ++ ~w(availability_frontier)
   @source_keys ~w(id digest)
   @base_keys ~w(id first_sequence last_sequence bytes digest)
 
@@ -66,7 +67,9 @@ defmodule Tay.Storage.V2.Authority do
            checked_body(bytes, :variable),
          true <- length == byte_size(body) || {:error, :manifest_length},
          {:ok, value} <- Value.decode(body),
-         true <- exact?(value, @manifest_keys) || {:error, :manifest_keys},
+         true <-
+           (exact?(value, @manifest_keys) or exact?(value, @legacy_manifest_keys)) ||
+             {:error, :manifest_keys},
          {:ok, manifest} <- manifest_from_body(value),
          :ok <- manifest?(manifest) do
       {:ok, manifest}
@@ -126,7 +129,7 @@ defmodule Tay.Storage.V2.Authority do
         } = manifest
       ) do
     cond do
-      not exact?(manifest, Enum.map(@manifest_keys, &String.to_existing_atom/1)) ->
+      not manifest_shape?(manifest) ->
         {:error, :manifest_fields}
 
       not V1.id?(store_id) or not V1.id?(epoch_id) ->
@@ -137,6 +140,9 @@ defmodule Tay.Storage.V2.Authority do
 
       not is_integer(frontier) or frontier not in 0..@max ->
         {:error, :source_frontier}
+
+      not valid_availability_frontier?(Map.get(manifest, :availability_frontier)) ->
+        {:error, :availability_frontier}
 
       not V1.time?(captured_at) ->
         {:error, :captured_at}
@@ -188,7 +194,7 @@ defmodule Tay.Storage.V2.Authority do
   defp valid_base?(_, _, _), do: false
 
   defp manifest_body(m) do
-    %{
+    body = %{
       "store_id" => {:bytes, m.store_id},
       "epoch_id" => {:bytes, m.epoch_id},
       "source_epoch_id" => if(m.source_epoch_id, do: {:bytes, m.source_epoch_id}),
@@ -210,6 +216,11 @@ defmodule Tay.Storage.V2.Authority do
       "tail_segment_id" => m.tail_segment_id,
       "tail_first_sequence" => m.tail_first_sequence
     }
+
+    case Map.fetch(m, :availability_frontier) do
+      {:ok, frontier} -> Map.put(body, "availability_frontier", frontier)
+      :error -> body
+    end
   end
 
   defp manifest_from_body(body) do
@@ -223,21 +234,38 @@ defmodule Tay.Storage.V2.Authority do
              :bytes,
              :digest
            ]) do
+      manifest = %{
+        store_id: unbytes(body["store_id"]),
+        epoch_id: unbytes(body["epoch_id"]),
+        source_epoch_id: unbytes(body["source_epoch_id"]),
+        source_frontier: body["source_frontier"],
+        captured_at: body["captured_at"],
+        terminal_retention: retention,
+        source_segments: source,
+        base_segments: base,
+        tail_segment_id: body["tail_segment_id"],
+        tail_first_sequence: body["tail_first_sequence"]
+      }
+
       {:ok,
-       %{
-         store_id: unbytes(body["store_id"]),
-         epoch_id: unbytes(body["epoch_id"]),
-         source_epoch_id: unbytes(body["source_epoch_id"]),
-         source_frontier: body["source_frontier"],
-         captured_at: body["captured_at"],
-         terminal_retention: retention,
-         source_segments: source,
-         base_segments: base,
-         tail_segment_id: body["tail_segment_id"],
-         tail_first_sequence: body["tail_first_sequence"]
-       }}
+       if(Map.has_key?(body, "availability_frontier"),
+         do: Map.put(manifest, :availability_frontier, body["availability_frontier"]),
+         else: manifest
+       )}
     end
   end
+
+  defp manifest_shape?(manifest) do
+    keys = Map.keys(manifest)
+    legacy = Enum.map(@legacy_manifest_keys, &String.to_existing_atom/1)
+    current = Enum.map(@manifest_keys, &String.to_existing_atom/1)
+    Enum.sort(keys) in [Enum.sort(legacy), Enum.sort(current)]
+  end
+
+  defp valid_availability_frontier?(nil), do: true
+
+  defp valid_availability_frontier?(frontier),
+    do: is_integer(frontier) and frontier in 0..@max
 
   defp entries(list, string_keys, atom_keys) when is_list(list) do
     Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->

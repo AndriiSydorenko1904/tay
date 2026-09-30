@@ -47,6 +47,19 @@ defmodule Tay.Storage.V2AuthorityTest do
     assert {:ok, ^decoded} = Authority.verify_selection(marker, current, manifest_bytes)
   end
 
+  test "availability frontier is optional for legacy epochs and authenticated when present" do
+    assert {:ok, legacy_bytes} = Authority.encode_manifest(manifest())
+    assert {:ok, decoded_legacy} = Authority.decode_manifest(legacy_bytes)
+    refute Map.has_key?(decoded_legacy, :availability_frontier)
+
+    current = Map.put(manifest(), :availability_frontier, 19)
+    assert {:ok, current_bytes} = Authority.encode_manifest(current)
+    assert {:ok, ^current} = Authority.decode_manifest(current_bytes)
+
+    assert {:error, :availability_frontier} =
+             Authority.encode_manifest(%{current | availability_frontier: -1})
+  end
+
   test "missing, corrupt, unsupported and mismatched authority metadata fail closed" do
     {:ok, marker} = Authority.encode_marker(@store)
     {:ok, manifest_bytes} = Authority.encode_manifest(manifest())

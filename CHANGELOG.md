@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Preserved the durable availability-order frontier across online compaction so
+  concurrent inserts can be replayed after expired terminal jobs are removed.
+- Kept Store-v2 manifests backward-compatible while authenticating the
+  allocator frontier for newly compacted epochs.
+
 ## 1.0.0-rc.7 — 2026-09-30
 
 ### Fixed

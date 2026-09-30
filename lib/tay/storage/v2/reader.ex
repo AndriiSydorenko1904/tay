@@ -291,22 +291,25 @@ defmodule Tay.Storage.V2.Reader do
           base? = ordinal <= base_count
 
           result =
-            with_file(native, scope, entry, fn ->
-              with :ok <- maybe_digest(native, entry, manifest, ordinal),
-                   {:ok, summary, next} <-
-                     buffered_reduce(
-                       native,
-                       entry.size,
-                       state,
-                       fn record, _offset, acc -> consume(record, base?, acc) end,
-                       id: id,
-                       store_id: manifest.store_id,
-                       highest: ordinal == total
-                     ),
-                   :ok <- segment_profile(summary, manifest, ordinal, base?) do
-                {:ok, summary, next}
-              end
-            end)
+            with {:ok, state} <- seed_availability_frontier(state, manifest, ordinal, base_count),
+                 result <-
+                   with_file(native, scope, entry, fn ->
+                     with :ok <- maybe_digest(native, entry, manifest, ordinal),
+                          {:ok, summary, next} <-
+                            buffered_reduce(
+                              native,
+                              entry.size,
+                              state,
+                              fn record, _offset, acc -> consume(record, base?, acc) end,
+                              id: id,
+                              store_id: manifest.store_id,
+                              highest: ordinal == total
+                            ),
+                          :ok <- segment_profile(summary, manifest, ordinal, base?) do
+                       {:ok, summary, next}
+                     end
+                   end),
+                 do: result
 
           case result do
             {:ok, summary, next} ->
@@ -336,6 +339,22 @@ defmodule Tay.Storage.V2.Reader do
        }}
     end
   end
+
+  defp seed_availability_frontier(state, manifest, ordinal, base_count)
+       when ordinal == base_count + 1 do
+    case Map.get(manifest, :availability_frontier) do
+      nil ->
+        {:ok, state}
+
+      frontier when frontier + 1 >= state.candidate.next_availability_order ->
+        {:ok, put_in(state.candidate.next_availability_order, frontier + 1)}
+
+      _ ->
+        {:error, :availability_frontier}
+    end
+  end
+
+  defp seed_availability_frontier(state, _manifest, _ordinal, _base_count), do: {:ok, state}
 
   defp consume_kind(%{record_type: 7, payload: payload}, true, state) do
     with {:ok, job} <- Codec.decode_snapshot(payload, state.candidate.value_limits),

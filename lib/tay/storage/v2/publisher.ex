@@ -153,7 +153,10 @@ defmodule Tay.Storage.V2.Publisher do
              exclude
            ),
          true <- recovered.next_sequence - 1 == frontier || {:error, :source_frontier_changed} do
-      {:ok, Map.put(source, :jobs, recovered.candidate.jobs)}
+      {:ok,
+       source
+       |> Map.put(:jobs, recovered.candidate.jobs)
+       |> Map.put(:next_availability_order, recovered.candidate.next_availability_order)}
     end
   end
 
@@ -487,52 +490,61 @@ defmodule Tay.Storage.V2.Publisher do
   defp catch_up(native, source, candidate, tail, _started) do
     switch_started = System.monotonic_time(:millisecond)
 
-    case source.online_catch_up.() do
-      {:ok, records} when is_list(records) ->
-        Enum.reduce_while(records, {:ok, candidate.candidate, tail, 0}, fn
-          {8, 1, payload}, {:ok, logical, current, bytes} ->
-            with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
-                 {:ok, next_logical} <- Reducer.apply(logical, mutation),
-                 {:ok, frame} <-
-                   Record.encode(%Record{
-                     record_type: 8,
-                     payload_schema_version: 1,
-                     sequence: current.first_sequence + current.count,
-                     payload: payload
-                   }),
-                 true <-
-                   current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
-                     {:error, :online_delta_too_large},
-                 {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
-              next = %{
-                current
-                | count: current.count + 1,
-                  last_sequence: current.first_sequence + current.count,
-                  bytes: current.bytes + byte_size(frame),
-                  identity: identity,
-                  crc_state: CRC32C.update(current.crc_state, frame)
-              }
+    with {:ok, logical} <- catch_up_candidate(candidate.candidate, source) do
+      case source.online_catch_up.() do
+        {:ok, records} when is_list(records) ->
+          Enum.reduce_while(records, {:ok, logical, tail, 0}, fn
+            {8, 1, payload}, {:ok, logical, current, bytes} ->
+              with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
+                   {:ok, next_logical} <- Reducer.apply(logical, mutation),
+                   {:ok, frame} <-
+                     Record.encode(%Record{
+                       record_type: 8,
+                       payload_schema_version: 1,
+                       sequence: current.first_sequence + current.count,
+                       payload: payload
+                     }),
+                   true <-
+                     current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
+                       {:error, :online_delta_too_large},
+                   {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
+                next = %{
+                  current
+                  | count: current.count + 1,
+                    last_sequence: current.first_sequence + current.count,
+                    bytes: current.bytes + byte_size(frame),
+                    identity: identity,
+                    crc_state: CRC32C.update(current.crc_state, frame)
+                }
 
-              {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
-            else
-              error -> {:halt, error}
-            end
+                {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
+              else
+                error -> {:halt, error}
+              end
 
-          _, _ ->
-            {:halt, {:error, :online_delta_record}}
-        end)
-        |> case do
-          {:ok, logical, current, bytes} ->
-            {:ok, logical.jobs, current, bytes, switch_started}
+            _, _ ->
+              {:halt, {:error, :online_delta_record}}
+          end)
+          |> case do
+            {:ok, logical, current, bytes} ->
+              {:ok, logical.jobs, current, bytes, switch_started}
 
-          error ->
-            error
-        end
+            error ->
+              error
+          end
 
-      error ->
-        error
+        error ->
+          error
+      end
     end
   end
+
+  defp catch_up_candidate(candidate, %{next_availability_order: next})
+       when is_integer(next) and next in 1..(@max + 1)//1 and
+              next >= candidate.next_availability_order,
+       do: {:ok, %{candidate | next_availability_order: next}}
+
+  defp catch_up_candidate(_, _), do: {:error, :availability_frontier}
 
   defp write_manifest(native, bytes) do
     with {:ok, _} <- Native.create_stage(native, :candidate, "MANIFEST"),
@@ -545,7 +557,7 @@ defmodule Tay.Storage.V2.Publisher do
   end
 
   defp manifest(source, inventory, epoch_id, base, tail_id, tail_first) do
-    %{
+    manifest = %{
       store_id: source.store_id,
       epoch_id: epoch_id,
       source_epoch_id: source.epoch_id,
@@ -557,6 +569,11 @@ defmodule Tay.Storage.V2.Publisher do
       tail_segment_id: tail_id,
       tail_first_sequence: tail_first
     }
+
+    case Map.fetch(source, :next_availability_order) do
+      {:ok, next} -> Map.put(manifest, :availability_frontier, next - 1)
+      :error -> manifest
+    end
   end
 
   defp before_current(native, %{epoch_id: nil} = source, _epoch_id) do

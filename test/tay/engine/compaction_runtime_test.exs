@@ -234,6 +234,57 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert %{state: :ready} = Tay.status(name: @name)
   end
 
+  test "background catch-up preserves the global availability frontier", %{path: path} do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :base_write}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          :atomics.put(gate, 1, 2)
+          send(owner, {:online_preparation_blocked, self()})
+
+          receive do
+            :finish_online_preparation -> :ok
+          end
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path, writer_hook: hook, compaction: false)
+    insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    expired = insert(%{"consume_availability_order" => true})
+    assert {:ok, _} = Tay.cancel(expired.id, name: @name, expected_revision: expired.revision)
+    ExecutionHelpers.set_clock(3_600_100)
+
+    :atomics.put(gate, 1, 1)
+
+    compact =
+      Task.async(fn ->
+        Tay.compact(
+          name: @name,
+          timeout: 60_000,
+          terminal_retention: {:hours, 1}
+        )
+      end)
+
+    assert_receive {:online_preparation_blocked, builder}, 5_000
+    concurrent = insert(%{"during_preparation" => true})
+    send(builder, :finish_online_preparation)
+
+    assert {:ok, %{expired_jobs: 1}} = Task.await(compact, 60_000)
+    assert {:error, :not_found} = Tay.get_job(expired.id, name: @name)
+    assert {:ok, %{id: id}} = Tay.get_job(concurrent.id, name: @name)
+    assert id == concurrent.id
+    assert %{state: :ready} = Tay.status(name: @name)
+  end
+
   test "online compaction expires terminal history without replacing Engine", %{path: path} do
     start(path, compaction: false)
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000, terminal_retention: :infinity)
