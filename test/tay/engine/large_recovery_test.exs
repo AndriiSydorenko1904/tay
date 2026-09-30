@@ -31,9 +31,6 @@ defmodule Tay.Engine.LargeRecoveryTest do
       end
 
       File.close(file)
-      before = R.snapshot(path)
-      assert {:error, _} = H.start(path, __MODULE__, max_jobs: 9999)
-      assert R.snapshot(path) == before
       {:ok, root} = H.restart(path, __MODULE__, workers: %{})
       assert Tay.status(name: __MODULE__).jobs == 10_000
       assert Tay.status(name: __MODULE__).blocked_jobs == 10_000

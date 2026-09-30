@@ -203,7 +203,7 @@ defmodule Tay.HTTP.APITest do
                workers: %{},
                executor_socket: nil,
                http_port: port,
-               max_jobs: 0
+               max_state_bytes: 0
              )
 
     on_exit(fn ->
@@ -227,7 +227,7 @@ defmodule Tay.HTTP.APITest do
              end
            end)
 
-    assert {429, %{"error" => %{"code" => "capacity", "reason" => "retained_jobs"}}} =
+    assert {429, %{"error" => %{"code" => "capacity", "reason" => "retained_bytes"}}} =
              request(:post, base <> "/jobs", %{
                task: "tests.remote.v1",
                args: %{},

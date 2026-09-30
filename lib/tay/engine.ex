@@ -52,6 +52,12 @@ defmodule Tay.Engine do
          inspection = Writer.status(writer),
          {:ok, summary, candidate} <-
            Writer.activate_recovered(writer, inspection.session_ref),
+         config = recovered_compaction_config(config, summary),
+         :ok <-
+           GenServer.call(
+             guardian,
+             {:compaction_retention, self(), config.compaction.terminal_retention}
+           ),
          {:ok, terminal_store} <- TerminalStore.open(config.name, config.data_dir, candidate.jobs) do
       if match?({:error, _}, activation_capability(summary)) do
         TerminalStore.close(terminal_store)
@@ -264,7 +270,6 @@ defmodule Tay.Engine do
                deadline,
                retention,
                Clock.wall(s.config.clock),
-               compaction_terminal_limit(s),
                cancel_flag,
                self(),
                token
@@ -371,7 +376,6 @@ defmodule Tay.Engine do
             deadline,
             retention,
             Clock.wall(s.config.clock),
-            compaction_terminal_limit(s),
             cancel_flag
           ),
         else: {:error, :compaction_source_changed}
@@ -390,7 +394,6 @@ defmodule Tay.Engine do
         sealed_bytes,
         sealed_segments,
         s.config.compaction.terminal_retention,
-        s.config.compaction.max_terminal_jobs,
         Clock.wall(s.config.clock)
       )
 
@@ -1454,8 +1457,6 @@ defmodule Tay.Engine do
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
 
-          notify_terminal_pressure(next)
-
           hook(s.config, :post_projection)
           hook(s.config, {:execution, type, :post_projection})
           {:ok, job, next}
@@ -1544,8 +1545,6 @@ defmodule Tay.Engine do
               },
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
-
-          notify_terminal_pressure(next)
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, 8, :post_projection})
@@ -1687,21 +1686,6 @@ defmodule Tay.Engine do
     end
   end
 
-  defp notify_terminal_pressure(s) do
-    if s.terminal_budget.count > s.config.compaction.max_terminal_jobs,
-      do: GenServer.cast(s.guardian, :terminal_pressure)
-
-    :ok
-  end
-
-  defp compaction_terminal_limit(s) do
-    limit = s.config.compaction.max_terminal_jobs
-
-    if s.terminal_budget.count > limit,
-      do: Tay.Engine.CompactionConfig.terminal_target(limit),
-      else: limit
-  end
-
   defp terminal_statistics(jobs) do
     Enum.reduce(jobs, empty_terminal_stats(), fn {_id, job}, stats ->
       if terminal?(job), do: update_terminal_stats(stats, job, 1), else: stats
@@ -1747,7 +1731,6 @@ defmodule Tay.Engine do
       active_state_nodes_charged: s.active_budget.nodes,
       terminal_state_bytes_charged: s.terminal_budget.bytes,
       terminal_state_nodes_charged: s.terminal_budget.nodes,
-      max_jobs: s.config.max_jobs,
       max_state_bytes: s.config.max_state_bytes,
       max_state_nodes: s.config.max_state_nodes,
       startup_state_bytes_budget: 3 * s.config.max_state_bytes,
@@ -1761,7 +1744,6 @@ defmodule Tay.Engine do
       storage_segments: s.segment_catalog,
       storage_segments_truncated: s.segment_count > length(s.segment_catalog),
       compaction_terminal_retention: s.config.compaction.terminal_retention,
-      max_terminal_jobs: s.config.compaction.max_terminal_jobs,
       retained_definition_bytes: s.definition_bytes,
       reserved_outcome_bytes: outcome_reserve(s.settlement_reserve),
       remaining_sequence_coordinates: max(Segment.max_id() - s.next_sequence + 1, 0),
@@ -1806,7 +1788,8 @@ defmodule Tay.Engine do
 
     %{
       s
-      | epoch_id: recovered.epoch_id,
+      | config: put_compaction_retention(s.config, stats.terminal_retention),
+        epoch_id: recovered.epoch_id,
         next_sequence: recovered.next_sequence,
         next_availability_order: recovered.candidate.next_availability_order,
         segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
@@ -1827,6 +1810,16 @@ defmodule Tay.Engine do
         online_compaction: nil
     }
   end
+
+  defp recovered_compaction_config(config, summary) do
+    case Map.get(summary, :compaction_terminal_retention) do
+      nil -> config
+      retention -> put_compaction_retention(config, retention)
+    end
+  end
+
+  defp put_compaction_retention(config, retention),
+    do: %{config | compaction: %{config.compaction | terminal_retention: retention}}
 
   defp adopt_online_rotation(
          s,

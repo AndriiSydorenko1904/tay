@@ -81,12 +81,11 @@ defmodule Tay.DiagnosticsTest do
   test "operational replay budgets can be raised without changing source bytes", %{path: path} do
     R.store(path, [R.segment(1, 1, [EventHelpers.fixture("E1")])])
     before = R.snapshot(path)
-    assert {:error, %{kind: :resource_limit}} = inspect_store(path, max_jobs: 0)
 
     assert {:error, %{kind: :resource_limit}} =
              inspect_store(path, recovery: [max_replay_records: 0])
 
-    assert {:ok, %{jobs: 1}} = inspect_store(path, max_jobs: 1)
+    assert {:ok, %{jobs: 1}} = inspect_store(path)
     assert R.snapshot(path) == before
   end
 

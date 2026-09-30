@@ -28,7 +28,7 @@ defmodule Tay.State.Transition do
   def apply(_, _), do: {:error, :invalid_position}
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
-    limits = Map.merge(%{max_jobs: 100_000, max_bytes: 268_435_456, max_nodes: 2_000_000}, limits)
+    limits = Map.merge(%{max_bytes: 268_435_456, max_nodes: 2_000_000}, limits)
     %{jobs: %{}, count: 0, bytes: 0, nodes: 0, limits: limits, value_limits: value_limits}
   end
 
@@ -50,7 +50,7 @@ defmodule Tay.State.Transition do
              if(active?(job), do: 1, else: 0),
          bytes <- candidate.bytes - old.bytes + added.bytes,
          nodes <- candidate.nodes - old.nodes + added.nodes,
-         :ok <- within_limits(candidate.limits, count, bytes, nodes) do
+         :ok <- within_limits(candidate.limits, bytes, nodes) do
       {:ok,
        %{
          candidate
@@ -73,7 +73,7 @@ defmodule Tay.State.Transition do
       nodes = budget.nodes - old.nodes + job.charge.nodes
       count = budget.count + if(previous, do: 0, else: 1)
 
-      with :ok <- within_limits(budget.limits, count, bytes, nodes),
+      with :ok <- within_limits(budget.limits, bytes, nodes),
            do: {:ok, job, %{budget | count: count, bytes: bytes, nodes: nodes}}
     end
   end
@@ -90,11 +90,8 @@ defmodule Tay.State.Transition do
     {:ok, Map.put(job, :charge, charge)}
   end
 
-  defp within_limits(limits, count, bytes, nodes) do
+  defp within_limits(limits, bytes, nodes) do
     cond do
-      count > limits.max_jobs ->
-        {:error, {:resource_limit, :retained_jobs}}
-
       bytes > limits.max_bytes ->
         {:error, {:resource_limit, :retained_bytes}}
 

@@ -10,6 +10,8 @@ defmodule Tay.Dashboard.OverviewLive do
      |> Live.initialize(session)
      |> assign(
        confirm_compaction: false,
+       compaction_running: false,
+       compaction_ref: nil,
        compaction_result: nil,
        engine_available: false,
        engine_state: :unavailable,
@@ -18,10 +20,8 @@ defmodule Tay.Dashboard.OverviewLive do
        beam_memory: %{total: 0, processes: 0, ets: 0, binary: 0},
        capacity: %{
          jobs: 0,
-         max_jobs: 0,
          active_jobs: 0,
          terminal_jobs: 0,
-         max_terminal_jobs: 0,
          bytes: 0,
          max_bytes: 0,
          nodes: 0,
@@ -61,21 +61,32 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   defp compact(socket, retention_hours) do
-    socket = assign(socket, confirm_compaction: false, compaction_result: nil)
+    if socket.assigns.compaction_running do
+      {:noreply, socket}
+    else
+      owner = self()
+      ref = make_ref()
+      engine = socket.assigns.engine
 
-    case Tay.compact(
-           name: socket.assigns.engine,
-           timeout: 900_000,
-           terminal_retention: {:hours, retention_hours}
-         ) do
-      {:ok, stats} ->
-        {:noreply,
-         socket
-         |> refresh()
-         |> assign(compaction_result: compacted(stats, retention_hours))}
+      spawn(fn ->
+        result =
+          Tay.compact(
+            name: engine,
+            timeout: 900_000,
+            terminal_retention: {:hours, retention_hours}
+          )
 
-      {:error, error} ->
-        {:noreply, assign(socket, flash_error: Live.error_message(error))}
+        send(owner, {:dashboard_compaction_result, ref, retention_hours, result})
+      end)
+
+      {:noreply,
+       assign(socket,
+         confirm_compaction: false,
+         compaction_running: true,
+         compaction_ref: ref,
+         compaction_result: nil,
+         flash_error: nil
+       )}
     end
   end
 
@@ -91,6 +102,34 @@ defmodule Tay.Dashboard.OverviewLive do
   def handle_info(:tay_dashboard_refresh, socket) do
     {:noreply, socket |> assign(refresh_timer: nil) |> refresh()}
   end
+
+  def handle_info(
+        {:dashboard_compaction_result, ref, retention_hours, {:ok, stats}},
+        %{assigns: %{compaction_ref: ref}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> refresh()
+     |> assign(
+       compaction_running: false,
+       compaction_ref: nil,
+       compaction_result: compacted(stats, retention_hours)
+     )}
+  end
+
+  def handle_info(
+        {:dashboard_compaction_result, ref, _retention_hours, {:error, error}},
+        %{assigns: %{compaction_ref: ref}} = socket
+      ) do
+    {:noreply,
+     assign(socket,
+       compaction_running: false,
+       compaction_ref: nil,
+       flash_error: Live.error_message(error)
+     )}
+  end
+
+  def handle_info({:dashboard_compaction_result, _, _, _}, socket), do: {:noreply, socket}
 
   @impl true
   def terminate(_reason, socket) do
@@ -116,6 +155,9 @@ defmodule Tay.Dashboard.OverviewLive do
       </div>
       <div :if={@compaction_result} id="compaction-result" class="notice">
         {@compaction_result}
+      </div>
+      <div :if={@compaction_running} id="compaction-running" class="notice">
+        Compaction is running in the background. Jobs and this dashboard remain available.
       </div>
       <div class="cards">
         <div :for={{state, count} <- @stats} class={["card", "state-#{state}"]}>
@@ -153,16 +195,13 @@ defmodule Tay.Dashboard.OverviewLive do
           <div class="card">
             <div>Active jobs</div>
             <div class="count">
-              {available(@engine_available, format_ratio(@capacity.active_jobs, @capacity.max_jobs))}
+              {available(@engine_available, @capacity.active_jobs)}
             </div>
           </div>
           <div class="card">
             <div>Terminal history</div>
             <div class="count">
-              {available(
-                @engine_available,
-                format_ratio(@capacity.terminal_jobs, @capacity.max_terminal_jobs)
-              )}
+              {available(@engine_available, @capacity.terminal_jobs)}
             </div>
           </div>
           <div class="card">
@@ -182,7 +221,7 @@ defmodule Tay.Dashboard.OverviewLive do
           </div>
         </div>
         <p style="color:var(--tay-muted)">
-          These are protective limits for active jobs, not measured RAM. Data items count JSON objects, arrays, and scalar values in job definitions and arguments, plus a small fixed allowance per job. They protect Tay from unusually large or deeply nested payloads; terminal history does not consume these limits.
+          Job counts are informational and are not capped. Data size and data items are protective limits for active jobs, not measured RAM. Data items count JSON objects, arrays, and scalar values in job definitions and arguments, plus a small fixed allowance per job.
         </p>
       </section>
       <section style="margin-top:28px">
@@ -231,7 +270,7 @@ defmodule Tay.Dashboard.OverviewLive do
           </table>
         </details>
         <button
-          :if={!@confirm_compaction && @engine_available}
+          :if={!@confirm_compaction && !@compaction_running && @engine_available}
           id="prepare-compaction"
           phx-click="prepare-compaction"
         >
@@ -247,7 +286,7 @@ defmodule Tay.Dashboard.OverviewLive do
           <p>
             Completed, cancelled, and discarded jobs older than this period cannot be recovered afterward.
           </p>
-          <label for="terminal-retention-hours">Retain terminal jobs for</label>
+          <label for="terminal-retention-hours">Configure terminal retention</label>
           <div class="actions">
             <input
               id="terminal-retention-hours"
@@ -260,6 +299,9 @@ defmodule Tay.Dashboard.OverviewLive do
             />
             <span>hours</span>
           </div>
+          <p>
+            A successful compaction stores this setting. It takes priority over the startup environment on subsequent restarts.
+          </p>
           <div class="actions">
             <button id="confirm-compaction" type="submit" phx-disable-with="Compacting…">
               Confirm compaction
@@ -297,10 +339,8 @@ defmodule Tay.Dashboard.OverviewLive do
           },
           capacity: %{
             jobs: Map.get(status, :jobs, 0),
-            max_jobs: Map.get(status, :max_jobs, 0),
             active_jobs: Map.get(status, :active_jobs, 0),
             terminal_jobs: Map.get(status, :terminal_jobs, terminal_count(stats)),
-            max_terminal_jobs: Map.get(status, :max_terminal_jobs, 0),
             bytes: Map.get(status, :active_state_bytes_charged, 0),
             max_bytes: Map.get(status, :max_state_bytes, 0),
             nodes: Map.get(status, :active_state_nodes_charged, 0),

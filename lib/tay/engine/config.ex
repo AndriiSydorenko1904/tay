@@ -17,7 +17,6 @@ defmodule Tay.Engine.Config do
     max_insert_args_bytes: 262_144,
     insert_value_depth: 32,
     insert_value_nodes: 10_000,
-    max_jobs: 100_000,
     max_state_bytes: 268_435_456,
     max_state_nodes: 2_000_000,
     client_slots: 64,
@@ -48,9 +47,12 @@ defmodule Tay.Engine.Config do
   }
 
   def new(options) do
-    allowed = Map.keys(@defaults) ++ [:data_dir, :queues] ++ test_option_keys()
+    allowed = Map.keys(@defaults) ++ [:data_dir, :queues, :max_jobs] ++ test_option_keys()
 
     with true <- keyword?(options, allowed) || {:error, :invalid_engine_options},
+         true <-
+           legacy_job_limit?(Keyword.get(options, :max_jobs, 0)) ||
+             {:error, :invalid_engine_options},
          {:ok, base} <- Tay.Config.load(),
          {:ok, base} <-
            Tay.Config.new(
@@ -60,7 +62,7 @@ defmodule Tay.Engine.Config do
              )
            ),
          true <- base.data_dir != nil || {:error, :data_dir_required},
-         config = Map.merge(@defaults, Map.new(options)),
+         config = Map.merge(@defaults, options |> Keyword.delete(:max_jobs) |> Map.new()),
          {:ok, socket} <- SocketPath.resolve(config.executor_socket),
          config =
            config
@@ -84,7 +86,6 @@ defmodule Tay.Engine.Config do
          value_limits: recovery.event_limits,
          slot_bytes: div(config.client_bytes, config.client_slots),
          candidate_limits: %{
-           max_jobs: config.max_jobs,
            max_bytes: config.max_state_bytes,
            max_nodes: config.max_state_nodes
          }
@@ -93,6 +94,8 @@ defmodule Tay.Engine.Config do
       {:error, _} -> {:error, Tay.Error.new(:invalid, :engine_configuration)}
     end
   end
+
+  defp legacy_job_limit?(value), do: is_integer(value) and value >= 0
 
   def storage(config) do
     [
@@ -131,7 +134,6 @@ defmodule Tay.Engine.Config do
     nonnegative = [
       :max_insert_payload_bytes,
       :max_insert_args_bytes,
-      :max_jobs,
       :max_state_bytes,
       :max_state_nodes
     ]

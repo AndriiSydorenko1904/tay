@@ -58,8 +58,10 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Runtime memory"
     assert html =~ "BEAM total"
     assert html =~ "State capacity"
+    assert html =~ "Active jobs"
+    assert html =~ "Terminal history"
     assert html =~ "Active job data items"
-    assert html =~ "100,000"
+    refute html =~ "100,000"
     assert html =~ "2,000,000"
     assert html =~ "Storage segments (1 shown)"
     assert html =~ "00000000000000000001.tay"
@@ -77,9 +79,11 @@ defmodule Tay.Dashboard.LiveTest do
     assert has_element?(view, "#terminal-retention-hours[value='24']")
 
     assert render_submit(view, "compact", %{"terminal_retention_hours" => "1"}) =~
-             "Compaction completed"
+             "Compaction is running in the background"
 
-    assert has_element?(view, "#compaction-result")
+    assert EngineHelpers.eventually(fn -> has_element?(view, "#compaction-result") end)
+    assert render(view) =~ "Compaction completed"
+    assert render(view) =~ "1 h"
     EngineHelpers.stop(root)
   end
 
@@ -94,7 +98,7 @@ defmodule Tay.Dashboard.LiveTest do
 
     assert EngineHelpers.eventually(fn ->
              html = render(view)
-             html =~ "100,000" and not has_element?(view, "#engine-unavailable")
+             html =~ "Active jobs" and not has_element?(view, "#engine-unavailable")
            end)
 
     assert has_element?(view, "#prepare-compaction")
@@ -148,7 +152,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v1.0.0-rc.8"
+    assert html =~ "v1.0.0-rc.9"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

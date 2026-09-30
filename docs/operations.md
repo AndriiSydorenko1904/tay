@@ -107,7 +107,6 @@ Configuration (milliseconds except the explicit retention unit):
 compaction: [
   enabled: true,
   terminal_retention: {:hours, 24},
-  max_terminal_jobs: 5_000,
   check_interval: 60_000,
   min_interval: 3_600_000,
   min_sealed_segments: 1,
@@ -124,19 +123,14 @@ positive finite numbers at most one. Automatic configuration rejects infinity.
 
 Terminal jobs are removed from the hot ETS job projection as soon as they
 finish and remain queryable through a disposable disk-backed inspection index.
-They therefore do not consume `max_jobs`, `max_state_bytes`, or
-`max_state_nodes`; those limits protect active work. Aggregate terminal state
-and queue counters remain in memory. The append-only Store remains authoritative
-for both projections and rebuilds them on restart.
+Active-job and terminal-history counts are informational and never reject
+admission or trigger maintenance. `max_state_bytes` and `max_state_nodes`
+continue to protect active payload data. Aggregate terminal state and queue
+counters remain in memory. The append-only Store remains authoritative for both
+projections and rebuilds them on restart.
 
-`max_terminal_jobs` is the terminal-history high-water mark in addition to time
-retention. Crossing it wakes the compaction policy immediately. Automatic
-maintenance defers while active jobs exist, so inspection history can
-temporarily exceed the mark but can never block admission of new active work.
-Once the Engine is quiescent, pressure compaction bypasses the normal
-size/ratio/cooldown gates and retains the newest 80% of the configured maximum.
-That low-water target prevents a steady stream of completions from immediately
-starting another rewrite after every new terminal job.
+For release-candidate compatibility, the former `max_jobs` and
+`max_terminal_jobs` options are accepted when valid but ignored.
 
 Time retention is eligibility, not an exact-time deletion guarantee: terminal jobs
 expire at `terminal_at <= captured_at - duration`, but actual work waits for
@@ -148,9 +142,13 @@ below thresholds. Live, scheduled, available, executing, retryable and unsettled
 jobs are protected. Expired IDs are not remembered: get/retry/cancel return
 not-found, and a later submission with that ID is a new job.
 
-`compaction: false` disables the policy child/timer, including the high-water
-wake; terminal history may then grow indefinitely and the operator assumes
-storage management. Manual work
+A successful compaction makes its `terminal_retention` the durable runtime
+setting stored with Store-v2. On subsequent recovery that value takes priority
+over the startup configuration or standalone environment. Running compaction
+from the Dashboard therefore both applies and persists the selected retention.
+
+`compaction: false` disables the policy child/timer; terminal history may then
+grow indefinitely and the operator assumes storage management. Manual work
 remains available:
 
 ```elixir

@@ -97,14 +97,12 @@ defmodule Tay.Storage.Writer do
         deadline \\ System.monotonic_time(:millisecond) + 900_000,
         retention \\ :infinity,
         captured_at \\ nil,
-        max_terminal_jobs \\ :infinity,
         cancel_flag \\ nil
       ),
       do:
         GenServer.call(
           writer,
-          {:compact, admission_ref, deadline, retention, captured_at, max_terminal_jobs,
-           cancel_flag},
+          {:compact, admission_ref, deadline, retention, captured_at, cancel_flag},
           :infinity
         )
 
@@ -115,7 +113,6 @@ defmodule Tay.Storage.Writer do
         deadline,
         retention,
         captured_at,
-        max_terminal_jobs,
         cancel_flag,
         notify,
         token
@@ -123,8 +120,8 @@ defmodule Tay.Storage.Writer do
       do:
         GenServer.call(
           writer,
-          {:compact_online, admission_ref, deadline, retention, captured_at, max_terminal_jobs,
-           cancel_flag, notify, token},
+          {:compact_online, admission_ref, deadline, retention, captured_at, cancel_flag, notify,
+           token},
           :infinity
         )
 
@@ -343,8 +340,8 @@ defmodule Tay.Storage.Writer do
     do: {:reply, {:error, %{kind: :native_owner, reason: :invalid_delegate}}, state}
 
   def handle_call(
-        {:compact_online, reference, deadline, retention, captured_at, max_terminal_jobs,
-         cancel_flag, notify, token},
+        {:compact_online, reference, deadline, retention, captured_at, cancel_flag, notify,
+         token},
         {caller, _},
         %{recovery: recovery, epoch_id: epoch_id} = state
       )
@@ -373,7 +370,6 @@ defmodule Tay.Storage.Writer do
               candidate_limits: rotated.candidate_limits,
               value_limits: rotated.value_limits,
               terminal_retention: retention,
-              max_terminal_jobs: max_terminal_jobs,
               captured_at: captured_at,
               online_catch_up: fn ->
                 GenServer.call(owner, {:compact_online_freeze, ref}, :infinity)
@@ -555,7 +551,7 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_call(
-        {:compact, reference, deadline, retention, captured_at, max_terminal_jobs, cancel_flag},
+        {:compact, reference, deadline, retention, captured_at, cancel_flag},
         {caller, _},
         %{recovery: recovery} = state
       )
@@ -563,12 +559,9 @@ defmodule Tay.Storage.Writer do
     if recovery.status == :ready and caller == recovery.caller and
          reference == recovery.admission_ref and is_integer(deadline) and
          deadline > System.monotonic_time(:millisecond) and
-         (max_terminal_jobs == :infinity or
-            (is_integer(max_terminal_jobs) and max_terminal_jobs >= 0)) and
          Tay.Storage.V2.Retention.validate(retention) == :ok do
       state =
         state
-        |> Map.put(:max_terminal_jobs, max_terminal_jobs)
         |> Map.put(:native, %{state.native | deadline: deadline})
 
       Tay.Storage.V2.CompactionControl.install(cancel_flag)
@@ -873,6 +866,7 @@ defmodule Tay.Storage.Writer do
             store_id: store.store_id,
             epoch_id: view.epoch_id,
             compaction_captured_at: view.manifest.captured_at,
+            compaction_terminal_retention: view.manifest.terminal_retention,
             segments: store.segments,
             highest: store.highest,
             exhausted: store.exhausted,
@@ -921,7 +915,6 @@ defmodule Tay.Storage.Writer do
         candidate_limits: state.candidate_limits,
         value_limits: state.value_limits,
         terminal_retention: retention,
-        max_terminal_jobs: Map.get(state, :max_terminal_jobs, :infinity),
         captured_at:
           if(is_nil(captured_at), do: System.system_time(:millisecond), else: captured_at)
       }
@@ -1000,8 +993,7 @@ defmodule Tay.Storage.Writer do
                Snapshot.prepare(
                  jobs,
                  publication.terminal_retention,
-                 publication.captured_at,
-                 publication.max_terminal_jobs
+                 publication.captured_at
                ),
              true <-
                Snapshot.equivalent?(retained, recovered.candidate.jobs) ||

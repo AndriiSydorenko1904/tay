@@ -6,7 +6,6 @@ defmodule Tay.Engine.CompactionConfig do
   @defaults %{
     enabled: true,
     terminal_retention: {:hours, 24},
-    max_terminal_jobs: 5_000,
     check_interval: 60_000,
     min_interval: 3_600_000,
     min_sealed_segments: 1,
@@ -16,25 +15,22 @@ defmodule Tay.Engine.CompactionConfig do
 
   def defaults, do: @defaults
 
-  # Pressure is a high-water mark. Reclaiming to 80% leaves enough headroom
-  # that a steady stream of terminal jobs cannot force a full Engine restart
-  # after every single completion.
-  def terminal_target(0), do: 0
-  def terminal_target(limit) when is_integer(limit) and limit > 0, do: div(limit * 4, 5)
-
   def new(false), do: {:ok, %{@defaults | enabled: false}}
 
   def new(options) when is_list(options) do
     with true <- Keyword.keyword?(options),
          true <- length(options) == length(Enum.uniq(Keyword.keys(options))),
-         true <- Enum.all?(Keyword.keys(options), &Map.has_key?(@defaults, &1)),
-         config <- Map.merge(@defaults, Map.new(options)),
+         true <-
+           Enum.all?(
+             Keyword.keys(options),
+             &(&1 == :max_terminal_jobs or Map.has_key?(@defaults, &1))
+           ),
+         true <- legacy_terminal_limit?(Keyword.get(options, :max_terminal_jobs, 0)),
+         config <-
+           Map.merge(@defaults, options |> Keyword.delete(:max_terminal_jobs) |> Map.new()),
          true <- is_boolean(config.enabled),
          :ok <- Retention.validate(config.terminal_retention),
          true <- config.terminal_retention != :infinity,
-         true <-
-           is_integer(config.max_terminal_jobs) and
-             config.max_terminal_jobs in 0..4_294_967_295,
          true <- timer?(config.check_interval) and timer?(config.min_interval),
          true <-
            is_integer(config.min_sealed_segments) and
@@ -53,4 +49,5 @@ defmodule Tay.Engine.CompactionConfig do
 
   def new(_), do: {:error, :compaction_configuration}
   defp timer?(n), do: is_integer(n) and n in 1..@max_timer
+  defp legacy_terminal_limit?(n), do: is_integer(n) and n in 0..4_294_967_295
 end

@@ -166,7 +166,6 @@ defmodule Tay.Diagnostics do
       :durability,
       :validated_filesystem,
       :recovery,
-      :max_jobs,
       :max_state_bytes,
       :max_state_nodes
     ]
@@ -180,7 +179,6 @@ defmodule Tay.Diagnostics do
          true <- is_boolean(validated),
          {:ok, recovery} <- Recovery.options(Keyword.get(input, :recovery, [])),
          candidate = %{
-           max_jobs: Keyword.get(input, :max_jobs, 100_000),
            max_bytes: Keyword.get(input, :max_state_bytes, 268_435_456),
            max_nodes: Keyword.get(input, :max_state_nodes, 2_000_000)
          },
@@ -233,7 +231,6 @@ defmodule Tay.Diagnostics do
         if(operation == :init,
           do: [bootstrap_existing: :boolean],
           else: [
-            max_jobs: :integer,
             max_state_bytes: :integer,
             max_state_nodes: :integer,
             max_records: :integer,
@@ -267,7 +264,7 @@ defmodule Tay.Diagnostics do
 
         {:ok,
          base ++
-           Keyword.take(options, [:max_jobs, :max_state_bytes, :max_state_nodes]) ++
+           Keyword.take(options, [:max_state_bytes, :max_state_nodes]) ++
            [recovery: recovery]}
       end
     else

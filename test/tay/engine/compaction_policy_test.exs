@@ -55,6 +55,8 @@ defmodule Tay.Engine.CompactionPolicyTest do
     assert defaults.enabled
     assert {:ok, %{enabled: false}} = CompactionConfig.new(false)
     assert {:ok, _} = CompactionConfig.new(terminal_retention: {:hours, Retention.max_hours()})
+    assert {:ok, legacy} = CompactionConfig.new(max_terminal_jobs: 5_000)
+    refute Map.has_key?(legacy, :max_terminal_jobs)
 
     for options <- [
           nil,
@@ -84,32 +86,21 @@ defmodule Tay.Engine.CompactionPolicyTest do
     end
   end
 
-  test "terminal-count pressure keeps the newest bounded history and bypasses ordinary gates" do
+  test "terminal history is governed by time retention, not a count limit" do
     jobs = Map.new(1..6, fn id -> {<<id::128>>, job(id, id, true)} end)
 
-    assert {:ok, retained, _, stats} = Snapshot.prepare(jobs, {:hours, 24}, 10, 3)
-    assert Enum.sort(Map.keys(retained)) == [<<4::128>>, <<5::128>>, <<6::128>>]
-    assert stats.pressure_expired_jobs == 3
-    assert stats.retained_terminal_jobs == 3
+    assert {:ok, retained, _, stats} = Snapshot.prepare(jobs, {:hours, 24}, 10)
+    assert Enum.sort(Map.keys(retained)) == Enum.map(1..6, &<<&1::128>>)
+    assert stats.expired_jobs == 0
+    assert stats.retained_terminal_jobs == 6
 
     estimate =
       Enum.reduce(jobs, CompactionEstimate.new(), fn {_, terminal}, acc ->
         CompactionEstimate.replace(acc, nil, terminal)
       end)
 
-    assert {:ok, summary} =
-             CompactionEstimate.summarize(estimate, 0, 0, {:hours, 24}, 3, 10)
-
-    assert summary.terminal_pressure
-    assert summary.excess_terminal_jobs == 4
+    assert {:ok, summary} = CompactionEstimate.summarize(estimate, 0, 0, {:hours, 24}, 10)
     assert summary.active_jobs == 0
-
-    assert :ok =
-             CompactionPolicy.eligible(
-               Map.put(summary, :last_compaction_at, 10),
-               CompactionConfig.defaults(),
-               10
-             )
   end
 
   test "automatic maintenance defers while actionable jobs are present" do
@@ -117,7 +108,6 @@ defmodule Tay.Engine.CompactionPolicyTest do
 
     summary = %{
       active_jobs: 1,
-      terminal_pressure: true,
       last_compaction_at: nil,
       sealed_segments: config.min_sealed_segments,
       reclaimable_bytes: config.min_reclaimable_bytes,

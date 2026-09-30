@@ -75,7 +75,6 @@ defmodule Tay.Engine.CoreTest do
 
   test "new insertion budgets fail before append and do not make history invalid", %{path: path} do
     for extra <- [
-          [max_jobs: 0],
           [max_state_bytes: 1],
           [max_state_nodes: 1],
           [max_insert_args_bytes: 5],

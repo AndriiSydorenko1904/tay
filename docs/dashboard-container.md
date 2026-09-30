@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay:1.0.0-rc.8
+  ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -89,7 +89,7 @@ The image accepts the runtime and dashboard settings below. The Bandit API's
 | `TAY_DATA_DIR` | `/var/lib/tay` | no | Authoritative Store root. Use `/var/lib/tay/store` with a named volume. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | no | Executor Protocol v1 Unix socket. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | no | Initialize only a genuinely absent Store. |
-| `TAY_TERMINAL_RETENTION` | `24h` | no | Terminal retention such as `30m`, `1h`, `24h`, or `7d`. |
+| `TAY_TERMINAL_RETENTION` | `24h` | no | Initial terminal retention such as `30m`, `1h`, `24h`, or `7d`. A retention saved by successful Dashboard compaction takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | no | Enable the bundled HTTP dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | no | Public hostname accepted for LiveView origin checks; no scheme, port, or path. |
 | `TAY_DASHBOARD_PORT` | `4000` | no | Container HTTP listen port. |

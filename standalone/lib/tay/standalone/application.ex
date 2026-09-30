@@ -19,11 +19,9 @@ defmodule Tay.Standalone.Application do
               validated_filesystem: true,
               workers: %{},
               queues: [default: 10],
-              max_jobs: config.max_jobs,
               max_state_bytes: config.max_state_bytes,
               max_state_nodes: config.max_state_nodes,
               compaction: [
-                max_terminal_jobs: config.max_terminal_jobs,
                 terminal_retention: config.terminal_retention
               ],
               executor_socket: config.socket_path,

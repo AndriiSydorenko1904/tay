@@ -75,7 +75,7 @@ defmodule Tay.State.RecoveryTest do
     before = R.snapshot(path)
 
     for replay_spec <- [
-          spec(T.candidate(%{max_jobs: 0})),
+          spec(T.candidate(%{max_bytes: 1})),
           spec(T.candidate(),
             event_limits: %{depth: 3, output_nodes: 100_000, binary_bytes: 16_777_216}
           )

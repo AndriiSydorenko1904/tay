@@ -113,7 +113,6 @@ defmodule Tay.State.TransitionTest do
 
   test "candidate refuses retained budgets without publishing partial results" do
     for {key, value, reason} <- [
-          {:max_jobs, 0, :retained_jobs},
           {:max_bytes, 1, :retained_bytes},
           {:max_nodes, 1, :retained_nodes}
         ] do

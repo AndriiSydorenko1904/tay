@@ -12,10 +12,8 @@ defmodule Tay.Standalone.Config do
             http_tls_keyfile: nil,
             http_tls_cacertfile: nil,
             initialize: :never,
-            max_jobs: 100_000,
             max_state_bytes: 268_435_456,
             max_state_nodes: 2_000_000,
-            max_terminal_jobs: 5_000,
             terminal_retention: {:hours, 24}
 
   @type t :: %__MODULE__{
@@ -27,10 +25,8 @@ defmodule Tay.Standalone.Config do
           http_tls_keyfile: nil | String.t(),
           http_tls_cacertfile: nil | String.t(),
           initialize: :never | :if_missing,
-          max_jobs: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
           max_state_nodes: non_neg_integer(),
-          max_terminal_jobs: non_neg_integer(),
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
 
@@ -48,13 +44,10 @@ defmodule Tay.Standalone.Config do
          :ok <- validate_http(http_port, http_ip, tls),
          :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
-         {:ok, max_jobs} <- nonnegative(environment, "TAY_MAX_JOBS", 100_000),
          {:ok, max_state_bytes} <-
            nonnegative(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
          {:ok, max_state_nodes} <-
            nonnegative(environment, "TAY_MAX_STATE_NODES", 2_000_000),
-         {:ok, max_terminal_jobs} <-
-           nonnegative(environment, "TAY_MAX_TERMINAL_JOBS", 5_000),
          {:ok, terminal_retention} <- terminal_retention(environment) do
       {:ok,
        %__MODULE__{
@@ -66,10 +59,8 @@ defmodule Tay.Standalone.Config do
          http_tls_keyfile: tls.keyfile,
          http_tls_cacertfile: tls.cacertfile,
          initialize: initialize,
-         max_jobs: max_jobs,
          max_state_bytes: max_state_bytes,
          max_state_nodes: max_state_nodes,
-         max_terminal_jobs: max_terminal_jobs,
          terminal_retention: terminal_retention
        }}
     end

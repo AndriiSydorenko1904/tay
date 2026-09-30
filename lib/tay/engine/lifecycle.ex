@@ -133,6 +133,17 @@ defmodule Tay.Engine.Lifecycle do
      %{s | engine: engine, monitors: Map.put(s.monitors, monitor, :engine)}}
   end
 
+  def handle_call(
+        {:compaction_retention, engine, retention},
+        {engine, _},
+        %{engine: engine} = s
+      ) do
+    case Tay.Storage.V2.Retention.validate(retention) do
+      :ok -> {:reply, :ok, %{s | config: put_compaction_retention(s.config, retention)}}
+      _ -> {:reply, {:error, :invalid_retention}, s}
+    end
+  end
+
   def handle_call({:attach_writer, writer}, {engine, _}, %{engine: engine, writer: nil} = s) do
     monitor = Process.monitor(writer)
     {:reply, :ok, %{s | writer: writer, monitors: Map.put(s.monitors, monitor, :writer)}}
@@ -323,11 +334,6 @@ defmodule Tay.Engine.Lifecycle do
       {:error, reason} -> send(policy, {:policy_estimate, token, {:error, reason}})
     end
 
-    {:noreply, s}
-  end
-
-  def handle_cast(:terminal_pressure, %{policy: policy} = s) when is_pid(policy) do
-    GenServer.cast(policy, :evaluate_now)
     {:noreply, s}
   end
 
@@ -560,7 +566,11 @@ defmodule Tay.Engine.Lifecycle do
         {:online_compaction_result, engine, token, {:ok, stats}},
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
       ) do
-    s = publish(s, Map.merge(s.meta.status, %{state: :ready}) |> Map.delete(:phase))
+    s =
+      s
+      |> Map.update!(:config, &put_compaction_retention(&1, stats.terminal_retention))
+      |> publish(Map.merge(s.meta.status, %{state: :ready}) |> Map.delete(:phase))
+
     {:noreply, finish_operation(s, {:ok, stats})}
   end
 
@@ -964,6 +974,9 @@ defmodule Tay.Engine.Lifecycle do
         command_deliveries: MapSet.new()
     }
   end
+
+  defp put_compaction_retention(config, retention),
+    do: %{config | compaction: %{config.compaction | terminal_retention: retention}}
 
   def format_status(status),
     do:

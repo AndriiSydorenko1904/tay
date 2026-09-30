@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 1.0.0-rc.9 — 2026-09-30
+
+### Changed
+
+- Removed active-job and terminal-history count limits. Both Dashboard counters
+  now show current counts without a maximum, and neither count can reject
+  admission or trigger pressure compaction.
+- Kept terminal cleanup governed exclusively by the configured time retention;
+  active payload byte and value-node safeguards remain in place.
+- Made a successful Dashboard compaction persist its selected terminal
+  retention in Store-v2 and override the startup environment on later restarts.
+- Ran Dashboard-triggered compaction asynchronously so the LiveView remains
+  responsive while jobs continue to be accepted and executed.
+- Buffered source-segment inspection during compaction preparation to avoid a
+  native storage round trip for every record.
+
+### Fixed
+
+- Kept automatic compaction estimates available when persisted terminal
+  retention is infinite.
+
 ## 1.0.0-rc.8 — 2026-09-30
 
 ### Fixed

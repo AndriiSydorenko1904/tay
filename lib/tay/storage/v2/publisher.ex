@@ -14,6 +14,7 @@ defmodule Tay.Storage.V2.Publisher do
 
   @max 18_446_744_073_709_551_615
   @digest_chunk 1_048_576
+  @scan_chunk 1_048_576
   @minimum_headroom 67_108_864
 
   def publish(native, source) do
@@ -24,7 +25,6 @@ defmodule Tay.Storage.V2.Publisher do
     source =
       source
       |> Map.put_new(:terminal_retention, :infinity)
-      |> Map.put_new(:max_terminal_jobs, :infinity)
       |> Map.put_new_lazy(:captured_at, fn -> System.system_time(:millisecond) end)
 
     with true <- V1.id?(source.store_id) || {:error, :store_id},
@@ -37,7 +37,6 @@ defmodule Tay.Storage.V2.Publisher do
              source.jobs,
              source.terminal_retention,
              source.captured_at,
-             source.max_terminal_jobs,
              Map.has_key?(source, :online_catch_up)
            ),
          {:ok, inventory} <- source_inventory(native, source.store_id, source),
@@ -112,7 +111,6 @@ defmodule Tay.Storage.V2.Publisher do
         |> Map.merge(retention_stats)
         |> Map.merge(%{
           terminal_retention: source.terminal_retention,
-          max_terminal_jobs: source.max_terminal_jobs,
           captured_at: source.captured_at
         })
 
@@ -217,7 +215,7 @@ defmodule Tay.Storage.V2.Publisher do
       result =
         with_file(native, entry, fn ->
           with {:ok, summary} <-
-                 Segment.scan(&Native.read(native, &1, &2), entry.size,
+                 buffered_scan(native, entry.size,
                    id: id,
                    store_id: store_id,
                    highest: ordinal == total
@@ -283,6 +281,69 @@ defmodule Tay.Storage.V2.Publisher do
 
       error ->
         error
+    end
+  end
+
+  defp buffered_scan(native, size, options) do
+    cache = {__MODULE__, make_ref()}
+
+    try do
+      Segment.scan(&buffered_read(native, cache, size, &1, &2), size, options)
+    after
+      Process.delete(cache)
+    end
+  end
+
+  defp buffered_read(_native, _cache, _size, _offset, 0), do: {:ok, <<>>}
+
+  defp buffered_read(native, cache, size, offset, length)
+       when offset >= 0 and length > 0 and offset + length <= size do
+    buffered_read(native, cache, size, offset, length, [])
+  end
+
+  defp buffered_read(_native, _cache, _size, _offset, _length),
+    do: {:error, :invalid_source_read_range}
+
+  defp buffered_read(_native, _cache, _size, _offset, 0, chunks),
+    do: {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+
+  defp buffered_read(native, cache, size, offset, remaining, chunks) do
+    chunk_offset = div(offset, @scan_chunk) * @scan_chunk
+
+    with {:ok, bytes} <- scan_chunk(native, cache, size, chunk_offset) do
+      within = offset - chunk_offset
+      take = min(remaining, byte_size(bytes) - within)
+
+      buffered_read(
+        native,
+        cache,
+        size,
+        offset + take,
+        remaining - take,
+        [binary_part(bytes, within, take) | chunks]
+      )
+    end
+  end
+
+  defp scan_chunk(native, cache, size, offset) do
+    case Process.get(cache) do
+      {^offset, bytes} ->
+        {:ok, bytes}
+
+      _ ->
+        length = min(@scan_chunk, size - offset)
+
+        case Native.read(native, offset, length) do
+          {:ok, bytes} when byte_size(bytes) == length ->
+            Process.put(cache, {offset, bytes})
+            {:ok, bytes}
+
+          {:ok, _} ->
+            {:error, :short_source_read}
+
+          error ->
+            error
+        end
     end
   end
 
@@ -477,11 +538,11 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp prepare_snapshot(jobs, retention, captured_at, max_terminal_jobs, true),
-    do: Snapshot.prepare_online(jobs, retention, captured_at, max_terminal_jobs)
+  defp prepare_snapshot(jobs, retention, captured_at, true),
+    do: Snapshot.prepare_online(jobs, retention, captured_at)
 
-  defp prepare_snapshot(jobs, retention, captured_at, max_terminal_jobs, false),
-    do: Snapshot.prepare(jobs, retention, captured_at, max_terminal_jobs)
+  defp prepare_snapshot(jobs, retention, captured_at, false),
+    do: Snapshot.prepare(jobs, retention, captured_at)
 
   defp catch_up(_native, source, candidate, tail, started)
        when not is_map_key(source, :online_catch_up),
@@ -683,10 +744,8 @@ defmodule Tay.Storage.V2.Publisher do
            reclamation: :deferred,
            previous_epoch_id: source.epoch_id,
            terminal_retention: publication.terminal_retention,
-           max_terminal_jobs: publication.max_terminal_jobs,
            captured_at: publication.captured_at,
            expired_jobs: publication.expired_jobs,
-           pressure_expired_jobs: publication.pressure_expired_jobs,
            retained_terminal_jobs: publication.retained_terminal_jobs,
            reclaimed_bytes: 0
          }}

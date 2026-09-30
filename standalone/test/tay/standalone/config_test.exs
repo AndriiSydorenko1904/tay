@@ -51,24 +51,28 @@ defmodule Tay.Standalone.ConfigTest do
     assert message =~ "must not be blank"
   end
 
-  test "loads bounded state and terminal-history budgets" do
+  test "loads bounded active-state data budgets" do
     assert {:ok, config} =
              Config.load(%{
-               "TAY_MAX_JOBS" => "1000000",
                "TAY_MAX_STATE_BYTES" => "4294967296",
-               "TAY_MAX_STATE_NODES" => "100000000",
-               "TAY_MAX_TERMINAL_JOBS" => "5000"
+               "TAY_MAX_STATE_NODES" => "100000000"
              })
 
-    assert config.max_jobs == 1_000_000
     assert config.max_state_bytes == 4_294_967_296
     assert config.max_state_nodes == 100_000_000
-    assert config.max_terminal_jobs == 5_000
 
-    for name <- ~w(TAY_MAX_JOBS TAY_MAX_STATE_BYTES TAY_MAX_STATE_NODES TAY_MAX_TERMINAL_JOBS) do
+    for name <- ~w(TAY_MAX_STATE_BYTES TAY_MAX_STATE_NODES) do
       assert {:error, message} = Config.load(%{name => "-1"})
       assert message =~ name
     end
+  end
+
+  test "legacy job-count environment variables do not impose limits" do
+    assert {:ok, config} =
+             Config.load(%{"TAY_MAX_JOBS" => "0", "TAY_MAX_TERMINAL_JOBS" => "0"})
+
+    refute Map.has_key?(config, :max_jobs)
+    refute Map.has_key?(config, :max_terminal_jobs)
   end
 
   test "requires the runtime socket to remain outside durable storage" do

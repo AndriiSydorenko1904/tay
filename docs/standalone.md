@@ -23,11 +23,9 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_HTTP_IP` | `127.0.0.1` | Listener IP; non-loopback requires mTLS. |
 | `TAY_HTTP_TLS_{CERTFILE,KEYFILE,CACERTFILE}` | unset | Absolute PEM paths for server certificate, private key and client CA. Set all three together. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
-| `TAY_MAX_JOBS` | `100000` | Maximum simultaneously active jobs. Terminal history does not consume this budget. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
 | `TAY_MAX_STATE_NODES` | `2000000` | Conservative value-node budget for active jobs. |
-| `TAY_MAX_TERMINAL_JOBS` | `5000` | Maximum retained completed, cancelled, and discarded jobs after pressure compaction. |
-| `TAY_TERMINAL_RETENTION` | `24h` | Time retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. |
+| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
 | `TAY_DASHBOARD_PORT` | `4000` | Dashboard listener port. |
@@ -45,6 +43,12 @@ Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
 `0660` so a worker can use a shared group where the deployment platform
 supports it.
+
+Active-job and terminal-history counts are informational and have no configured
+maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are
+ignored. Active payloads remain protected by the byte and value-node budgets;
+terminal history is removed only by time-based compaction.
+
 Python HTTP producers and workers need only the HTTP(S) address. Set
 `TAY_SOCKET_PATH=off` together with `TAY_HTTP_PORT` to run without a Unix
 socket. For an HTTP-only Compose deployment use `docker compose up tay`;
@@ -116,7 +120,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.0.0-rc.8
+  ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -124,7 +128,7 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.0.0-rc.8/clients/python).
+[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.0.0-rc.9/clients/python).
 
 The health check succeeds only when the Engine reports `ready` and the selected
 transport is available (HTTP if the socket is disabled, otherwise the UDS).
