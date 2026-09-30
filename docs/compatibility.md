@@ -9,7 +9,7 @@ the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
 repaired. Store-v1 and released fixtures remain unchanged.
 
-Tay v1.0.0-rc.9 is a single-node release candidate. Record v1, STORE v1,
+Tay v1.0.0 is a stable single-node release. Record v1, STORE v1,
 Segment v1, and Event v1 are fixed compatibility contracts described in
 [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
@@ -56,7 +56,7 @@ Btrfs test volume: 10,000 retained jobs with small encoded arguments, eight
 offered callers, two queues with two credits each, 30,000 Events, and
 19,385,044 canonical history bytes. This is a finite example, not a throughput,
 recovery-time, arbitrary-device, or power-loss guarantee. Validate the actual
-target and workload before deployment. The conservative public-preview policy
+target and workload before deployment. The conservative operational policy
 is:
 
 | Boundary | Value |

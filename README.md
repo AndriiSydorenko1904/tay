@@ -11,19 +11,20 @@ No DataBase. No Redis. No RabbitMQ. Tay owns its durable job state itself.
 ```text
 Application / Worker
         │
-        │ local Unix socket
-        ▼
-┌─────────────────────┐
-│         Tay         │
-│                     │
-│ queues · retries    │
-│ schedules · cron    │
-│ cancellation        │
-│ crash recovery      │
-└──────────┬──────────┘
-           │
-           ▼
-    durable local disk
+        ├── local Unix socket ─┐
+        └── HTTP/JSON API ─────┤
+                               ▼
+                    ┌─────────────────────┐
+                    │         Tay         │
+                    │                     │
+                    │ queues · retries    │
+                    │ schedules · cron    │
+                    │ cancellation        │
+                    │ crash recovery      │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                        durable local disk
 ```
 
 Tay can be used in three ways:
@@ -50,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0
 ```
 
 For a ready-made Tay deployment example:
@@ -85,7 +86,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0
 ```
 
 ## Why Tay?
@@ -167,7 +168,7 @@ Add Tay to your application's Mix dependencies:
 ```elixir
 defp deps do
   [
-    {:tay, "1.0.0-rc.9"}
+    {:tay, "~> 1.0"}
   ]
 end
 ```
@@ -431,7 +432,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
+ghcr.io/andriisydorenko1904/tay:1.0.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -441,7 +442,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.0.0-rc.9
+docker pull ghcr.io/andriisydorenko1904/tay:1.0.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -532,10 +533,9 @@ persistence, and upgrade rules.
 
 ## Project status
 
-Tay 1.0 is currently a release candidate with a deliberately constrained,
-target-validated operating profile. Release-candidate feedback may lead to
-compatible fixes and documentation changes before the final 1.0.0 release;
-the documented persistent-format contracts are already fixed.
+Tay 1.0 is a stable release with a deliberately constrained, target-validated
+operating profile. The documented persistent-format contracts are fixed;
+compatible fixes and documentation improvements continue in the 1.x line.
 
 The storage format, recovery behavior, supported filesystems, and durability
 requirements are documented explicitly.

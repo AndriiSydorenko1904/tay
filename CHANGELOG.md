@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.0.0 — 2026-09-30
+
+### Added
+
+- Released the stable Tay 1.0 engine, Python client, standalone OCI image, and
+  optional LiveView dashboard.
+- Stabilized the versioned storage formats, executor protocol, recovery
+  behavior, and documented compatibility contracts established during the
+  1.0.0 release-candidate series.
+
+### Changed
+
+- Promoted the validated 1.0 operating profile from release candidate to the
+  stable 1.x release line.
+
 ## 1.0.0-rc.9 — 2026-09-30
 
 ### Changed

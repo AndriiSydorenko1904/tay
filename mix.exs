@@ -54,14 +54,14 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.0.0-rc.9"
+  @version "1.0.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
     [
       app: :tay,
       version: @version,
-      description: "Release-candidate single-node durable job engine with fail-closed recovery",
+      description: "Single-node durable job engine with fail-closed recovery",
       source_url: @source_url,
       package: package(),
       docs: docs(),

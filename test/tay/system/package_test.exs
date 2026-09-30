@@ -23,7 +23,7 @@ defmodule Tay.System.PackageTest do
         command!("mix", ["hex.build", "--unpack", "--output", vendor], @checkout, build_env)
 
       archive ->
-        # Exercise the exact release candidate archive, including both Hex tar
+        # Exercise the exact release archive, including both Hex tar
         # layers, rather than rebuilding a second source package for this path.
         container = Path.join(artifact, "package-container")
         File.mkdir_p!(container)
