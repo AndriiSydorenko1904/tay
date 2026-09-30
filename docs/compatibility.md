@@ -9,7 +9,7 @@ the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
 repaired. Store-v1 and released fixtures remain unchanged.
 
-Tay v1.0.0-rc.7 is a single-node release candidate. Record v1, STORE v1,
+Tay v1.0.0-rc.8 is a single-node release candidate. Record v1, STORE v1,
 Segment v1, and Event v1 are fixed compatibility contracts described in
 [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0-rc.8 — 2026-09-30
+
 ### Fixed
 
 - Preserved the durable availability-order frontier across online compaction so
