@@ -123,9 +123,19 @@ defmodule Tay.State.TransitionTest do
     assert map_size(candidate.jobs) == 1
     job = candidate.jobs |> Map.values() |> hd()
     assert {:ok, stats} = Value.measure(job.definition)
+    assert candidate.bytes == T.retained_bytes(job, stats.binary_bytes)
 
-    assert candidate.bytes ==
-             2 * byte_size(job.definition_bytes) + 64 * stats.nodes + 2048
+    assert {:ok, transitioned} =
+             T.reduce(H.expected("E2"), %{sequence: 2}, candidate)
+
+    assert transitioned.bytes == candidate.bytes
+
+    assert {:error, {:resource_limit, :retained_bytes}} =
+             T.reduce(
+               H.expected("E1"),
+               %{sequence: 1},
+               T.candidate(%{max_bytes: candidate.bytes - 1})
+             )
 
     assert {:ok, legacy} =
              T.reduce(H.expected("E1"), %{sequence: 1}, T.candidate(%{max_nodes: 1}))

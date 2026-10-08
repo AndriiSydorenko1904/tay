@@ -29,7 +29,7 @@ defmodule Tay.State.Transition do
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
     limits = Map.merge(%{max_bytes: 268_435_456}, Map.take(limits, [:max_bytes]))
-    %{jobs: %{}, count: 0, bytes: 0, nodes: 0, limits: limits, value_limits: value_limits}
+    %{jobs: %{}, count: 0, bytes: 0, limits: limits, value_limits: value_limits}
   end
 
   def reduce(%Event{} = event, position, candidate) do
@@ -43,21 +43,19 @@ defmodule Tay.State.Transition do
 
   def put_candidate(candidate, previous, job) do
     with {:ok, job} <- charge(job, candidate.value_limits),
-         old <- if(active?(previous), do: previous.charge, else: %{bytes: 0, nodes: 0}),
-         added <- if(active?(job), do: job.charge, else: %{bytes: 0, nodes: 0}),
+         old <- if(active?(previous), do: previous.charge, else: %{bytes: 0}),
+         added <- if(active?(job), do: job.charge, else: %{bytes: 0}),
          count <-
            candidate.count - if(active?(previous), do: 1, else: 0) +
              if(active?(job), do: 1, else: 0),
          bytes <- candidate.bytes - old.bytes + added.bytes,
-         nodes <- candidate.nodes - old.nodes + added.nodes,
-         :ok <- within_limits(candidate.limits, bytes, nodes) do
+         :ok <- within_limits(candidate.limits, bytes) do
       {:ok,
        %{
          candidate
          | jobs: Map.put(candidate.jobs, job.id, job),
            count: count,
-           bytes: bytes,
-           nodes: nodes
+           bytes: bytes
        }}
     end
   end
@@ -68,29 +66,60 @@ defmodule Tay.State.Transition do
   @doc false
   def account(budget, previous, job) do
     with {:ok, job} <- charge(job, budget.value_limits) do
-      old = if previous, do: previous.charge, else: %{bytes: 0, nodes: 0}
+      old = if previous, do: previous.charge, else: %{bytes: 0}
       bytes = budget.bytes - old.bytes + job.charge.bytes
-      nodes = budget.nodes - old.nodes + job.charge.nodes
       count = budget.count + if(previous, do: 0, else: 1)
 
-      with :ok <- within_limits(budget.limits, bytes, nodes),
-           do: {:ok, job, %{budget | count: count, bytes: bytes, nodes: nodes}}
+      with :ok <- within_limits(budget.limits, bytes),
+           do: {:ok, job, %{budget | count: count, bytes: bytes}}
     end
   end
 
+  defp charge(%{charge: %{bytes: bytes}} = job, _value_limits)
+       when is_integer(bytes) and bytes >= 0,
+       do: {:ok, job}
+
   defp charge(job, value_limits) do
     {:ok, stats} = Value.measure(job.definition, value_limits)
-    # Reserve a fixed metadata allowance, including the largest diagnostic, so
-    # later lifecycle transitions cannot exceed an accepted job's state charge.
-    charge = %{
-      bytes: 2 * byte_size(job.definition_bytes) + 64 * stats.nodes + 2048,
-      nodes: stats.nodes + 64
-    }
+    charge = %{bytes: retained_bytes(job, stats.binary_bytes)}
 
     {:ok, Map.put(job, :charge, charge)}
   end
 
-  defp within_limits(limits, bytes, _nodes) do
+  @doc false
+  def retained_bytes(job, definition_binary_bytes) do
+    # flat_size measures the copied heap shape in machine words. Charge a
+    # worst-case lifecycle shape up front so execution, retry, and diagnostics
+    # cannot make a previously accepted job exceed its capacity reservation.
+    lifecycle_max = %{
+      state: :retryable,
+      attempt: 65_535,
+      next_attempt: 65_535,
+      cycle: 18_446_744_073_709_551_615,
+      execution: 18_446_744_073_709_551_615,
+      eligible_at: V1.max_time(),
+      available_sequence: 18_446_744_073_709_551_615,
+      inserted_at: V1.max_time(),
+      attempted_at: V1.max_time(),
+      completed_at: V1.max_time(),
+      diagnostic: %{"code" => 7, "version" => 1},
+      revision: 18_446_744_073_709_551_615,
+      charge: %{bytes: 18_446_744_073_709_551_615}
+    }
+
+    flat_heap_bytes =
+      job
+      |> Map.delete(:charge)
+      |> Map.merge(lifecycle_max)
+      |> :erts_debug.flat_size()
+      |> Kernel.*(:erlang.system_info(:wordsize))
+
+    # Large binaries live outside the flat heap. Value.measure/2 supplies the
+    # definition payload total; definition_bytes is the retained canonical copy.
+    flat_heap_bytes + definition_binary_bytes + byte_size(job.definition_bytes)
+  end
+
+  defp within_limits(limits, bytes) do
     if bytes > limits.max_bytes,
       do: {:error, {:resource_limit, :retained_bytes}},
       else: :ok

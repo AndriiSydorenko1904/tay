@@ -89,7 +89,7 @@ defmodule Tay.Engine.CoreTest do
 
     {:ok, root} = H.restart(path, @name, max_state_nodes: 1)
     assert {:ok, _} = Tay.insert(EngineWorker.new(%{"legacy" => "ignored"}), name: @name)
-    assert Tay.status(name: @name).max_state_nodes == :infinity
+    refute Map.has_key?(Tay.status(name: @name), :max_state_nodes)
     H.stop(root)
   end
 

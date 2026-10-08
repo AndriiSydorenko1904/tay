@@ -144,8 +144,7 @@ defmodule Tay.Diagnostics do
                  ignored_count: summary.ignored_count,
                  jobs: map_size(candidate.jobs),
                  states: counts,
-                 state_bytes_charged: candidate.bytes,
-                 state_nodes_charged: candidate.nodes
+                 state_bytes_charged: candidate.bytes
                }}
 
             {:error, error} ->

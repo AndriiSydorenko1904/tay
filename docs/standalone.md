@@ -46,9 +46,9 @@ supports it.
 Active-job and terminal-history counts are informational and have no configured
 maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are
 ignored. Active payloads use one `TAY_MAX_STATE_BYTES` budget; structural
-complexity is automatically converted into its estimated byte cost. The former
-`TAY_MAX_STATE_NODES` variable is ignored. Terminal history is removed only by
-time-based compaction.
+complexity is included through the retained job's flat BEAM heap size rather
+than a separate item limit. The former `TAY_MAX_STATE_NODES` variable is ignored.
+Terminal history is removed only by time-based compaction.
 
 Python HTTP producers and workers need only the HTTP(S) address. Set
 `TAY_SOCKET_PATH=off` together with `TAY_HTTP_PORT` to run without a Unix

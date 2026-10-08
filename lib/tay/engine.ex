@@ -1726,13 +1726,9 @@ defmodule Tay.Engine do
       terminal_jobs: s.terminal_budget.count,
       blocked_jobs: s.blocked,
       state_bytes_charged: s.active_budget.bytes + s.terminal_budget.bytes,
-      state_nodes_charged: s.active_budget.nodes + s.terminal_budget.nodes,
       active_state_bytes_charged: s.active_budget.bytes,
-      active_state_nodes_charged: s.active_budget.nodes,
       terminal_state_bytes_charged: s.terminal_budget.bytes,
-      terminal_state_nodes_charged: s.terminal_budget.nodes,
       max_state_bytes: s.config.max_state_bytes,
-      max_state_nodes: :infinity,
       startup_state_bytes_budget: 3 * s.config.max_state_bytes,
       running_executions: map_size(s.running),
       unsettled_executions: s.settlement_reserve,
@@ -1895,13 +1891,12 @@ defmodule Tay.Engine do
   defp partition(job), do: if(terminal?(job), do: :terminal, else: :active)
   defp terminal?(nil), do: false
   defp terminal?(%{state: state}), do: state in [:completed, :cancelled, :discarded]
-  defp empty_budget, do: %{count: 0, bytes: 0, nodes: 0}
+  defp empty_budget, do: %{count: 0, bytes: 0}
 
   defp add_charge(budget, job, sign) do
     Map.merge(budget, %{
       count: budget.count + sign,
-      bytes: budget.bytes + sign * job.charge.bytes,
-      nodes: budget.nodes + sign * job.charge.nodes
+      bytes: budget.bytes + sign * job.charge.bytes
     })
   end
 

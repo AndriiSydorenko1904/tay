@@ -30,7 +30,6 @@ defmodule Tay.Storage.V2.Reducer do
           | jobs: %{id => previous},
             count: if(active, do: 1, else: 0),
             bytes: if(active, do: previous.charge.bytes, else: 0),
-            nodes: if(active, do: previous.charge.nodes, else: 0),
             availability_orders:
               if(previous.availability_order,
                 do: MapSet.new([previous.availability_order]),
