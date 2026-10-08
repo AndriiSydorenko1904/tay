@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.2.0 — 2026-10-08
+
+### Added
+
+- Allowed `TAY_MAX_STATE_BYTES` to use integer decimal or binary size suffixes,
+  such as `5GB` or `5GiB`, while preserving plain-byte values.
+
 ## 1.1.1 — 2026-10-08
 
 ### Fixed

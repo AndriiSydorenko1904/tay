@@ -43,7 +43,7 @@ defmodule Tay.Standalone.Config do
          :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
          {:ok, max_state_bytes} <-
-           nonnegative(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
+           byte_size(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
          {:ok, terminal_retention} <- terminal_retention(environment) do
       {:ok,
        %__MODULE__{
@@ -196,18 +196,34 @@ defmodule Tay.Standalone.Config do
     end
   end
 
-  defp nonnegative(environment, name, default) do
+  defp byte_size(environment, name, default) do
     case Map.get(environment, name, Integer.to_string(default)) do
       value when is_binary(value) ->
-        case Integer.parse(value) do
-          {number, ""} when number >= 0 -> {:ok, number}
-          _ -> {:error, "#{name} must be a non-negative integer"}
+        with %{"amount" => amount, "unit" => unit} <-
+               Regex.named_captures(
+                 ~r/\A(?<amount>0|[1-9][0-9]*)(?<unit>K(?:i)?B|M(?:i)?B|G(?:i)?B)?\z/,
+                 value
+               ),
+             {amount, ""} <- Integer.parse(amount) do
+          {:ok, amount * byte_multiplier(unit)}
+        else
+          _ ->
+            {:error,
+             "#{name} must be bytes or an integer size using KB, KiB, MB, MiB, GB, or GiB"}
         end
 
       _ ->
-        {:error, "#{name} must be a non-negative integer"}
+        {:error, "#{name} must be bytes or an integer size using KB, KiB, MB, MiB, GB, or GiB"}
     end
   end
+
+  defp byte_multiplier(""), do: 1
+  defp byte_multiplier("KB"), do: 1_000
+  defp byte_multiplier("KiB"), do: 1_024
+  defp byte_multiplier("MB"), do: 1_000_000
+  defp byte_multiplier("MiB"), do: 1_048_576
+  defp byte_multiplier("GB"), do: 1_000_000_000
+  defp byte_multiplier("GiB"), do: 1_073_741_824
 
   defp terminal_retention(environment) do
     value = Map.get(environment, "TAY_TERMINAL_RETENTION", "24h")
