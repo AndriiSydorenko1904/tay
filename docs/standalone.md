@@ -23,8 +23,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_HTTP_IP` | `127.0.0.1` | Listener IP; non-loopback requires mTLS. |
 | `TAY_HTTP_TLS_{CERTFILE,KEYFILE,CACERTFILE}` | unset | Absolute PEM paths for server certificate, private key and client CA. Set all three together. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
-| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative encoded-state byte budget for active jobs. |
-| `TAY_MAX_STATE_NODES` | `2000000` | Conservative value-node budget for active jobs. |
+| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs, including encoded data, nested structures, and per-job overhead. |
 | `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
@@ -46,8 +45,10 @@ supports it.
 
 Active-job and terminal-history counts are informational and have no configured
 maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are
-ignored. Active payloads remain protected by the byte and value-node budgets;
-terminal history is removed only by time-based compaction.
+ignored. Active payloads use one `TAY_MAX_STATE_BYTES` budget; structural
+complexity is automatically converted into its estimated byte cost. The former
+`TAY_MAX_STATE_NODES` variable is ignored. Terminal history is removed only by
+time-based compaction.
 
 Python HTTP producers and workers need only the HTTP(S) address. Set
 `TAY_SOCKET_PATH=off` together with `TAY_HTTP_PORT` to run without a Unix

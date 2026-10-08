@@ -124,10 +124,12 @@ positive finite numbers at most one. Automatic configuration rejects infinity.
 Terminal jobs are removed from the hot ETS job projection as soon as they
 finish and remain queryable through a disposable disk-backed inspection index.
 Active-job and terminal-history counts are informational and never reject
-admission or trigger maintenance. `max_state_bytes` and `max_state_nodes`
-continue to protect active payload data. Aggregate terminal state and queue
-counters remain in memory. The append-only Store remains authoritative for both
-projections and rebuilds them on restart.
+admission or trigger maintenance. `max_state_bytes` protects active payload data
+with one conservative in-memory byte budget that includes encoded values,
+structural complexity and per-job overhead. The former `max_state_nodes` option
+is accepted when valid but ignored for 1.x configuration compatibility.
+Aggregate terminal state and queue counters remain in memory. The append-only
+Store remains authoritative for both projections and rebuilds them on restart.
 
 For release-candidate compatibility, the former `max_jobs` and
 `max_terminal_jobs` options are accepted when valid but ignored.

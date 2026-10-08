@@ -48,6 +48,9 @@ defmodule Tay.Engine.ConfigTest do
         do: assert({:error, %Tay.Error{kind: :invalid}} = Config.new(Keyword.merge(base, extra)))
 
     assert {:ok, _} = Config.new(base ++ [max_insert_payload_bytes: 1, max_insert_args_bytes: 5])
+    assert {:ok, legacy} = Config.new(base ++ [max_state_nodes: 1])
+    refute Map.has_key?(legacy, :max_state_nodes)
+    assert {:error, _} = Config.new(base ++ [max_state_nodes: -1])
 
     assert {:error, _} =
              Config.new(base ++ [executor_socket: Path.expand("tmp/config-only/tay.sock")])

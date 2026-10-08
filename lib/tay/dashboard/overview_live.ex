@@ -23,9 +23,7 @@ defmodule Tay.Dashboard.OverviewLive do
          active_jobs: 0,
          terminal_jobs: 0,
          bytes: 0,
-         max_bytes: 0,
-         nodes: 0,
-         max_nodes: 0
+         max_bytes: 0
        },
        storage_bytes: 0,
        segment_count: 0,
@@ -222,25 +220,18 @@ defmodule Tay.Dashboard.OverviewLive do
             <div class="card-help">Completed, cancelled, and discarded jobs kept on disk.</div>
           </div>
           <div class="card">
-            <div>Active job data</div>
+            <div>Active job memory budget</div>
             <div class="count">
               {available(
                 @engine_available,
                 "#{format_bytes(@capacity.bytes)} / #{format_bytes(@capacity.max_bytes)}"
               )}
             </div>
-            <div class="card-help">Estimated storage footprint / configured safety limit.</div>
-          </div>
-          <div class="card">
-            <div>Structured values</div>
-            <div class="count">
-              {available(@engine_available, format_ratio(@capacity.nodes, @capacity.max_nodes))}
-            </div>
-            <div class="card-help">JSON values / limit; protects against huge nested structures.</div>
+            <div class="card-help">Conservative in-memory estimate / configured limit.</div>
           </div>
         </div>
         <p class="section-help">
-          Job counts are informational and are not capped. Data size and structured values are not directly proportional: large strings consume more bytes, while large arrays or objects consume more values. Either safeguard can be reached first; neither is measured RAM.
+          Job counts are informational and are not capped. Active job data is a conservative in-memory estimate: encoded data, nested structures, and per-job overhead are all converted into one byte budget.
         </p>
       </section>
       <section style="margin-top:28px">
@@ -373,9 +364,7 @@ defmodule Tay.Dashboard.OverviewLive do
             active_jobs: Map.get(status, :active_jobs, 0),
             terminal_jobs: Map.get(status, :terminal_jobs, terminal_count(stats)),
             bytes: Map.get(status, :active_state_bytes_charged, 0),
-            max_bytes: Map.get(status, :max_state_bytes, 0),
-            nodes: Map.get(status, :active_state_nodes_charged, 0),
-            max_nodes: Map.get(status, :max_state_nodes, 0)
+            max_bytes: Map.get(status, :max_state_bytes, 0)
           },
           storage_bytes: Map.get(status, :canonical_history_bytes, 0),
           segment_count: Map.get(status, :segment_count, 0),
@@ -437,16 +426,6 @@ defmodule Tay.Dashboard.OverviewLive do
       if value == trunc(value), do: Integer.to_string(trunc(value)), else: Float.to_string(value)
 
     "#{number} #{unit}"
-  end
-
-  defp format_ratio(value, limit), do: "#{format_integer(value)} / #{format_integer(limit)}"
-  defp format_integer(value), do: value |> Integer.to_string() |> group_digits()
-  defp group_digits(value) when byte_size(value) <= 3, do: value
-
-  defp group_digits(value) do
-    {head, tail} = String.split_at(value, rem(byte_size(value), 3))
-    groups = tail |> String.graphemes() |> Enum.chunk_every(3) |> Enum.map_join(",", &Enum.join/1)
-    if head == "", do: groups, else: head <> "," <> groups
   end
 
   defp format_retention({:hours, hours}), do: "#{hours} h"

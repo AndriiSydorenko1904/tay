@@ -51,7 +51,7 @@ defmodule Tay.Standalone.ConfigTest do
     assert message =~ "must not be blank"
   end
 
-  test "loads bounded active-state data budgets" do
+  test "loads one active-state byte budget and ignores the legacy node setting" do
     assert {:ok, config} =
              Config.load(%{
                "TAY_MAX_STATE_BYTES" => "4294967296",
@@ -59,12 +59,11 @@ defmodule Tay.Standalone.ConfigTest do
              })
 
     assert config.max_state_bytes == 4_294_967_296
-    assert config.max_state_nodes == 100_000_000
+    refute Map.has_key?(config, :max_state_nodes)
+    assert {:ok, _} = Config.load(%{"TAY_MAX_STATE_NODES" => "not-used"})
 
-    for name <- ~w(TAY_MAX_STATE_BYTES TAY_MAX_STATE_NODES) do
-      assert {:error, message} = Config.load(%{name => "-1"})
-      assert message =~ name
-    end
+    assert {:error, message} = Config.load(%{"TAY_MAX_STATE_BYTES" => "-1"})
+    assert message =~ "TAY_MAX_STATE_BYTES"
   end
 
   test "legacy job-count environment variables do not impose limits" do

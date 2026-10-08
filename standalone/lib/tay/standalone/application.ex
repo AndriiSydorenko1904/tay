@@ -20,7 +20,6 @@ defmodule Tay.Standalone.Application do
               workers: %{},
               queues: [default: 10],
               max_state_bytes: config.max_state_bytes,
-              max_state_nodes: config.max_state_nodes,
               compaction: [
                 terminal_retention: config.terminal_retention
               ],

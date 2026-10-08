@@ -1732,7 +1732,7 @@ defmodule Tay.Engine do
       terminal_state_bytes_charged: s.terminal_budget.bytes,
       terminal_state_nodes_charged: s.terminal_budget.nodes,
       max_state_bytes: s.config.max_state_bytes,
-      max_state_nodes: s.config.max_state_nodes,
+      max_state_nodes: :infinity,
       startup_state_bytes_budget: 3 * s.config.max_state_bytes,
       running_executions: map_size(s.running),
       unsettled_executions: s.settlement_reserve,

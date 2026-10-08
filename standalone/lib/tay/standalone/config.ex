@@ -13,7 +13,6 @@ defmodule Tay.Standalone.Config do
             http_tls_cacertfile: nil,
             initialize: :never,
             max_state_bytes: 268_435_456,
-            max_state_nodes: 2_000_000,
             terminal_retention: {:hours, 24}
 
   @type t :: %__MODULE__{
@@ -26,7 +25,6 @@ defmodule Tay.Standalone.Config do
           http_tls_cacertfile: nil | String.t(),
           initialize: :never | :if_missing,
           max_state_bytes: non_neg_integer(),
-          max_state_nodes: non_neg_integer(),
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
 
@@ -46,8 +44,6 @@ defmodule Tay.Standalone.Config do
          {:ok, initialize} <- initialize(environment),
          {:ok, max_state_bytes} <-
            nonnegative(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
-         {:ok, max_state_nodes} <-
-           nonnegative(environment, "TAY_MAX_STATE_NODES", 2_000_000),
          {:ok, terminal_retention} <- terminal_retention(environment) do
       {:ok,
        %__MODULE__{
@@ -60,7 +56,6 @@ defmodule Tay.Standalone.Config do
          http_tls_cacertfile: tls.cacertfile,
          initialize: initialize,
          max_state_bytes: max_state_bytes,
-         max_state_nodes: max_state_nodes,
          terminal_retention: terminal_retention
        }}
     end

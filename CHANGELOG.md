@@ -9,6 +9,10 @@
 - Made Dashboard terminology and inline explanations understandable without
   prior Erlang/BEAM knowledge, including job states, runtime memory, active-job
   safeguards, and durable storage.
+- Replaced the separate active-state byte and value-node limits with one
+  `max_state_bytes` budget. Structural complexity is charged into that byte
+  estimate automatically; the former `max_state_nodes` option remains accepted
+  but ignored for 1.x configuration compatibility.
 - Displayed byte values in the most readable binary unit, including KiB for
   sub-MiB values and GiB for large limits.
 

@@ -111,22 +111,26 @@ defmodule Tay.State.TransitionTest do
              })
   end
 
-  test "candidate refuses retained budgets without publishing partial results" do
-    for {key, value, reason} <- [
-          {:max_bytes, 1, :retained_bytes},
-          {:max_nodes, 1, :retained_nodes}
-        ] do
-      initial = T.candidate(%{key => value})
+  test "candidate converts structural complexity into its single retained-byte budget" do
+    initial = T.candidate(%{max_bytes: 1})
 
-      assert {:error, {:resource_limit, ^reason}} =
-               T.reduce(H.expected("E1"), %{sequence: 1}, initial)
+    assert {:error, {:resource_limit, :retained_bytes}} =
+             T.reduce(H.expected("E1"), %{sequence: 1}, initial)
 
-      assert initial.jobs == %{}
-    end
+    assert initial.jobs == %{}
 
     assert {:ok, candidate} = T.reduce(H.expected("E1"), %{sequence: 1}, T.candidate())
     assert map_size(candidate.jobs) == 1
-    assert candidate.bytes > 404
+    job = candidate.jobs |> Map.values() |> hd()
+    assert {:ok, stats} = Value.measure(job.definition)
+
+    assert candidate.bytes ==
+             2 * byte_size(job.definition_bytes) + 64 * stats.nodes + 2048
+
+    assert {:ok, legacy} =
+             T.reduce(H.expected("E1"), %{sequence: 1}, T.candidate(%{max_nodes: 1}))
+
+    refute Map.has_key?(legacy.limits, :max_nodes)
   end
 
   property "live effects and encoded/decoded pure reconstruction are identical" do

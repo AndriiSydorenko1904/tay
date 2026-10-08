@@ -179,10 +179,12 @@ defmodule Tay.Diagnostics do
          true <- is_boolean(validated),
          {:ok, recovery} <- Recovery.options(Keyword.get(input, :recovery, [])),
          candidate = %{
-           max_bytes: Keyword.get(input, :max_state_bytes, 268_435_456),
-           max_nodes: Keyword.get(input, :max_state_nodes, 2_000_000)
+           max_bytes: Keyword.get(input, :max_state_bytes, 268_435_456)
          },
-         true <- Enum.all?(candidate, fn {_, n} -> is_integer(n) and n >= 0 end) do
+         true <- Enum.all?(candidate, fn {_, n} -> is_integer(n) and n >= 0 end),
+         true <-
+           is_integer(Keyword.get(input, :max_state_nodes, 0)) and
+             Keyword.get(input, :max_state_nodes, 0) >= 0 do
       {:ok,
        %{
          data_dir: foundation.data_dir,
@@ -264,7 +266,7 @@ defmodule Tay.Diagnostics do
 
         {:ok,
          base ++
-           Keyword.take(options, [:max_state_bytes, :max_state_nodes]) ++
+           Keyword.take(options, [:max_state_bytes]) ++
            [recovery: recovery]}
       end
     else

@@ -250,11 +250,9 @@ defmodule Tay.Engine.FaultTest do
     H.stop(root)
     before = R.snapshot(path)
 
-    for budget <- [[max_state_bytes: 1], [max_state_nodes: 1]] do
-      assert {:error, _} = H.restart(path, @name, budget)
-      assert R.snapshot(path) == before
-      assert Tay.status(name: @name).state == :unavailable
-    end
+    assert {:error, _} = H.restart(path, @name, max_state_bytes: 1)
+    assert R.snapshot(path) == before
+    assert Tay.status(name: @name).state == :unavailable
 
     {:ok, root} = H.restart(path, @name)
     assert {:ok, _} = Tay.get_job(intent.id, name: @name)

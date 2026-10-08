@@ -18,7 +18,6 @@ defmodule Tay.Engine.Config do
     insert_value_depth: 32,
     insert_value_nodes: 10_000,
     max_state_bytes: 268_435_456,
-    max_state_nodes: 2_000_000,
     client_slots: 64,
     client_bytes: 67_108_864,
     caller_timeout: 5_000,
@@ -47,11 +46,16 @@ defmodule Tay.Engine.Config do
   }
 
   def new(options) do
-    allowed = Map.keys(@defaults) ++ [:data_dir, :queues, :max_jobs] ++ test_option_keys()
+    allowed =
+      Map.keys(@defaults) ++
+        [:data_dir, :queues, :max_jobs, :max_state_nodes] ++ test_option_keys()
 
     with true <- keyword?(options, allowed) || {:error, :invalid_engine_options},
          true <-
            legacy_job_limit?(Keyword.get(options, :max_jobs, 0)) ||
+             {:error, :invalid_engine_options},
+         true <-
+           legacy_state_node_limit?(Keyword.get(options, :max_state_nodes, 0)) ||
              {:error, :invalid_engine_options},
          {:ok, base} <- Tay.Config.load(),
          {:ok, base} <-
@@ -62,7 +66,11 @@ defmodule Tay.Engine.Config do
              )
            ),
          true <- base.data_dir != nil || {:error, :data_dir_required},
-         config = Map.merge(@defaults, options |> Keyword.delete(:max_jobs) |> Map.new()),
+         config =
+           Map.merge(
+             @defaults,
+             options |> Keyword.drop([:max_jobs, :max_state_nodes]) |> Map.new()
+           ),
          {:ok, socket} <- SocketPath.resolve(config.executor_socket),
          config =
            config
@@ -86,8 +94,7 @@ defmodule Tay.Engine.Config do
          value_limits: recovery.event_limits,
          slot_bytes: div(config.client_bytes, config.client_slots),
          candidate_limits: %{
-           max_bytes: config.max_state_bytes,
-           max_nodes: config.max_state_nodes
+           max_bytes: config.max_state_bytes
          }
        })}
     else
@@ -96,6 +103,7 @@ defmodule Tay.Engine.Config do
   end
 
   defp legacy_job_limit?(value), do: is_integer(value) and value >= 0
+  defp legacy_state_node_limit?(value), do: is_integer(value) and value >= 0
 
   def storage(config) do
     [
@@ -134,8 +142,7 @@ defmodule Tay.Engine.Config do
     nonnegative = [
       :max_insert_payload_bytes,
       :max_insert_args_bytes,
-      :max_state_bytes,
-      :max_state_nodes
+      :max_state_bytes
     ]
 
     valid =

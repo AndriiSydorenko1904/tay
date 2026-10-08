@@ -28,7 +28,7 @@ defmodule Tay.State.Transition do
   def apply(_, _), do: {:error, :invalid_position}
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
-    limits = Map.merge(%{max_bytes: 268_435_456, max_nodes: 2_000_000}, limits)
+    limits = Map.merge(%{max_bytes: 268_435_456}, Map.take(limits, [:max_bytes]))
     %{jobs: %{}, count: 0, bytes: 0, nodes: 0, limits: limits, value_limits: value_limits}
   end
 
@@ -90,17 +90,10 @@ defmodule Tay.State.Transition do
     {:ok, Map.put(job, :charge, charge)}
   end
 
-  defp within_limits(limits, bytes, nodes) do
-    cond do
-      bytes > limits.max_bytes ->
-        {:error, {:resource_limit, :retained_bytes}}
-
-      nodes > limits.max_nodes ->
-        {:error, {:resource_limit, :retained_nodes}}
-
-      true ->
-        :ok
-    end
+  defp within_limits(limits, bytes, _nodes) do
+    if bytes > limits.max_bytes,
+      do: {:error, {:resource_limit, :retained_bytes}},
+      else: :ok
   end
 
   defp active?(nil), do: false
