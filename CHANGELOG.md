@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-10-08
+
+### Changed
+
+- Made Dashboard terminology and inline explanations understandable without
+  prior Erlang/BEAM knowledge, including job states, runtime memory, active-job
+  safeguards, and durable storage.
+- Displayed byte values in the most readable binary unit, including KiB for
+  sub-MiB values and GiB for large limits.
+
+### Fixed
+
+- Preserved the expanded Storage files section across live data refreshes.
+
 ## 1.0.0 — 2026-09-30
 
 ### Added

@@ -31,6 +31,7 @@ defmodule Tay.Dashboard.OverviewLive do
        segment_count: 0,
        configured_retention: "Unknown",
        retention_hours: 24,
+       storage_segments_open: false,
        storage_segments: [],
        storage_segments_truncated: false
      )
@@ -44,6 +45,10 @@ defmodule Tay.Dashboard.OverviewLive do
 
   def handle_event("cancel-compaction", _params, socket) do
     {:noreply, assign(socket, confirm_compaction: false)}
+  end
+
+  def handle_event("toggle-storage-segments", _params, socket) do
+    {:noreply, update(socket, :storage_segments_open, &(!&1))}
   end
 
   def handle_event("compact", %{"terminal_retention_hours" => value}, socket) do
@@ -159,92 +164,118 @@ defmodule Tay.Dashboard.OverviewLive do
       <div :if={@compaction_running} id="compaction-running" class="notice">
         Compaction is running in the background. Jobs and this dashboard remain available.
       </div>
+      <h3>Job status</h3>
+      <p class="section-help">Current jobs grouped by where they are in their lifecycle.</p>
       <div class="cards">
         <div :for={{state, count} <- @stats} class={["card", "state-#{state}"]}>
           <div>{state |> Atom.to_string() |> String.capitalize()}</div>
           <div class="count">{count}</div>
+          <div class="card-help">{state_description(state)}</div>
         </div>
       </div>
       <section style="margin-top:28px">
-        <h3>Runtime memory</h3>
+        <h3>Application memory</h3>
+        <p class="section-help">
+          Memory currently managed by the Erlang runtime that hosts Tay and this dashboard. The three detail cards are parts of the total, not extra memory to add to it.
+        </p>
         <div class="cards">
           <div class="card">
-            <div>BEAM total</div>
-            <div class="count">{format_mib(@beam_memory.total)}</div>
+            <div>Total runtime memory</div>
+            <div class="count">{format_bytes(@beam_memory.total)}</div>
+            <div class="card-help">Everything allocated by Tay's Erlang runtime (BEAM).</div>
           </div>
           <div class="card">
-            <div>Processes</div>
-            <div class="count">{format_mib(@beam_memory.processes)}</div>
+            <div>Process memory</div>
+            <div class="count">{format_bytes(@beam_memory.processes)}</div>
+            <div class="card-help">Lightweight tasks that run jobs and dashboard work.</div>
           </div>
           <div class="card">
-            <div>ETS</div>
-            <div class="count">{format_mib(@beam_memory.ets)}</div>
+            <div>In-memory indexes</div>
+            <div class="count">{format_bytes(@beam_memory.ets)}</div>
+            <div class="card-help">Fast lookup tables (ETS) used for live runtime state.</div>
           </div>
           <div class="card">
-            <div>Binaries</div>
-            <div class="count">{format_mib(@beam_memory.binary)}</div>
+            <div>Shared data buffers</div>
+            <div class="count">{format_bytes(@beam_memory.binary)}</div>
+            <div class="card-help">Strings and encoded data shared by runtime processes.</div>
           </div>
         </div>
-        <p style="color:var(--tay-muted)">
-          BEAM total is the memory managed by the Erlang VM hosting Tay and this dashboard. ETS, processes, and binaries are components of that total; they must not be added together again.
-        </p>
       </section>
       <section style="margin-top:28px">
-        <h3>State capacity</h3>
+        <h3>Job data safeguards</h3>
+        <p class="section-help">
+          Current workload and the two independent safety limits applied to jobs that have not finished yet.
+        </p>
         <div class="cards">
           <div class="card">
             <div>Active jobs</div>
             <div class="count">
               {available(@engine_available, @capacity.active_jobs)}
             </div>
+            <div class="card-help">Waiting, scheduled, running, or waiting to retry.</div>
           </div>
           <div class="card">
-            <div>Terminal history</div>
+            <div>Finished job history</div>
             <div class="count">
               {available(@engine_available, @capacity.terminal_jobs)}
             </div>
+            <div class="card-help">Completed, cancelled, and discarded jobs kept on disk.</div>
           </div>
           <div class="card">
-            <div>Active job data size</div>
+            <div>Active job data</div>
             <div class="count">
               {available(
                 @engine_available,
                 "#{format_bytes(@capacity.bytes)} / #{format_bytes(@capacity.max_bytes)}"
               )}
             </div>
+            <div class="card-help">Estimated storage footprint / configured safety limit.</div>
           </div>
           <div class="card">
-            <div>Active job data items</div>
+            <div>Structured values</div>
             <div class="count">
               {available(@engine_available, format_ratio(@capacity.nodes, @capacity.max_nodes))}
             </div>
+            <div class="card-help">JSON values / limit; protects against huge nested structures.</div>
           </div>
         </div>
-        <p style="color:var(--tay-muted)">
-          Job counts are informational and are not capped. Data size and data items are protective limits for active jobs, not measured RAM. Data items count JSON objects, arrays, and scalar values in job definitions and arguments, plus a small fixed allowance per job.
+        <p class="section-help">
+          Job counts are informational and are not capped. Data size and structured values are not directly proportional: large strings consume more bytes, while large arrays or objects consume more values. Either safeguard can be reached first; neither is measured RAM.
         </p>
       </section>
       <section style="margin-top:28px">
         <h3>Storage maintenance</h3>
+        <p class="section-help">
+          Durable job history on disk and the retention setting used by compaction.
+        </p>
         <div class="cards">
           <div class="card">
-            <div>Canonical history</div>
-            <div class="count">{available(@engine_available, format_mib(@storage_bytes))}</div>
+            <div>Stored job history</div>
+            <div class="count">{available(@engine_available, format_bytes(@storage_bytes))}</div>
+            <div class="card-help">Live segment data, excluding temporary maintenance files.</div>
           </div>
           <div class="card">
-            <div>Segments</div>
+            <div>Storage files</div>
             <div class="count">{available(@engine_available, @segment_count)}</div>
+            <div class="card-help">Append-only segment files currently in use.</div>
           </div>
           <div class="card">
-            <div>Configured retention</div>
+            <div>Finished-job retention</div>
             <div class="count">{available(@engine_available, @configured_retention)}</div>
+            <div class="card-help">How long finished jobs are kept during compaction.</div>
           </div>
         </div>
-        <p style="color:var(--tay-muted)">
-          Compaction rewrites the job store and permanently removes terminal jobs older than the selected retention period. Retention is time-based, not a disk quota. Canonical history excludes temporary compaction headroom and small metadata files.
+        <p class="section-help">
+          Compaction rewrites the job store and permanently removes finished jobs older than the selected retention period. Retention is time-based, not a disk quota.
         </p>
-        <details :if={@storage_segments != []} id="storage-segments">
-          <summary>Storage segments ({length(@storage_segments)} shown)</summary>
+        <details
+          :if={@storage_segments != []}
+          id="storage-segments"
+          open={@storage_segments_open}
+        >
+          <summary phx-click="toggle-storage-segments">
+            Storage files ({length(@storage_segments)} shown)
+          </summary>
           <p :if={@storage_segments_truncated} class="notice">
             Only the 128 newest segments are shown; the total is {@segment_count}.
           </p>
@@ -389,11 +420,25 @@ defmodule Tay.Dashboard.OverviewLive do
     "Compaction completed with #{retention_hours} h retention: removed #{expired} expired jobs, reclaimed #{format_bytes(reclaimed)}, and retained #{retained} terminal jobs."
   end
 
-  defp format_bytes(bytes) when bytes < 1_024, do: "#{bytes} B"
-  defp format_bytes(bytes) when bytes < 1_048_576, do: "#{Float.round(bytes / 1_024, 1)} KiB"
-  defp format_bytes(bytes), do: "#{Float.round(bytes / 1_048_576, 1)} MiB"
+  @doc false
+  def format_bytes(bytes) when bytes < 1_024, do: "#{bytes} B"
+  def format_bytes(bytes) when bytes < 1_048_576, do: format_unit(bytes, 1_024, "KiB")
+  def format_bytes(bytes) when bytes < 1_073_741_824, do: format_unit(bytes, 1_048_576, "MiB")
 
-  defp format_mib(bytes), do: :erlang.float_to_binary(bytes / 1_048_576, decimals: 2) <> " MiB"
+  def format_bytes(bytes) when bytes < 1_099_511_627_776,
+    do: format_unit(bytes, 1_073_741_824, "GiB")
+
+  def format_bytes(bytes), do: format_unit(bytes, 1_099_511_627_776, "TiB")
+
+  defp format_unit(bytes, divisor, unit) do
+    value = Float.round(bytes / divisor, 2)
+
+    number =
+      if value == trunc(value), do: Integer.to_string(trunc(value)), else: Float.to_string(value)
+
+    "#{number} #{unit}"
+  end
+
   defp format_ratio(value, limit), do: "#{format_integer(value)} / #{format_integer(limit)}"
   defp format_integer(value), do: value |> Integer.to_string() |> group_digits()
   defp group_digits(value) when byte_size(value) <= 3, do: value
@@ -434,6 +479,14 @@ defmodule Tay.Dashboard.OverviewLive do
 
   defp terminal_count(stats),
     do: Enum.sum(for state <- [:completed, :cancelled, :discarded], do: Map.get(stats, state, 0))
+
+  defp state_description(:available), do: "Ready and waiting for a worker."
+  defp state_description(:scheduled), do: "Waiting for its scheduled time."
+  defp state_description(:executing), do: "Currently running on a worker."
+  defp state_description(:retryable), do: "Waiting for another attempt."
+  defp state_description(:completed), do: "Finished successfully."
+  defp state_description(:cancelled), do: "Stopped before completion."
+  defp state_description(:discarded), do: "Failed with no attempts left."
 
   defp segment_filename(id),
     do: id |> Integer.to_string() |> String.pad_leading(20, "0") |> Kernel.<>(".tay")

@@ -51,21 +51,28 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Available"
     assert html =~ "Toggle color theme"
     assert html =~ "Run compaction"
-    assert html =~ "Canonical history"
+    assert html =~ "Stored job history"
     assert html =~ "MiB"
-    assert html =~ "Configured retention"
+    assert html =~ "Finished-job retention"
     assert html =~ "24 h"
-    assert html =~ "Runtime memory"
-    assert html =~ "BEAM total"
-    assert html =~ "State capacity"
+    assert html =~ "Application memory"
+    assert html =~ "Total runtime memory"
+    assert html =~ "Fast lookup tables (ETS)"
+    assert html =~ "Shared data buffers"
+    assert html =~ "Job data safeguards"
     assert html =~ "Active jobs"
-    assert html =~ "Terminal history"
-    assert html =~ "Active job data items"
+    assert html =~ "Finished job history"
+    assert html =~ "Structured values"
+    assert html =~ "not directly proportional"
     refute html =~ "100,000"
     assert html =~ "2,000,000"
-    assert html =~ "Storage segments (1 shown)"
+    assert html =~ "Storage files (1 shown)"
     assert html =~ "00000000000000000001.tay"
     assert html =~ "active"
+
+    refute has_element?(view, "#storage-segments[open]")
+    view |> element("#storage-segments summary") |> render_click()
+    assert has_element?(view, "#storage-segments[open]")
 
     {:ok, job} = EngineWorker.new(%{"safe" => "value"}) |> Tay.insert(name: @engine)
     assert job.state == :available
@@ -73,6 +80,8 @@ defmodule Tay.Dashboard.LiveTest do
     assert EngineHelpers.eventually(fn ->
              render(view) =~ ~r/Available.*1/s
            end)
+
+    assert has_element?(view, "#storage-segments[open]")
 
     assert render_click(view, "prepare-compaction") =~ "cannot be recovered"
     assert has_element?(view, "#confirm-compaction")
@@ -84,6 +93,19 @@ defmodule Tay.Dashboard.LiveTest do
     assert EngineHelpers.eventually(fn -> has_element?(view, "#compaction-result") end)
     assert render(view) =~ "Compaction completed"
     assert render(view) =~ "1 h"
+    EngineHelpers.stop(root)
+  end
+
+  test "formats dashboard byte values using readable binary units", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @engine, max_state_bytes: 5 * 1_073_741_824)
+    {:ok, view, html} = live(build_conn(), "/tay/")
+
+    assert html =~ "0 B / 5 GiB"
+    refute html =~ "5120.0 MiB"
+    assert Tay.Dashboard.OverviewLive.format_bytes(round(0.14 * 1_048_576)) == "143.36 KiB"
+    assert Tay.Dashboard.OverviewLive.format_bytes(5 * 1_073_741_824) == "5 GiB"
+    assert has_element?(view, "#storage-segments")
+
     EngineHelpers.stop(root)
   end
 
@@ -152,7 +174,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v1.0.0"
+    assert html =~ "v1.1.0"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"
