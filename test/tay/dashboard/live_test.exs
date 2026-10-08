@@ -64,6 +64,7 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Finished job history"
     assert html =~ "Active job memory budget"
     assert html =~ "all converted into one byte budget"
+    assert has_element?(view, ".cards + .section-note")
     refute html =~ "Structured values"
     refute html =~ "2,000,000"
     assert html =~ "Storage files (1 shown)"
@@ -174,7 +175,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v1.1.0"
+    assert html =~ "v1.1.1"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

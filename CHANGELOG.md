@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.1.1 — 2026-10-08
+
+### Fixed
+
+- Restored spacing between Dashboard card grids and the explanatory text that
+  follows them.
+
 ## 1.1.0 — 2026-10-08
 
 ### Changed

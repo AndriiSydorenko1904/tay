@@ -230,7 +230,7 @@ defmodule Tay.Dashboard.OverviewLive do
             <div class="card-help">Conservative in-memory estimate / configured limit.</div>
           </div>
         </div>
-        <p class="section-help">
+        <p class="section-note">
           Job counts are informational and are not capped. Active job data is a conservative in-memory estimate: encoded data, nested structures, and per-job overhead are all converted into one byte budget.
         </p>
       </section>
@@ -256,7 +256,7 @@ defmodule Tay.Dashboard.OverviewLive do
             <div class="card-help">How long finished jobs are kept during compaction.</div>
           </div>
         </div>
-        <p class="section-help">
+        <p class="section-note">
           Compaction rewrites the job store and permanently removes finished jobs older than the selected retention period. Retention is time-based, not a disk quota.
         </p>
         <details

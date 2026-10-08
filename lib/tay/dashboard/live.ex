@@ -151,6 +151,7 @@ defmodule Tay.Dashboard.Live do
         #tay-dashboard .count { font-size:28px; font-weight:700; margin-top:6px; }
         #tay-dashboard .card-help { color:var(--tay-muted); font-size:12px; line-height:1.35; margin-top:8px; }
         #tay-dashboard .section-help { color:var(--tay-muted); margin-top:-4px; }
+        #tay-dashboard .section-note { color:var(--tay-muted); margin:14px 0 0; }
         #tay-dashboard table { width:100%; border-collapse:collapse; font-size:14px; }
         #tay-dashboard th, #tay-dashboard td { text-align:left; padding:10px; border-bottom:1px solid var(--tay-border); vertical-align:top; }
         #tay-dashboard th { color:var(--tay-muted); font-size:12px; text-transform:uppercase; }
