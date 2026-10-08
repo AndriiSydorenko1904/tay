@@ -220,10 +220,10 @@ defmodule Tay.Standalone.Config do
   defp byte_multiplier(""), do: 1
   defp byte_multiplier("KB"), do: 1_000
   defp byte_multiplier("KiB"), do: 1_024
-  defp byte_multiplier("MB"), do: 1_000_000
-  defp byte_multiplier("MiB"), do: 1_048_576
-  defp byte_multiplier("GB"), do: 1_000_000_000
-  defp byte_multiplier("GiB"), do: 1_073_741_824
+  defp byte_multiplier("MB"), do: 1_000 ** 2
+  defp byte_multiplier("MiB"), do: 1_024 ** 2
+  defp byte_multiplier("GB"), do: 1_000 ** 3
+  defp byte_multiplier("GiB"), do: 1_024 ** 3
 
   defp terminal_retention(environment) do
     value = Map.get(environment, "TAY_TERMINAL_RETENTION", "24h")
