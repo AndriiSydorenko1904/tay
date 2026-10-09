@@ -2,7 +2,7 @@ defmodule Tay.Storage.V2PropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.V2.{Codec, Reducer, Snapshot}
 
   property "snapshot replay equals the remaining mutation history at every frontier" do
@@ -165,7 +165,7 @@ defmodule Tay.Storage.V2PropertyTest do
         )
 
       interrupted_at = at + 3
-      {due, _} = V1.retry_interval(interrupted_at, 1)
+      {due, _} = V2.retry_interval(interrupted_at, 1)
 
       {:ok, interrupted} =
         Reducer.apply(
@@ -231,7 +231,7 @@ defmodule Tay.Storage.V2PropertyTest do
       Enum.reduce(1..failures//1, {[insert], 1, start_at}, fn attempt, {events, revision, due} ->
         start = mutation(id, :started, revision, due, %{"attempt" => attempt, "cycle_token" => 1})
         finished_at = due + 1
-        next_due = elem(V1.retry_interval(finished_at, attempt), 0)
+        next_due = elem(V2.retry_interval(finished_at, attempt), 0)
 
         finish =
           mutation(id, :finished, revision + 1, finished_at, %{
@@ -285,7 +285,7 @@ defmodule Tay.Storage.V2PropertyTest do
       "definition_version" => 1,
       "max_attempts" => max_attempts,
       "queue_key" => "default",
-      "retry_policy" => V1.policy(),
+      "retry_policy" => V2.policy(),
       "scheduled_at" => nil,
       "timeout_ms" => 1_000,
       "worker_key" => "worker"

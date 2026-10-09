@@ -1,7 +1,7 @@
 defmodule Tay.Storage.V2RetentionTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.V2.{Authority, Retention}
   @directory Path.expand("../../fixtures/storage/v2/phase_c", __DIR__)
 
@@ -67,10 +67,10 @@ defmodule Tay.Storage.V2RetentionTest do
 
   test "hour bound derives from durable time; equality expires and no time addition can overflow" do
     max = Retention.max_hours()
-    assert max == div(V1.max_time(), 3_600_000)
+    assert max == div(V2.max_time(), 3_600_000)
     assert {:ok, duration} = Retention.duration({:hours, max})
-    assert duration <= V1.max_time()
-    assert (max + 1) * 3_600_000 > V1.max_time()
+    assert duration <= V2.max_time()
+    assert (max + 1) * 3_600_000 > V2.max_time()
     assert {:error, :terminal_retention} = Retention.duration({:hours, max + 1})
 
     for {at, expired} <- [{999, true}, {1_000, true}, {1_001, false}] do
@@ -78,20 +78,20 @@ defmodule Tay.Storage.V2RetentionTest do
     end
 
     assert {:ok, false} = Retention.expired?(0, {:hours, max}, 0)
-    assert {:ok, false} = Retention.expired?(V1.max_time(), {:hours, max}, V1.max_time())
+    assert {:ok, false} = Retention.expired?(V2.max_time(), {:hours, max}, V2.max_time())
   end
 
   property "accepted duration and subtraction stay within the existing signed durable range" do
     check all(
             hours <- integer(1..Retention.max_hours()),
-            now <- integer(0..V1.max_time()),
-            at <- integer(0..V1.max_time())
+            now <- integer(0..V2.max_time()),
+            at <- integer(0..V2.max_time())
           ) do
       assert {:ok, duration} = Retention.duration({:hours, hours})
-      assert duration <= V1.max_time()
+      assert duration <= V2.max_time()
       assert {:ok, actual} = Retention.expired?(at, {:hours, hours}, now)
       assert actual == (now >= duration and at <= now - duration)
-      assert now - duration >= -V1.max_time()
+      assert now - duration >= -V2.max_time()
     end
   end
 end

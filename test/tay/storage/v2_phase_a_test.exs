@@ -3,7 +3,7 @@ defmodule Tay.Storage.V2PhaseATest do
 
   alias Tay.Storage.V2.{Codec, Reducer, Snapshot}
   alias Tay.Storage.Record
-  alias Tay.Event.V1
+  alias Tay.Event.V2
 
   @id <<1::128>>
   @other <<2::128>>
@@ -14,7 +14,7 @@ defmodule Tay.Storage.V2PhaseATest do
       "definition_version" => 1,
       "max_attempts" => 3,
       "queue_key" => "default",
-      "retry_policy" => V1.policy(),
+      "retry_policy" => V2.policy(),
       "scheduled_at" => nil,
       "timeout_ms" => 1_000,
       "worker_key" => "worker"

@@ -5,7 +5,7 @@ defmodule Tay.Storage.V2.Codec do
   """
 
   alias Tay.Event
-  alias Tay.Event.{V1, Value}
+  alias Tay.Event.{V2, Value}
 
   @max 18_446_744_073_709_551_615
   @states ~w(scheduled available executing retryable completed cancelled discarded)
@@ -109,12 +109,12 @@ defmodule Tay.Storage.V2.Codec do
         },
         limits
       ) do
-    with true <- V1.id?(id) || {:error, :job_id},
+    with true <- V2.id?(id) || {:error, :job_id},
          true <- Map.has_key?(@kinds, kind) || {:error, :mutation_kind},
          true <- (is_integer(expected) and expected in 0..(@max - 1)) || {:error, :revision},
          true <- revision == expected + 1 || {:error, :revision},
          true <- kind == :inserted == (expected == 0) || {:error, :revision},
-         true <- V1.time?(at) || {:error, :timestamp},
+         true <- V2.time?(at) || {:error, :timestamp},
          true <- exact?(body, @bodies[kind]) || {:error, :mutation_keys},
          true <- mutation_order?(kind, at, body) || {:error, :availability_order},
          event <- event(kind, id, expected, at, body),
@@ -207,8 +207,8 @@ defmodule Tay.Storage.V2.Codec do
     terminal = Map.get(job, :terminal_at)
     diagnostic = Map.get(job, :diagnostic)
 
-    with true <- V1.id?(Map.get(job, :id)) || {:error, :job_id},
-         true <- V1.definition?(definition) || {:error, :definition},
+    with true <- V2.id?(Map.get(job, :id)) || {:error, :job_id},
+         true <- V2.definition?(definition) || {:error, :definition},
          {:ok, definition_bytes} <- Value.encode(definition, limits),
          true <-
            Map.get(job, :definition_bytes) == definition_bytes || {:error, :definition_bytes},
@@ -222,7 +222,7 @@ defmodule Tay.Storage.V2.Codec do
               (is_integer(next_attempt) and next_attempt in 1..definition["max_attempts"])) ||
              {:error, :next_attempt},
          true <-
-           (V1.time?(inserted) and maybe_time?(eligible) and maybe_time?(attempted) and
+           (V2.time?(inserted) and maybe_time?(eligible) and maybe_time?(attempted) and
               maybe_time?(completed) and maybe_time?(terminal)) || {:error, :timestamp},
          true <-
            (is_nil(available) or uint?(available)) || {:error, :availability_order},
@@ -256,10 +256,10 @@ defmodule Tay.Storage.V2.Codec do
   defp state_fields?(_, _, _, _, _, _), do: false
 
   defp terminal_fields?(:completed, at, completed),
-    do: V1.time?(at) and at == completed
+    do: V2.time?(at) and at == completed
 
   defp terminal_fields?(state, at, nil) when state in [:cancelled, :discarded],
-    do: V1.time?(at)
+    do: V2.time?(at)
 
   defp terminal_fields?(state, at, _) when state not in [:completed, :cancelled, :discarded],
     do: is_nil(at)
@@ -327,5 +327,5 @@ defmodule Tay.Storage.V2.Codec do
 
   defp uint?(n), do: is_integer(n) and n in 1..@max
   defp maybe_time?(nil), do: true
-  defp maybe_time?(n), do: V1.time?(n)
+  defp maybe_time?(n), do: V2.time?(n)
 end

@@ -4,10 +4,10 @@ defmodule Tay.Execution.Registry do
   Resolution never converts text to atoms, loads code, or participates in replay.
   A missing mapping or currently unloaded callback blocks dispatch, not history.
   """
-  alias Tay.Event.V1
+  alias Tay.Event.V2
 
   def resolve(registry, worker_key) when is_map(registry) do
-    if V1.key?(worker_key) do
+    if V2.key?(worker_key) do
       case Map.get(registry, worker_key) do
         module when is_atom(module) and module not in [nil, false, true] ->
           if function_exported?(module, :perform, 1),

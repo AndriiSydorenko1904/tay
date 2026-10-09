@@ -1,3 +1,5 @@
+Tay.Test.Environment.validate!()
+
 Application.put_env(:phoenix, Tay.Dashboard.TestEndpoint,
   url: [host: "localhost"],
   secret_key_base: String.duplicate("a", 64),

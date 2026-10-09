@@ -129,7 +129,7 @@ defmodule Tay.Executor.Protocol do
         not String.contains?(value, <<0>>)
 
   def task_key?(value) do
-    Tay.Event.V1.key?(value)
+    Tay.Event.V2.key?(value)
   end
 
   def error(request_id, code, fields \\ %{}) when is_binary(code) and is_map(fields) do

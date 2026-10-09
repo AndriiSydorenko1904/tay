@@ -4,7 +4,7 @@ defmodule Tay.Storage.V2.Authority do
   publication; the native owner must durably create and revalidate the files.
   """
 
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Event.Value
   alias Tay.Storage.CRC32C
   alias Tay.Storage.V2.Retention
@@ -16,7 +16,7 @@ defmodule Tay.Storage.V2.Authority do
   @base_keys ~w(id first_sequence last_sequence bytes digest)
 
   def encode_marker(store_id) do
-    if V1.id?(store_id),
+    if V2.id?(store_id),
       do: {:ok, checked(<<"TAY2", 1, 0::24, store_id::binary>>)},
       else: {:error, :store_id}
   end
@@ -24,7 +24,7 @@ defmodule Tay.Storage.V2.Authority do
   def decode_marker(bytes) do
     with {:ok, <<"TAY2", 1, 0::24, store_id::binary-size(16)>>} <-
            checked_body(bytes, 24),
-         true <- V1.id?(store_id) || {:error, :store_id} do
+         true <- V2.id?(store_id) || {:error, :store_id} do
       {:ok, store_id}
     else
       {:ok, _} -> {:error, :marker_format}
@@ -33,7 +33,7 @@ defmodule Tay.Storage.V2.Authority do
   end
 
   def encode_current(%{store_id: store_id, epoch_id: epoch_id, manifest_digest: digest}) do
-    if V1.id?(store_id) and V1.id?(epoch_id) and digest?(digest) do
+    if V2.id?(store_id) and V2.id?(epoch_id) and digest?(digest) do
       {:ok, checked(<<"TAYC", 1, 0::24, store_id::binary, epoch_id::binary, digest::binary>>)}
     else
       {:error, :current_fields}
@@ -46,7 +46,7 @@ defmodule Tay.Storage.V2.Authority do
     with {:ok,
           <<"TAYC", 1, 0::24, store_id::binary-size(16), epoch_id::binary-size(16),
             digest::binary-size(32)>>} <- checked_body(bytes, 72),
-         true <- (V1.id?(store_id) and V1.id?(epoch_id)) || {:error, :current_fields} do
+         true <- (V2.id?(store_id) and V2.id?(epoch_id)) || {:error, :current_fields} do
       {:ok, %{store_id: store_id, epoch_id: epoch_id, manifest_digest: digest}}
     else
       {:ok, _} -> {:error, :current_format}
@@ -85,14 +85,14 @@ defmodule Tay.Storage.V2.Authority do
 
   @doc "A durable first-adoption rollback intent; it names exactly one preserved V1 directory."
   def encode_adoption(nonce) do
-    if V1.id?(nonce),
+    if V2.id?(nonce),
       do: {:ok, checked(<<"TAYA", 1, 0::24, nonce::binary>>)},
       else: {:error, :adoption_nonce}
   end
 
   def decode_adoption(bytes) do
     with {:ok, <<"TAYA", 1, 0::24, nonce::binary-size(16)>>} <- checked_body(bytes, 24),
-         true <- V1.id?(nonce) || {:error, :adoption_nonce},
+         true <- V2.id?(nonce) || {:error, :adoption_nonce},
          do: {:ok, nonce},
          else: (
            {:ok, _} -> {:error, :adoption_format}
@@ -132,10 +132,10 @@ defmodule Tay.Storage.V2.Authority do
       not manifest_shape?(manifest) ->
         {:error, :manifest_fields}
 
-      not V1.id?(store_id) or not V1.id?(epoch_id) ->
+      not V2.id?(store_id) or not V2.id?(epoch_id) ->
         {:error, :manifest_id}
 
-      not (is_nil(source_epoch_id) or V1.id?(source_epoch_id)) ->
+      not (is_nil(source_epoch_id) or V2.id?(source_epoch_id)) ->
         {:error, :source_epoch}
 
       not is_integer(frontier) or frontier not in 0..@max ->
@@ -144,7 +144,7 @@ defmodule Tay.Storage.V2.Authority do
       not valid_availability_frontier?(Map.get(manifest, :availability_frontier)) ->
         {:error, :availability_frontier}
 
-      not V1.time?(captured_at) ->
+      not V2.time?(captured_at) ->
         {:error, :captured_at}
 
       Retention.validate(retention) != :ok ->

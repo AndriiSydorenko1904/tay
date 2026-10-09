@@ -49,7 +49,7 @@ defmodule Tay.Job do
         }
 
   alias Tay.{Error, JobID}
-  alias Tay.Event.{Value, V1}
+  alias Tay.Event.{Value, V2}
   @options [:id, :worker_key, :queue, :max_attempts, :timeout_ms, :scheduled_at]
 
   def new(worker, args, options \\ []) do
@@ -68,10 +68,10 @@ defmodule Tay.Job do
            "max_attempts" => Keyword.get(opts, :max_attempts, 10),
            "timeout_ms" => Keyword.get(opts, :timeout_ms, 30_000),
            "scheduled_at" => scheduled,
-           "retry_policy" => V1.policy()
+           "retry_policy" => V2.policy()
          },
          {:ok, _} <- Value.measure(definition),
-         true <- V1.definition?(definition) || {:error, :invalid_definition},
+         true <- V2.definition?(definition) || {:error, :invalid_definition},
          id = Keyword.get_lazy(opts, :id, &JobID.new/0),
          {:ok, _} <- JobID.decode(id) do
       {:ok,
@@ -115,7 +115,7 @@ defmodule Tay.Job do
     _ -> {:error, :invalid_schedule}
   end
 
-  defp schedule(n), do: if(V1.time?(n), do: {:ok, n}, else: {:error, :invalid_schedule})
+  defp schedule(n), do: if(V2.time?(n), do: {:ok, n}, else: {:error, :invalid_schedule})
 
   @doc false
   def view(job, registry, queues, store_id, generation, epoch_id \\ nil) do

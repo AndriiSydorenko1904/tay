@@ -2,7 +2,7 @@ defmodule Tay.Storage.V2V1MigrationTest do
   use ExUnit.Case, async: true
 
   alias Tay.Event
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.V2.{Snapshot, V1Migration}
 
   @a <<2::128>>
@@ -14,7 +14,7 @@ defmodule Tay.Storage.V2V1MigrationTest do
       "definition_version" => 1,
       "max_attempts" => 3,
       "queue_key" => "default",
-      "retry_policy" => V1.policy(),
+      "retry_policy" => V2.policy(),
       "scheduled_at" => nil,
       "timeout_ms" => 1_000,
       "worker_key" => "worker"

@@ -1,7 +1,7 @@
 defmodule Tay.Execution.ClockTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Execution.Clock
 
   defmodule FakeClock do
@@ -13,8 +13,8 @@ defmodule Tay.Execution.ClockTest do
   end
 
   test "defaults and injected wall/monotonic providers remain separate" do
-    assert V1.time?(Clock.wall())
-    assert V1.time?(Clock.wall(nil))
+    assert V2.time?(Clock.wall())
+    assert V2.time?(Clock.wall(nil))
     assert is_integer(Clock.monotonic())
     assert is_integer(Clock.monotonic(nil))
     assert Clock.wall(FakeClock) == 0
@@ -34,14 +34,14 @@ defmodule Tay.Execution.ClockTest do
     assert Clock.delay_until(2000, 2000) == 0
     assert Clock.delay_until(2000, 2001) == 0
     assert Clock.delay_until(2000, 0, 100) == 100
-    assert Clock.delay_until(V1.max_time(), 0) == 1000
-    assert Clock.delay_until(V1.max_time(), V1.max_time() - 1) == 1
+    assert Clock.delay_until(V2.max_time(), 0) == 1000
+    assert Clock.delay_until(V2.max_time(), V2.max_time() - 1) == 1
 
     for {due, wall, wake} <- [{-1, 0, 1}, {0, -1, 1}, {0, 0, 0}, {0, 0, 1001}] do
       assert_raise ArgumentError, fn -> Clock.delay_until(due, wall, wake) end
     end
 
-    Process.put(:execution_wall, V1.max_time() + 1)
+    Process.put(:execution_wall, V2.max_time() + 1)
     assert_raise ArgumentError, fn -> Clock.wall(FakeClock) end
     Process.put(:execution_monotonic, nil)
     assert_raise ArgumentError, fn -> Clock.monotonic(FakeClock) end
@@ -49,8 +49,8 @@ defmodule Tay.Execution.ClockTest do
 
   property "every accepted clock recheck delay is bounded and cannot imply wall-clock eligibility" do
     check all(
-            due <- integer(0..V1.max_time()),
-            wall <- integer(0..V1.max_time()),
+            due <- integer(0..V2.max_time()),
+            wall <- integer(0..V2.max_time()),
             wake <- integer(1..1000)
           ) do
       delay = Clock.delay_until(due, wall, wake)

@@ -7,7 +7,7 @@ defmodule Tay.State.Transition do
   """
   import Kernel, except: [apply: 2]
   alias Tay.Event
-  alias Tay.Event.{V1, Value}
+  alias Tay.Event.{V2, Value}
 
   def prepare(previous, %Event{} = event, limits \\ Value.defaults()) do
     with {:ok, _} <- Event.encode(event, limits),
@@ -18,7 +18,7 @@ defmodule Tay.State.Transition do
   end
 
   def apply(%{event: event} = prepared, %{sequence: sequence}) do
-    if V1.sequence?(sequence) and event.data["expected_revision"] < sequence do
+    if V2.sequence?(sequence) and event.data["expected_revision"] < sequence do
       {:ok, prepared |> next(sequence) |> Map.put(:revision, sequence)}
     else
       {:error, :invalid_position}
@@ -97,11 +97,11 @@ defmodule Tay.State.Transition do
       next_attempt: 65_535,
       cycle: 18_446_744_073_709_551_615,
       execution: 18_446_744_073_709_551_615,
-      eligible_at: V1.max_time(),
+      eligible_at: V2.max_time(),
       available_sequence: 18_446_744_073_709_551_615,
-      inserted_at: V1.max_time(),
-      attempted_at: V1.max_time(),
-      completed_at: V1.max_time(),
+      inserted_at: V2.max_time(),
+      attempted_at: V2.max_time(),
+      completed_at: V2.max_time(),
       diagnostic: %{"code" => 7, "version" => 1},
       revision: 18_446_744_073_709_551_615,
       charge: %{bytes: 18_446_744_073_709_551_615}
@@ -175,7 +175,7 @@ defmodule Tay.State.Transition do
   end
 
   defp valid_due?(at, attempt, due) do
-    {low, high} = V1.retry_interval(at, attempt)
+    {low, high} = V2.retry_interval(at, attempt)
     due >= low and due <= high
   end
 

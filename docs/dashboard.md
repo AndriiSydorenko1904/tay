@@ -27,7 +27,7 @@ def deps do
 end
 ```
 
-Tay 1.1.x requires Elixir 1.20, Phoenix 1.8, and Phoenix LiveView 1.2.
+Tay 1.x requires Elixir 1.20, Phoenix 1.8, and Phoenix LiveView 1.2.
 The host endpoint must have a working LiveView socket and PubSub,
 as a normal Phoenix LiveView application does.
 

@@ -3,7 +3,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
   use ExUnitProperties
   alias Tay.Engine.{CompactionConfig, CompactionEstimate, CompactionPolicy, CompactionEvents}
   alias Tay.Storage.V2.{Authority, Codec, Reducer, Retention, Snapshot}
-  alias Tay.Event.V1
+  alias Tay.Event.V2
 
   defp job(id, at, terminal) do
     definition = %{
@@ -11,7 +11,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
       "definition_version" => 1,
       "max_attempts" => 3,
       "queue_key" => "default",
-      "retry_policy" => V1.policy(),
+      "retry_policy" => V2.policy(),
       "scheduled_at" => nil,
       "timeout_ms" => 1000,
       "worker_key" => "worker"
@@ -76,7 +76,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
           [min_interval: -1],
           [min_interval: 1.0],
           [min_sealed_segments: 0],
-          [min_reclaimable_bytes: V1.max_time() + 1],
+          [min_reclaimable_bytes: V2.max_time() + 1],
           [min_reclaimable_bytes: 0],
           [dead_ratio_threshold: 0],
           [dead_ratio_threshold: 1.01],
@@ -313,7 +313,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
           :cancelled,
           :discarded
         ] do
-      for at <- [99, 100, 101, V1.max_time()] do
+      for at <- [99, 100, 101, V2.max_time()] do
         terminal = state in [:completed, :cancelled, :discarded]
 
         profile = %{
@@ -324,11 +324,11 @@ defmodule Tay.Engine.CompactionPolicyTest do
             attempt: 3,
             next_attempt: if(terminal, do: nil, else: 3),
             eligible_at:
-              if(state in [:available, :retryable, :scheduled], do: V1.max_time(), else: nil),
+              if(state in [:available, :retryable, :scheduled], do: V2.max_time(), else: nil),
             availability_order:
               if(state == :available, do: 18_446_744_073_709_551_615, else: nil),
-            attempted_at: V1.max_time(),
-            inserted_at: V1.max_time(),
+            attempted_at: V2.max_time(),
+            inserted_at: V2.max_time(),
             completed_at: if(state == :completed, do: at, else: nil),
             terminal_at: if(terminal, do: at, else: nil),
             execution: if(state == :executing, do: 18_446_744_073_709_551_615, else: nil),

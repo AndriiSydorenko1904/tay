@@ -4,7 +4,7 @@ defmodule Tay.Engine.CompactionEstimate do
   At most 128 oldest hourly terminal buckets survive. Discarding contributions
   only reduces known expiry and thus increases the candidate upper bound.
   """
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.V2.Retention
   @terminal [:completed, :cancelled, :discarded]
   @bucket_ms 3_600_000
@@ -42,7 +42,7 @@ defmodule Tay.Engine.CompactionEstimate do
   defp bucket(estimate, %{state: state} = job, sign) when state in @terminal do
     at = Map.get(job, :terminal_at)
 
-    if V1.time?(at) do
+    if V2.time?(at) do
       key = div(at, @bucket_ms)
       old = Map.get(estimate.buckets, key, %{count: 0, bytes: 0})
       next = %{count: max(0, old.count + sign), bytes: max(0, old.bytes + sign * job_bound(job))}
@@ -73,7 +73,7 @@ defmodule Tay.Engine.CompactionEstimate do
   def summarize(estimate, sealed_bytes, sealed_segments, retention, now) do
     with true <- estimate.available,
          :ok <- Retention.validate(retention),
-         true <- V1.time?(now) do
+         true <- V2.time?(now) do
       {expired, expired_bound} =
         case retention do
           :infinity ->

@@ -27,7 +27,7 @@ defmodule Tay do
   """
   alias Tay.{Error, Inspection, Job, JobID}
   alias Tay.Engine.{Admission, Config}
-  alias Tay.Event.{Value, V1}
+  alias Tay.Event.{Value, V2}
 
   @doc "Returns the registered name used by Tay APIs when `:name` is omitted."
   def default_name, do: Tay.Engine
@@ -56,7 +56,7 @@ defmodule Tay do
          {:ok, name, timeout} <- request_options(options),
          {:ok, meta} <- ready(name),
          {:ok, bytes} <- Value.encode(job.definition, meta.value_limits),
-         true <- V1.definition?(job.definition) || {:error, :invalid_definition} do
+         true <- V2.definition?(job.definition) || {:error, :invalid_definition} do
       Admission.request(
         name,
         meta,
@@ -234,7 +234,7 @@ defmodule Tay do
   defp queue_control(operation, queue, options) do
     key = if is_atom(queue), do: Atom.to_string(queue), else: queue
 
-    with true <- V1.key?(key) || {:error, :invalid_queue},
+    with true <- V2.key?(key) || {:error, :invalid_queue},
          {:ok, name, timeout} <- request_options(options),
          {:ok, meta} <- ready(name) do
       Admission.request(
@@ -331,13 +331,13 @@ defmodule Tay do
   defp revision_context?({:tay_revision, store, id, generation, sequence}),
     do:
       is_binary(store) and byte_size(store) == 16 and is_binary(id) and byte_size(id) == 16 and
-        is_reference(generation) and V1.sequence?(sequence)
+        is_reference(generation) and V2.sequence?(sequence)
 
   defp revision_context?({:tay_revision_v2, store, epoch, id, generation, revision}),
     do:
       is_binary(store) and byte_size(store) == 16 and is_binary(epoch) and
         byte_size(epoch) == 16 and is_binary(id) and byte_size(id) == 16 and
-        is_reference(generation) and V1.sequence?(revision)
+        is_reference(generation) and V2.sequence?(revision)
 
   defp revision_context?(_), do: false
 

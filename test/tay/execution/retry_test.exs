@@ -1,13 +1,13 @@
 defmodule Tay.Execution.RetryTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Execution.Retry
 
   defp job(attempt),
     do: %{
       attempt: attempt,
-      definition: %{"max_attempts" => 65_535, "retry_policy" => V1.policy()}
+      definition: %{"max_attempts" => 65_535, "retry_policy" => V2.policy()}
     }
 
   test "literal retry bounds and saturation are the stored v1 policy, not current defaults" do
@@ -26,7 +26,7 @@ defmodule Tay.Execution.RetryTest do
       assert {:ok, ^high} =
                Retry.due_at(job(ordinal), 0, fn 2 -> <<high - low::16>> end)
 
-      maximum = V1.max_time()
+      maximum = V2.max_time()
       assert {:ok, ^maximum} = Retry.due_at(job(ordinal), maximum - 1, fn 2 -> <<0::16>> end)
     end
 
@@ -96,13 +96,13 @@ defmodule Tay.Execution.RetryTest do
   property "chosen due is always in the immutable decoder interval, including end-of-time saturation" do
     check all(
             ordinal <- integer(1..65_535),
-            at <- one_of([integer(0..V1.max_time()), member_of([0, V1.max_time()])]),
+            at <- one_of([integer(0..V2.max_time()), member_of([0, V2.max_time()])]),
             max_runs: 100
           ) do
       assert {:ok, due} = Retry.due_at(job(ordinal), at)
-      {low, high} = V1.retry_interval(at, ordinal)
+      {low, high} = V2.retry_interval(at, ordinal)
       assert due in low..high
-      assert due >= at and due <= V1.max_time()
+      assert due >= at and due <= V2.max_time()
     end
   end
 end

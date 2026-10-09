@@ -7,7 +7,7 @@ defmodule Tay.Storage.V2.Publisher do
   verified by an independent Store-v2 replay.
   """
 
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
   alias Tay.Storage.V2.{Authority, Codec, Reducer, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
@@ -27,9 +27,9 @@ defmodule Tay.Storage.V2.Publisher do
       |> Map.put_new(:terminal_retention, :infinity)
       |> Map.put_new_lazy(:captured_at, fn -> System.system_time(:millisecond) end)
 
-    with true <- V1.id?(source.store_id) || {:error, :store_id},
+    with true <- V2.id?(source.store_id) || {:error, :store_id},
          true <-
-           (is_nil(source.epoch_id) or V1.id?(source.epoch_id)) ||
+           (is_nil(source.epoch_id) or V2.id?(source.epoch_id)) ||
              {:error, :source_epoch},
          {:ok, source} <- load_source_jobs(native, source, limits, value_limits),
          {:ok, normalized, ids, retention_stats} <-

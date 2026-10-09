@@ -17,7 +17,7 @@ defmodule Tay.Storage.V2.Snapshot do
   def classify(%{state: state}, {:hours, hours}, now)
       when state not in @terminal do
     with :ok <- Retention.validate({:hours, hours}),
-         true <- Tay.Event.V1.time?(now) || {:error, :retention_timestamp_unavailable},
+         true <- Tay.Event.V2.time?(now) || {:error, :retention_timestamp_unavailable},
          do: {:ok, :retain}
   end
 
@@ -44,7 +44,7 @@ defmodule Tay.Storage.V2.Snapshot do
   @doc "Plans retained canonical state without materializing whole-store payloads."
   def prepare(jobs, retention, captured_at) when is_map(jobs) do
     with :ok <- Retention.validate(retention),
-         true <- Tay.Event.V1.time?(captured_at) || {:error, :retention_timestamp_unavailable},
+         true <- Tay.Event.V2.time?(captured_at) || {:error, :retention_timestamp_unavailable},
          :ok <- validate_source(jobs) do
       Enum.reduce_while(jobs, {:ok, %{}, 0, 0}, fn {id, job}, {:ok, kept, expired, terminals} ->
         case classify(job, retention, captured_at) do
@@ -81,7 +81,7 @@ defmodule Tay.Storage.V2.Snapshot do
   @doc false
   def prepare_online(jobs, retention, captured_at) when is_map(jobs) do
     with :ok <- Retention.validate(retention),
-         true <- Tay.Event.V1.time?(captured_at) || {:error, :retention_timestamp_unavailable},
+         true <- Tay.Event.V2.time?(captured_at) || {:error, :retention_timestamp_unavailable},
          :ok <- validate_source(jobs) do
       Enum.reduce_while(jobs, {:ok, %{}, 0, 0}, fn {id, job}, {:ok, kept, expired, terminals} ->
         case classify(job, retention, captured_at) do

@@ -2,7 +2,7 @@ defmodule Tay.State.TransitionTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
   alias Tay.Event
-  alias Tay.Event.{Value, V1}
+  alias Tay.Event.{Value, V2}
   alias Tay.State.Transition, as: T
   alias Tay.Storage.Record
   alias Tay.Test.EventHelpers, as: H
@@ -166,13 +166,13 @@ defmodule Tay.State.TransitionTest do
   property "retry math clamps safely at time ceiling without giant exponentiation" do
     check all(
             attempt <- integer(1..65_535),
-            at <- member_of([0, 1, V1.max_time() - 1, V1.max_time()]),
+            at <- member_of([0, 1, V2.max_time() - 1, V2.max_time()]),
             max_runs: 100
           ) do
-      {low, high} = V1.retry_interval(at, attempt)
+      {low, high} = V2.retry_interval(at, attempt)
       expected = min(60_000, 1000 * Integer.pow(2, min(attempt - 1, 6)))
-      assert low == min(V1.max_time(), at + expected)
-      assert at <= low and low <= high and high <= V1.max_time()
+      assert low == min(V2.max_time(), at + expected)
+      assert at <= low and low <= high and high <= V2.max_time()
     end
   end
 end

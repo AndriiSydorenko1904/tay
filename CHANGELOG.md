@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.3.0 — 2026-10-09
+
+### Changed
+
+- Made `Tay.Event.V2` the production semantic implementation while preserving
+  all six frozen Event-v1 lifecycle schemas and literal bytes. The obsolete
+  `Tay.Event.V1` facade has been removed; runtime replay works entirely through
+  V2.
+- Reserved and validated Event-v2 schema-2 types 7 through 10 for future
+  durable schedule registration, advancement, cancellation, and successful
+  result recording. Runtime emission and recovery projection are not enabled in
+  this release.
+- Added pull-request and main-branch CI for the Elixir and Python suites, and
+  made unsafe symlinked test data roots fail fast.
+- Corrected the operations documentation for online compaction.
+
 ## 1.2.0 — 2026-10-08
 
 ### Added

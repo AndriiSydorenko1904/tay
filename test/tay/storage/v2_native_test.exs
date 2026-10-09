@@ -268,7 +268,7 @@ defmodule Tay.Storage.V2NativeTest do
           "definition_version" => 1,
           "max_attempts" => 3,
           "queue_key" => "default",
-          "retry_policy" => Tay.Event.V1.policy(),
+          "retry_policy" => Tay.Event.V2.policy(),
           "scheduled_at" => nil,
           "timeout_ms" => 1_000,
           "worker_key" => "worker"

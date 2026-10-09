@@ -5,12 +5,12 @@ defmodule Tay.Storage.V2.Epoch do
   outside this module; callers must supply fully pinned segment contents.
   """
 
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.{CRC32C, Reader, Record, Segment}
   alias Tay.Storage.V2.{Codec, Reducer, Snapshot}
 
   def build(jobs, store_id) when is_map(jobs) do
-    with true <- V1.id?(store_id) || {:error, :store_id},
+    with true <- V2.id?(store_id) || {:error, :store_id},
          {:ok, snapshots, stats} <- Snapshot.plan(jobs, :infinity),
          {:ok, base} <- pack_snapshots(snapshots, store_id),
          tail_id <- length(base) + 1,
@@ -39,7 +39,7 @@ defmodule Tay.Storage.V2.Epoch do
     base_count = length(base_bytes)
     total = length(all)
 
-    with true <- V1.id?(store_id) || {:error, :store_id},
+    with true <- V2.id?(store_id) || {:error, :store_id},
          {:ok, segments} <- parse_all(all, store_id, total),
          :ok <- topology(segments, base_count),
          {:ok, candidate, _next, _id} <- replay_all(all, store_id, base_count) do

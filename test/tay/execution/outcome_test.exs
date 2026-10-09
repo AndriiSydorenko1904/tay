@@ -2,7 +2,7 @@ defmodule Tay.Execution.OutcomeTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
   alias Tay.Event
-  alias Tay.Event.{V1, Value}
+  alias Tay.Event.{V2, Value}
   alias Tay.Execution.Outcome
   alias Tay.State.Transition
   alias Tay.Test.EventHelpers, as: H
@@ -112,7 +112,7 @@ defmodule Tay.Execution.OutcomeTest do
     assert {:error, :invalid_outcome_context} =
              Outcome.event(%{job | state: :available}, :timeout, 0)
 
-    assert {:error, :invalid_outcome_context} = Outcome.event(job, :success, V1.max_time() + 1)
+    assert {:error, :invalid_outcome_context} = Outcome.event(job, :success, V2.max_time() + 1)
 
     assert {:error, :invalid_outcome_context} =
              Outcome.event(%{job | execution: nil}, :success, 0)
@@ -124,7 +124,7 @@ defmodule Tay.Execution.OutcomeTest do
     check all(
             maximum <- integer(1..65_535),
             ordinal <- integer(1..maximum),
-            at <- one_of([integer(0..V1.max_time()), member_of([0, V1.max_time()])]),
+            at <- one_of([integer(0..V2.max_time()), member_of([0, V2.max_time()])]),
             outcome <-
               member_of([
                 :success,

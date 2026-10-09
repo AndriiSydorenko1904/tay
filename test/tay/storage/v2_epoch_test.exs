@@ -1,7 +1,7 @@
 defmodule Tay.Storage.V2EpochTest do
   use ExUnit.Case, async: true
 
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Storage.{Record, Segment}
   alias Tay.Storage.V2.{Codec, Epoch, Reducer, Snapshot}
 
@@ -15,7 +15,7 @@ defmodule Tay.Storage.V2EpochTest do
       "definition_version" => 1,
       "max_attempts" => 3,
       "queue_key" => "default",
-      "retry_policy" => V1.policy(),
+      "retry_policy" => V2.policy(),
       "scheduled_at" => nil,
       "timeout_ms" => 1_000,
       "worker_key" => "worker"

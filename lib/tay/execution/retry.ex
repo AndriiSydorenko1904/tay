@@ -4,7 +4,7 @@ defmodule Tay.Execution.Retry do
   the resulting absolute due time is persisted, never redrawn during replay.
   Entropy exhaustion/failure is an infrastructure error, never a worker outcome.
   """
-  alias Tay.Event.V1
+  alias Tay.Event.V2
 
   # An operational CPU bound, not a format constraint. Exhaustion refuses the
   # operation rather than switching to biased sampling or inventing a due time.
@@ -15,14 +15,14 @@ defmodule Tay.Execution.Retry do
 
   def due_at(%{attempt: attempt, definition: definition}, at, random_bytes)
       when is_map(definition) and is_function(random_bytes, 1) do
-    if V1.time?(at) and V1.attempt?(attempt) and
-         V1.attempt?(definition["max_attempts"]) and
-         attempt <= definition["max_attempts"] and definition["retry_policy"] === V1.policy() do
-      delay = V1.retry_delay(attempt)
-      jitter_max = V1.retry_jitter_max(delay)
+    if V2.time?(at) and V2.attempt?(attempt) and
+         V2.attempt?(definition["max_attempts"]) and
+         attempt <= definition["max_attempts"] and definition["retry_policy"] === V2.policy() do
+      delay = V2.retry_delay(attempt)
+      jitter_max = V2.retry_jitter_max(delay)
 
       with {:ok, jitter} <- jitter(jitter_max, random_bytes),
-           do: {:ok, min(V1.max_time(), at + delay + jitter)}
+           do: {:ok, min(V2.max_time(), at + delay + jitter)}
     else
       {:error, :invalid_retry_context}
     end

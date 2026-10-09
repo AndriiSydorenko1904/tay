@@ -6,7 +6,7 @@ defmodule Tay.Execution.Outcome do
   The Engine applies the existing pure transition validator before every append.
   """
   alias Tay.Event
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Execution.Retry
 
   @type normalized :: :success | {:failure, 1 | 2 | 3 | 4 | 6} | :timeout | :interrupted
@@ -39,9 +39,9 @@ defmodule Tay.Execution.Outcome do
       )
       when is_map(definition) and is_function(random_bytes, 1) do
     with true <-
-           V1.id?(id) and V1.sequence?(revision) and V1.sequence?(execution) and V1.time?(at) and
-             V1.attempt?(attempt) and V1.attempt?(definition["max_attempts"]) and
-             attempt <= definition["max_attempts"] and definition["retry_policy"] === V1.policy(),
+           V2.id?(id) and V2.sequence?(revision) and V2.sequence?(execution) and V2.time?(at) and
+             V2.attempt?(attempt) and V2.attempt?(definition["max_attempts"]) and
+             attempt <= definition["max_attempts"] and definition["retry_policy"] === V2.policy(),
          {:ok, wire_outcome, diagnostic} <- classify(outcome),
          {disposition, next_attempt} = disposition(outcome, attempt, definition["max_attempts"]),
          {:ok, due_at} <- due_at(disposition, job, at, random_bytes) do

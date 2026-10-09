@@ -1,6 +1,6 @@
 defmodule Tay.Inspection do
   @moduledoc false
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.JobID
 
   @states [:available, :scheduled, :executing, :retryable, :completed, :cancelled, :discarded]
@@ -90,7 +90,7 @@ defmodule Tay.Inspection do
          fingerprint
        )
        when direction in [0, 1] do
-    if V1.time?(inserted_at) and V1.id?(id) do
+    if V2.time?(inserted_at) and V2.id?(id) do
       {:ok, {if(direction == 0, do: :after, else: :before), {inserted_at, id}, offset}}
     else
       {:error, :invalid_cursor}
@@ -104,7 +104,7 @@ defmodule Tay.Inspection do
          <<1, inserted_at::unsigned-64, id::binary-size(16), fingerprint::binary>>,
          fingerprint
        ) do
-    if V1.time?(inserted_at) and V1.id?(id),
+    if V2.time?(inserted_at) and V2.id?(id),
       do: {:ok, {:after, {inserted_at, id}, nil}},
       else: {:error, :invalid_cursor}
   end
@@ -162,7 +162,7 @@ defmodule Tay.Inspection do
   defp key(value) when is_atom(value) and value not in [nil, false, true],
     do: key(Atom.to_string(value))
 
-  defp key(value) when is_binary(value), do: if(V1.key?(value), do: {:ok, value}, else: :error)
+  defp key(value) when is_binary(value), do: if(V2.key?(value), do: {:ok, value}, else: :error)
   defp key(_), do: :error
 
   defp worker_key(value) when is_binary(value), do: key(value)

@@ -1,10 +1,10 @@
 defmodule Tay.Storage.V2.Retention do
   @moduledoc "Shared normative schema-1 terminal-retention validation and time arithmetic."
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   @minute_ms 60_000
   @hour_ms 3_600_000
-  @max_minutes div(V1.max_time(), @minute_ms)
-  @max_hours div(V1.max_time(), @hour_ms)
+  @max_minutes div(V2.max_time(), @minute_ms)
+  @max_hours div(V2.max_time(), @hour_ms)
 
   def max_minutes, do: @max_minutes
   def max_hours, do: @max_hours
@@ -45,7 +45,7 @@ defmodule Tay.Storage.V2.Retention do
   def expired?(terminal_at, retention, captured_at) do
     with :ok <- validate(retention),
          true <-
-           (V1.time?(terminal_at) and V1.time?(captured_at)) ||
+           (V2.time?(terminal_at) and V2.time?(captured_at)) ||
              {:error, :retention_timestamp_unavailable} do
       case retention do
         :infinity ->

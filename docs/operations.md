@@ -93,13 +93,13 @@ protect its router scope with the host application's administrator pipeline.
 
 The per-Engine policy is enabled when `compaction:` is omitted. It uses finite
 terminal retention and conservative sealed-history estimates, not periodic full
-replay. Compaction closes admission, settles execution and uses the sole Writer's
-qualified candidate / validation / CURRENT / deferred-reclamation path.
-It does not run online. All thresholds are conjunctive; a timer alone never
-authorizes a rewrite. Cooldown uses the later of the verified manifest capture
-time and post-publication recovered activation time. Restart conservatively
-extends cooldown rather than shortening it by construction time. Backward clocks
-conservatively defer.
+replay. Store-v2 candidate construction runs online; only the final fenced
+publication switch closes admission. Initial Store-v1 adoption still drains and
+recovers because that format has no safe online catch-up boundary. All thresholds
+are conjunctive; a timer alone never authorizes a rewrite. Cooldown uses the later
+of the verified manifest capture time and post-publication recovered activation
+time. Restart conservatively extends cooldown rather than shortening it by
+construction time. Backward clocks conservatively defer.
 
 Configuration (milliseconds except the explicit retention unit):
 

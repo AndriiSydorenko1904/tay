@@ -10,7 +10,7 @@ with bounded retention. Unknown forms are never converted to infinity or
 repaired. Store-v1 and released fixtures remain unchanged.
 
 Tay v1.0.0 is a stable single-node release. Record v1, STORE v1,
-Segment v1, and Event v1 are fixed compatibility contracts described in
+Segment v1, and the six Event-v1 job lifecycle semantics are fixed compatibility contracts described in
 [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
 anchors; they are not generated from the current encoder or parsed from public
@@ -18,6 +18,12 @@ documentation. A newer binary must read every older supported byte and
 transition. An older binary must refuse an unsupported event pair or transition
 without publishing partial state. Rollback is safe only if the old binary
 understands **all** history written by the newer one.
+
+`Tay.Event.V2` is the production semantic implementation. It contains the
+complete frozen Event-v1 behavior, so old histories remain byte-for-byte
+readable without a migration. New persisted semantics are added through
+V2-only, explicitly versioned type/schema pairs; they never add optional fields
+or new meanings to an Event-v1 schema.
 
 Persisted worker and queue names are stable UTF-8 keys. Keep their trusted
 mapping to compatible callbacks when application modules change. Removing a

@@ -6,7 +6,7 @@ defmodule Tay.Engine do
   """
   use GenServer, restart: :temporary
   alias Tay.{Event, Error, Job, JobID, Queue}
-  alias Tay.Event.{V1, Value}
+  alias Tay.Event.{V2, Value}
   alias Tay.Engine.{Admission, Config, CompactionEstimate, CompactionReplay}
 
   alias Tay.State.{
@@ -1358,7 +1358,7 @@ defmodule Tay.Engine do
     c = s.config
 
     with {:ok, definition} <- Value.decode(bytes, c.value_limits),
-         true <- V1.definition?(definition) || {:error, :invalid_definition},
+         true <- V2.definition?(definition) || {:error, :invalid_definition},
          true <-
            valid_worker_mapping?(c, definition["worker_key"], worker) ||
              {:error, :worker_mapping},

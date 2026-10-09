@@ -63,7 +63,7 @@ defmodule Tay.System.IndependentCrashMatrixTest do
       assert {:ok, seed} =
                EngineWorker.new(%{"inert_seed" => true},
                  id: seed_id,
-                 scheduled_at: Tay.Event.V1.max_time()
+                 scheduled_at: Tay.Event.V2.max_time()
                )
 
       assert {:ok, %{id: ^seed_id}} = Tay.insert(seed, name: @name)
@@ -242,7 +242,7 @@ defmodule Tay.System.IndependentCrashMatrixTest do
       test_execution: true, test_hook: hook, execution_wake_ms: 10)
 
     if operation != :activation do
-      schedule = if operation == :insert, do: Tay.Event.V1.max_time(), else: nil
+      schedule = if operation == :insert, do: Tay.Event.V2.max_time(), else: nil
       {:ok, job} = Tay.CrashMatrixWorker.new(%{"effect" => effect, "finish" => operation == :finish},
         id: id, scheduled_at: schedule, max_attempts: 1)
       {:ok, _} = Tay.insert(job, name: Tay.CrashMatrixEngine)

@@ -40,9 +40,15 @@ an operational setting, not a change to the format.
 
 ## Event and recovery boundary
 
-Event v1 understands exactly type/schema pairs `(1,1)` through `(6,1)`:
+The frozen Event-v1 subset understands exactly type/schema pairs `(1,1)` through `(6,1)`:
 inserted, available, started, finished, cancelled, and retried. Payloads have
 canonical bounded value encoding and immutable schema-1 field meanings.
+Event v2 additionally assigns schema-2 pairs `(7,2)` through `(10,2)` to
+schedule registration, schedule advancement, schedule cancellation, and
+successful-result recording. Schema 2 keeps logical Event types 7 and 8
+unambiguous from Store-v2's schema-1 snapshot and mutation record types.
+These pairs are currently codec contracts only; the engine does not yet emit or
+project them during recovery.
 Physical readability of a different pair does not imply support. Worker and
 queue identities are inert UTF-8 keys; persisted bytes never select Elixir
 modules or create atoms. A future event field needs a new explicit schema and

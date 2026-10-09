@@ -1,6 +1,6 @@
 defmodule Tay.Engine.Config do
   @moduledoc "Validated, non-persisted Engine configuration. No storage is opened here."
-  alias Tay.Event.V1
+  alias Tay.Event.V2
   alias Tay.Executor.SocketPath
   alias Tay.Storage.Recovery
   @environment Mix.env()
@@ -149,7 +149,7 @@ defmodule Tay.Engine.Config do
       is_atom(c.name) and c.name not in [nil, false, true] and
         is_map(c.workers) and not is_struct(c.workers) and
         Enum.all?(c.workers, fn {key, mod} ->
-          V1.key?(key) and is_atom(mod) and mod not in [nil, false, true]
+          V2.key?(key) and is_atom(mod) and mod not in [nil, false, true]
         end) and Enum.all?(positive, &(is_integer(c[&1]) and c[&1] > 0)) and
         Enum.all?(nonnegative, &(is_integer(c[&1]) and c[&1] >= 0)) and
         c.caller_timeout <= 4_294_967_295 and c.client_slots <= 65_536 and

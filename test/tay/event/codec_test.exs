@@ -2,7 +2,7 @@ defmodule Tay.Event.CodecTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
   alias Tay.Event
-  alias Tay.Event.{Value, V1}
+  alias Tay.Event.{Value, V2}
   alias Tay.Storage.Record
   alias Tay.Test.EventHelpers, as: H
 
@@ -128,7 +128,7 @@ defmodule Tay.Event.CodecTest do
           {"max_attempts", [0, 65_536, 1.0]},
           {"timeout_ms", [0, 86_400_001, 30_000.0]},
           {"definition_version", [2, 1.0]},
-          {"scheduled_at", [-1, V1.max_time() + 1, 1.0]}
+          {"scheduled_at", [-1, V2.max_time() + 1, 1.0]}
         ],
         n <- values do
       assert {:error, _} = Event.encode(H.inserted(H.definition(%{key => n})))
@@ -142,8 +142,8 @@ defmodule Tay.Event.CodecTest do
 
     for t <- 1..6, do: assert(Event.supported_schema?(t, 1))
 
-    for policy_key <- Map.keys(V1.policy()) do
-      changed = Map.update!(V1.policy(), policy_key, &(&1 + 1))
+    for policy_key <- Map.keys(V2.policy()) do
+      changed = Map.update!(V2.policy(), policy_key, &(&1 + 1))
       assert {:error, _} = Event.encode(H.inserted(H.definition(%{"retry_policy" => changed})))
     end
   end

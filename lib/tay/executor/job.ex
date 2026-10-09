@@ -2,7 +2,7 @@ defmodule Tay.Executor.Job do
   @moduledoc false
 
   alias Tay.{Error, Job, JobID}
-  alias Tay.Event.V1
+  alias Tay.Event.V2
 
   @options [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at]
 
@@ -10,7 +10,7 @@ defmodule Tay.Executor.Job do
   # checked again by the Engine; this helper merely keeps all producer paths
   # on the same canonical job/ID reconciliation model.
   def new(task, args, options \\ []) do
-    with true <- V1.key?(task) || {:error, :invalid_task},
+    with true <- V2.key?(task) || {:error, :invalid_task},
          true <- (is_map(args) and not is_struct(args)) || {:error, :invalid_args},
          true <- valid_options?(options) || {:error, :invalid_options},
          {:ok, max_attempts} <- attempts(Keyword.get(options, :retries, 0)),
