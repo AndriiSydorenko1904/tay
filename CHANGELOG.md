@@ -6,10 +6,9 @@
 
 ### Changed
 
-- Made `Tay.Event.V2` the production semantic implementation while preserving
-  all six frozen Event-v1 lifecycle schemas and literal bytes. The obsolete
-  `Tay.Event.V1` facade has been removed; runtime replay works entirely through
-  V2.
+- Made Event v2 the production semantic implementation while preserving all
+  six frozen Event-v1 lifecycle schemas and literal bytes. The obsolete Event
+  v1 facade has been removed; runtime replay works entirely through Event v2.
 - Reserved and validated Event-v2 schema-2 types 7 through 10 for future
   durable schedule registration, advancement, cancellation, and successful
   result recording. Runtime emission and recovery projection are not enabled in
