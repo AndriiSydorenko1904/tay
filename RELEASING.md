@@ -1,17 +1,13 @@
 # Releasing Tay
 
-Tay is published as two public packages from the same release line:
+Tay publishes two independent public packages from this repository:
 
 - `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
 
-Stable versions have identical text in both ecosystems. Pre-releases use each
-ecosystem's canonical spelling:
-
-| Release | Mix/Hex and Git tag | Python/PyPI |
-| --- | --- | --- |
-| First 1.0 release candidate | `1.0.0-rc.1`, `v1.0.0-rc.1` | `1.0.0rc1` |
-| Stable 1.0 | `1.0.0`, `v1.0.0` | `1.0.0` |
+Their versions are independent. A Tay release publishes `tay-client` only when
+`clients/python/` changed since the preceding Tay tag. Such a change must bump
+the PEP 440 package version; an unchanged client keeps its existing version.
 
 Published versions are immutable. Run every check below from a clean checkout
 of the release tag, and publish only after the GitHub repository and tag are
@@ -19,8 +15,8 @@ public.
 
 ## Prepare
 
-1. Set the release version in `mix.exs` and its PEP 440 equivalent in
-   `clients/python/pyproject.toml`.
+1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
+   bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
 3. Update versioned GitHub documentation links in package metadata.
 4. Commit, create `v<mix-version>`, and push the commit and tag.
@@ -68,9 +64,10 @@ publisher in the PyPI account with these exact values:
 
 Create the `pypi` environment in the GitHub repository. Publishing a GitHub
 release triggers the workflow automatically; an existing tag can instead be
-published with the workflow's manual `tag` input. The workflow checks that the
-tag and Python package version match, qualifies and builds the client, and uses
-GitHub OIDC to publish without a stored PyPI token.
+published with the workflow's manual `tag` input. The workflow skips an
+unchanged client. For a changed client it requires a version bump, qualifies
+and builds the package, and uses GitHub OIDC to publish without a stored PyPI
+token.
 
 For an emergency manual release, authenticate with a scoped PyPI API token and
 upload only artifacts produced from the release tag:
@@ -81,4 +78,4 @@ uvx twine upload clients/python/dist/*
 
 Never store Hex or PyPI credentials in this repository. After publishing,
 create clean consumer projects and install `{:tay, "~> <version>"}` from Hex
-and `tay-client==<version>` from PyPI.
+and the independently released `tay-client==<python-version>` from PyPI.

@@ -15,8 +15,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    name: Detect Python client release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+      previous_tag: ${{ steps.changes.outputs.previous_tag }}
+    steps:
+      - name: Check out release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect client changes
+        id: changes
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
+          test -n "$mix_version"
+          test "$RELEASE_TAG" = "v$mix_version"
+
+          previous_tag=$(git describe --tags --abbrev=0 "$RELEASE_TAG^" 2>/dev/null || true)
+          printf 'previous_tag=%s\n' "$previous_tag" >> "$GITHUB_OUTPUT"
+
+          if test -n "$previous_tag" && git diff --quiet "$previous_tag..$RELEASE_TAG" -- clients/python; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Python client is unchanged since $previous_tag; skipping publication."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
     name: Build and publish tay-client
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -30,6 +68,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -43,24 +82,25 @@ jobs:
       - name: Verify tag and package version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          PREVIOUS_TAG: ${{ needs.changes.outputs.previous_tag }}
         run: |
           set -euo pipefail
           mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$mix_version"
           test "$RELEASE_TAG" = "v$mix_version"
           package_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("clients/python/pyproject.toml").read_text())["project"]["version"])')
-          expected_python_version=$(python - "$mix_version" <<'PY'
+          python - "$package_version" <<'PY'
           import re
           import sys
 
-          match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-rc\.(\d+))?", sys.argv[1])
-          if match is None:
-              raise SystemExit(f"unsupported Mix release version: {sys.argv[1]}")
-          base, candidate = match.groups()
-          print(base if candidate is None else f"{base}rc{candidate}")
+          if re.fullmatch(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?", sys.argv[1]) is None:
+              raise SystemExit(f"unsupported Python client version: {sys.argv[1]}")
           PY
-          )
-          test "$package_version" = "$expected_python_version"
+
+          if test -n "$PREVIOUS_TAG"; then
+            previous_version=$(git show "$PREVIOUS_TAG:clients/python/pyproject.toml" 2>/dev/null | sed -n 's/^[[:space:]]*version = "\([^"]*\)"/\1/p')
+            test -z "$previous_version" || test "$package_version" != "$previous_version"
+          fi
 
       - name: Qualify Python client
         run: |

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Decoupled `tay-client` releases from Tay versions. The release helper and
+  PyPI workflow now skip an unchanged Python client and require its independent
+  version to increase only when `clients/python/` changes.
+
 ## 1.3.0 — 2026-10-09
 
 ### Changed
