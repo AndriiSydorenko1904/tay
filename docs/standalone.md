@@ -147,8 +147,10 @@ certificates separately for workers. On later starts, set
 worker network. The Python connection example is in the
 [Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.3.1/clients/python).
 
-The health check succeeds only when the Engine reports `ready` and the selected
-transport is available (HTTP if the socket is disabled, otherwise the UDS).
+The health check succeeds when the Engine reports `ready` or is performing a
+normal online checkpoint in `compacting/preparing` or `compacting/switching`,
+and the selected transport is available (HTTP if the socket is disabled,
+otherwise the UDS).
 A live BEAM process alone is not healthy. The image grants startup a 15-minute
 health-check grace period, matching the default bounded recovery deadline;
 steady-state failures still use the ordinary 12 attempts at five-second

@@ -552,8 +552,10 @@ Store-v2 Engines may also set `compaction: [checkpoint_interval: milliseconds]`
 (`0` disables it). Periodic checkpoints publish a verified semantic snapshot
 after new durable events without waiting for active jobs to drain. They capture
 the live projections at an exact durable sequence frontier, journal concurrent
-mutations into an ordered tail, and never replay old journal segments while
-building the checkpoint. Restart then replays the snapshot and its short tail.
+mutations into an ordered tail, and repeatedly catch up while admission remains
+open. The final fence is requested only after the remaining tail is bounded; if
+the builder cannot catch up, that checkpoint is abandoned without replacing the
+live epoch. Restart then replays the snapshot and its short tail.
 The standalone equivalent is `TAY_CHECKPOINT_INTERVAL_MS`.
 
 Before production use, read:

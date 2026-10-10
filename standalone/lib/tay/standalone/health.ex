@@ -7,7 +7,7 @@ defmodule Tay.Standalone.Health do
   @doc false
   @spec check!(map()) :: :ok
   def check!(status) do
-    with %{state: :ready} <- status,
+    with :ok <- ready_for_traffic(status),
          {:ok, config} <- Tay.Standalone.Config.load(),
          {:ok, socket} <- connect(config) do
       :ok = :gen_tcp.close(socket)
@@ -16,6 +16,14 @@ defmodule Tay.Standalone.Health do
       reason -> raise "Tay standalone is not ready: #{inspect(reason)}"
     end
   end
+
+  defp ready_for_traffic(%{state: :ready}), do: :ok
+
+  defp ready_for_traffic(%{state: :compacting, phase: phase})
+       when phase in [:preparing, :switching],
+       do: :ok
+
+  defp ready_for_traffic(status), do: {:engine_not_ready, status}
 
   defp connect(%{socket_path: path}) when is_binary(path) do
     :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [:binary, active: false], 1_000)

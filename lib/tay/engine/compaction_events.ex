@@ -49,6 +49,11 @@ defmodule Tay.Engine.CompactionEvents do
     :candidate_bytes,
     :reclaimed_bytes,
     :pause_ms,
+    :catch_up_rounds,
+    :catch_up_events,
+    :catch_up_bytes,
+    :final_delta_events,
+    :final_delta_bytes,
     :peak_writer_process_bytes,
     :expired_jobs,
     :retained_terminal_jobs
@@ -70,7 +75,11 @@ defmodule Tay.Engine.CompactionEvents do
 
   def emit(event, reason, measurements \\ %{}) do
     data = normalize(event, reason, measurements)
-    Logger.debug("Tay compaction", tay_compaction: data)
+
+    Logger.debug("Tay compaction event=#{data.event} reason=#{data.reason}",
+      tay_compaction: data
+    )
+
     :ok
   end
 

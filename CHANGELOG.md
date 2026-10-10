@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Made online Store-v2 checkpoints converge through bounded multi-round tail
+  catch-up while admission remains open. The final fence is requested only for
+  a small residual tail, and an overloaded builder abandons its candidate
+  without replacing or poisoning the live source epoch.
+- Removed full ETS list/map duplication from live checkpoint ingestion and kept
+  full candidate replay outside the online publication fence. The fenced path
+  now syncs the bounded final delta, atomically publishes `CURRENT`, and performs
+  bounded authority validation; restart retains full canonical replay.
+- Kept standalone container health green during normal online checkpoint
+  `preparing` and `switching` phases while still probing the configured transport.
+
+### Fixed
+
+- Reopened the previous active segment and released queued enqueue calls after a
+  known pre-`CURRENT` candidate failure. Ambiguous `CURRENT` outcomes remain
+  fail-closed.
+- Added bounded checkpoint catch-up and final-delta measurements, and made
+  compaction log messages identify their normalized event and reason.
+
 ## 1.3.3 — 2026-10-11
 
 ### Fixed

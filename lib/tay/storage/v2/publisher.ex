@@ -2,9 +2,12 @@ defmodule Tay.Storage.V2.Publisher do
   @moduledoc """
   Store-v2 candidate construction and publication. Online callers build the
   candidate against a frozen frontier while the Writer journals later mutations,
-  then catch up under a fenced epoch switch. The source remains pinned and never
-  loses bytes to make candidate space. A return after CURRENT publication is
-  verified by an independent Store-v2 replay.
+  catch up in bounded rounds while admission remains open, and fence only the
+  final small delta and atomic epoch switch. The source remains pinned and never
+  loses bytes to make candidate space. Offline publication is verified by an
+  independent Store-v2 replay; online publication fully validates the candidate
+  before the fence, validates every tail mutation while appending it, and verifies
+  the published authority before returning.
   """
 
   alias Tay.Event.V2
@@ -16,6 +19,9 @@ defmodule Tay.Storage.V2.Publisher do
   @digest_chunk 1_048_576
   @scan_chunk 1_048_576
   @minimum_headroom 67_108_864
+  @catch_up_target_events 1_024
+  @catch_up_target_bytes 1_048_576
+  @catch_up_max_rounds 64
 
   def publish(native, source) do
     started = System.monotonic_time(:millisecond)
@@ -32,13 +38,7 @@ defmodule Tay.Storage.V2.Publisher do
            (is_nil(source.epoch_id) or V2.id?(source.epoch_id)) ||
              {:error, :source_epoch},
          {:ok, source} <- load_source_jobs(native, source, limits, value_limits),
-         {:ok, normalized, ids, retention_stats} <-
-           prepare_snapshot(
-             source.jobs,
-             source.terminal_retention,
-             source.captured_at,
-             Map.has_key?(source, :online_catch_up)
-           ),
+         {:ok, normalized, ids, retention_stats} <- prepare_snapshot(source),
          {:ok, inventory} <- source_inventory(native, source.store_id, source),
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
@@ -69,18 +69,27 @@ defmodule Tay.Storage.V2.Publisher do
          {:ok, candidate} <-
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
-           Snapshot.equivalent?(normalized, candidate.candidate.jobs) ||
+           equivalent?(source, normalized, candidate.candidate.jobs) ||
              {:error, :candidate_mismatch},
-         {:ok, caught_up, _tail, delta_bytes, switch_started} <-
+         {:ok, caught_up, caught_up_tail, delta_bytes, switch_started, catch_up_stats} <-
            catch_up(native, source, candidate, tail, started),
          :ok <- Native.sync(native),
          :ok <- Native.close_write(native),
          :ok <- Native.v2_publish_epoch(native, epoch_id),
          :ok <- boundary(source, :epoch_published),
          {:ok, renamed} <-
-           V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
+           recover_published_candidate(
+             native,
+             source,
+             candidate,
+             caught_up,
+             caught_up_tail,
+             manifest,
+             limits,
+             value_limits
+           ),
          true <-
-           Snapshot.equivalent?(caught_up, renamed.candidate.jobs) ||
+           equivalent?(source, caught_up.jobs, renamed.candidate.jobs) ||
              {:error, :renamed_candidate_mismatch},
          :ok <- before_current(native, source, epoch_id),
          {:ok, current_bytes} <-
@@ -109,6 +118,7 @@ defmodule Tay.Storage.V2.Publisher do
           previous_epoch_id: source.epoch_id
         }
         |> Map.merge(retention_stats)
+        |> Map.merge(catch_up_stats)
         |> Map.merge(%{
           terminal_retention: Retention.persisted(source.terminal_retention),
           captured_at: source.captured_at
@@ -118,7 +128,15 @@ defmodule Tay.Storage.V2.Publisher do
         :ok ->
           :ok = boundary(source, :current_published)
 
-          case verify_published(native, source, caught_up, limits, value_limits, publication) do
+          case verify_published(
+                 native,
+                 source,
+                 caught_up.jobs,
+                 renamed,
+                 limits,
+                 value_limits,
+                 publication
+               ) do
             {:ok, _} = result ->
               result
 
@@ -138,15 +156,7 @@ defmodule Tay.Storage.V2.Publisher do
 
   defp load_source_jobs(_native, %{jobs_table: table} = source, _limits, _value_limits)
        when is_reference(table) do
-    try do
-      jobs = Map.new(:ets.tab2list(table))
-
-      with :ok <- source.snapshot_loaded.() do
-        {:ok, source |> Map.delete(:jobs_table) |> Map.put(:jobs, jobs)}
-      end
-    catch
-      :error, :badarg -> {:error, :source_snapshot_unavailable}
-    end
+    {:ok, source}
   end
 
   defp load_source_jobs(
@@ -565,66 +575,170 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp prepare_snapshot(jobs, retention, captured_at, true),
-    do: Snapshot.prepare_online(jobs, retention, captured_at)
+  defp prepare_snapshot(%{
+         jobs_table: table,
+         terminal_retention: retention,
+         captured_at: captured_at,
+         snapshot_loaded: loaded
+       }) do
+    with {:ok, _, _, _} = prepared <-
+           Snapshot.prepare_online_table(table, retention, captured_at),
+         :ok <- loaded.() do
+      prepared
+    end
+  end
 
-  defp prepare_snapshot(jobs, retention, captured_at, false),
-    do: Snapshot.prepare(jobs, retention, captured_at)
+  defp prepare_snapshot(%{jobs: jobs} = source) do
+    if Map.has_key?(source, :online_catch_up),
+      do: Snapshot.prepare_online(jobs, source.terminal_retention, source.captured_at),
+      else: Snapshot.prepare(jobs, source.terminal_retention, source.captured_at)
+  end
+
+  defp equivalent?(source, before, after_state) do
+    if Map.has_key?(source, :online_catch_up),
+      do: Snapshot.online_equivalent?(before, after_state),
+      else: Snapshot.equivalent?(before, after_state)
+  end
 
   defp catch_up(_native, source, candidate, tail, started)
        when not is_map_key(source, :online_catch_up),
-       do: {:ok, candidate.candidate.jobs, tail, 0, started}
+       do:
+         {:ok, candidate.candidate, tail, 0, started,
+          %{
+            catch_up_rounds: 0,
+            catch_up_events: 0,
+            catch_up_bytes: 0,
+            final_delta_events: 0,
+            final_delta_bytes: 0
+          }}
 
   defp catch_up(native, source, candidate, tail, _started) do
+    with {:ok, logical} <- catch_up_candidate(candidate.candidate, source) do
+      catch_up_round(native, source, logical, tail, 0, 0, 0)
+    end
+  end
+
+  defp catch_up_round(native, source, logical, tail, bytes, events, rounds)
+       when rounds < @catch_up_max_rounds do
+    with :ok <- deadline_ok(native.deadline),
+         {:ok, records} when is_list(records) <- source.online_catch_up.(:poll),
+         {:ok, logical, tail, batch_bytes} <- append_delta(native, source, logical, tail, records) do
+      next_bytes = bytes + batch_bytes
+      next_events = events + length(records)
+      next_rounds = rounds + 1
+
+      if length(records) <= @catch_up_target_events and batch_bytes <= @catch_up_target_bytes do
+        finish_catch_up(
+          native,
+          source,
+          logical,
+          tail,
+          next_bytes,
+          next_events,
+          next_rounds
+        )
+      else
+        catch_up_round(
+          native,
+          source,
+          logical,
+          tail,
+          next_bytes,
+          next_events,
+          next_rounds
+        )
+      end
+    else
+      {:ok, _} -> {:error, :online_delta_record}
+      error -> error
+    end
+  end
+
+  defp catch_up_round(_, _, _, _, _, _, _),
+    do: {:error, :checkpoint_catch_up_overloaded}
+
+  defp finish_catch_up(native, source, logical, tail, bytes, events, rounds) do
+    with :ok <- boundary(source, :before_online_freeze) do
+      finish_catch_up_request(native, source, logical, tail, bytes, events, rounds)
+    end
+  end
+
+  defp finish_catch_up_request(native, source, logical, tail, bytes, events, rounds) do
     switch_started = System.monotonic_time(:millisecond)
 
-    with {:ok, logical} <- catch_up_candidate(candidate.candidate, source) do
-      case source.online_catch_up.() do
-        {:ok, records} when is_list(records) ->
-          Enum.reduce_while(records, {:ok, logical, tail, 0}, fn
-            {8, 1, payload}, {:ok, logical, current, bytes} ->
-              with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
-                   {:ok, next_logical} <- Reducer.apply(logical, mutation),
-                   {:ok, frame} <-
-                     Record.encode(%Record{
-                       record_type: 8,
-                       payload_schema_version: 1,
-                       sequence: current.first_sequence + current.count,
-                       payload: payload
-                     }),
-                   true <-
-                     current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
-                       {:error, :online_delta_too_large},
-                   {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
-                next = %{
-                  current
-                  | count: current.count + 1,
-                    last_sequence: current.first_sequence + current.count,
-                    bytes: current.bytes + byte_size(frame),
-                    identity: identity,
-                    crc_state: CRC32C.update(current.crc_state, frame)
-                }
+    case source.online_catch_up.(:freeze) do
+      {:catch_up, records} when is_list(records) and rounds < @catch_up_max_rounds ->
+        with :ok <- deadline_ok(native.deadline),
+             {:ok, logical, tail, batch_bytes} <-
+               append_delta(native, source, logical, tail, records) do
+          catch_up_round(
+            native,
+            source,
+            logical,
+            tail,
+            bytes + batch_bytes,
+            events + length(records),
+            rounds + 1
+          )
+        end
 
-                {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
-              else
-                error -> {:halt, error}
-              end
+      {:catch_up, records} when is_list(records) ->
+        {:error, :checkpoint_catch_up_overloaded}
 
-            _, _ ->
-              {:halt, {:error, :online_delta_record}}
-          end)
-          |> case do
-            {:ok, logical, current, bytes} ->
-              {:ok, logical.jobs, current, bytes, switch_started}
+      {:ok, records} when is_list(records) ->
+        with {:ok, logical, tail, final_bytes} <-
+               append_delta(native, source, logical, tail, records) do
+          {:ok, logical, tail, bytes + final_bytes, switch_started,
+           %{
+             catch_up_rounds: rounds,
+             catch_up_events: events + length(records),
+             catch_up_bytes: bytes + final_bytes,
+             final_delta_events: length(records),
+             final_delta_bytes: final_bytes
+           }}
+        end
 
-            error ->
-              error
-          end
+      {:ok, _} ->
+        {:error, :online_delta_record}
 
-        error ->
-          error
-      end
+      error ->
+        error
     end
+  end
+
+  defp append_delta(native, source, logical, tail, records) do
+    Enum.reduce_while(records, {:ok, logical, tail, 0}, fn
+      {8, 1, payload}, {:ok, logical, current, bytes} ->
+        with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
+             {:ok, next_logical} <- Reducer.apply(logical, mutation),
+             {:ok, frame} <-
+               Record.encode(%Record{
+                 record_type: 8,
+                 payload_schema_version: 1,
+                 sequence: current.first_sequence + current.count,
+                 payload: payload
+               }),
+             true <-
+               current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
+                 {:error, :online_delta_too_large},
+             {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
+          next = %{
+            current
+            | count: current.count + 1,
+              last_sequence: current.first_sequence + current.count,
+              bytes: current.bytes + byte_size(frame),
+              identity: identity,
+              crc_state: CRC32C.update(current.crc_state, frame)
+          }
+
+          {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
+        else
+          error -> {:halt, error}
+        end
+
+      _, _ ->
+        {:halt, {:error, :online_delta_record}}
+    end)
   end
 
   defp catch_up_candidate(candidate, %{next_availability_order: next})
@@ -643,6 +757,46 @@ defmodule Tay.Storage.V2.Publisher do
       :ok
     end
   end
+
+  defp recover_published_candidate(
+         _native,
+         %{online_catch_up: _},
+         recovered,
+         caught_up,
+         tail,
+         manifest,
+         _limits,
+         _value_limits
+       ) do
+    tail = struct(Segment, Map.put(tail, :footer, nil))
+    segments = List.replace_at(recovered.store.segments, -1, tail)
+
+    with {:ok, store} <- Reader.validate_topology(segments) do
+      {:ok,
+       Map.merge(recovered, %{
+         candidate: caught_up,
+         store: store,
+         highest: tail,
+         next_sequence: store.next_sequence,
+         total_segment_bytes:
+           recovered.total_segment_bytes - recovered.highest.bytes + tail.bytes,
+         record_count: recovered.record_count - recovered.highest.count + tail.count,
+         manifest: manifest
+       })}
+    end
+  end
+
+  defp recover_published_candidate(
+         native,
+         _source,
+         _recovered,
+         _caught_up,
+         _tail,
+         manifest,
+         limits,
+         value_limits
+       ),
+       do: V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest)
 
   defp manifest(source, inventory, epoch_id, base, tail_id, tail_first) do
     manifest = %{
@@ -744,6 +898,7 @@ defmodule Tay.Storage.V2.Publisher do
          native,
          source,
          normalized,
+         renamed,
          limits,
          value_limits,
          publication
@@ -752,11 +907,17 @@ defmodule Tay.Storage.V2.Publisher do
     native = %{native | deadline: nil}
 
     result =
-      with :ok <- Native.v2_select(native, epoch_id),
-           {:ok, recovered} <-
-             V2Reader.recover(native, Reducer.candidate(limits, value_limits), selected: true),
+      with {:ok, recovered} <-
+             verify_published_candidate(
+               native,
+               source,
+               renamed,
+               limits,
+               value_limits,
+               publication
+             ),
            true <-
-             Snapshot.equivalent?(normalized, recovered.candidate.jobs) ||
+             equivalent?(source, normalized, recovered.candidate.jobs) ||
                {:error, :published_candidate_mismatch} do
         {:ok,
          %{
@@ -768,6 +929,11 @@ defmodule Tay.Storage.V2.Publisher do
            peak_writer_process_bytes:
              max(publication.peak_writer_process_bytes, process_memory()),
            pause_ms: System.monotonic_time(:millisecond) - publication.switch_started,
+           catch_up_rounds: publication.catch_up_rounds,
+           catch_up_events: publication.catch_up_events,
+           catch_up_bytes: publication.catch_up_bytes,
+           final_delta_events: publication.final_delta_events,
+           final_delta_bytes: publication.final_delta_bytes,
            reclamation: :deferred,
            previous_epoch_id: source.epoch_id,
            terminal_retention: publication.terminal_retention,
@@ -779,6 +945,39 @@ defmodule Tay.Storage.V2.Publisher do
       end
 
     result
+  end
+
+  defp verify_published_candidate(
+         native,
+         %{online_catch_up: _},
+         renamed,
+         _limits,
+         _value_limits,
+         publication
+       ) do
+    with :ok <- Native.v2_select(native, publication.epoch_id),
+         {:ok, root} <- Native.list(native, :root),
+         {:ok, current} <- current_bytes(native, root),
+         true <- current == publication.current || {:error, :current_changed},
+         :ok <- Native.check(native) do
+      {:ok,
+       Map.merge(renamed, %{
+         epoch_id: publication.epoch_id,
+         current: current
+       })}
+    end
+  end
+
+  defp verify_published_candidate(
+         native,
+         _source,
+         _renamed,
+         limits,
+         value_limits,
+         publication
+       ) do
+    with :ok <- Native.v2_select(native, publication.epoch_id),
+         do: V2Reader.recover(native, Reducer.candidate(limits, value_limits), selected: true)
   end
 
   defp process_memory do

@@ -137,8 +137,9 @@ the host Phoenix application owns its identity and authorization policy.
 the socket volume is safe while Tay and workers are stopped. Deleting the data
 volume deletes job history.
 
-The OCI health check succeeds only after the Engine is ready and the selected
-transport accepts connections. The container smoke test separately exercises the
+The OCI health check succeeds after the Engine is ready, and remains healthy
+during normal online `compacting/preparing` and `compacting/switching` phases,
+provided the selected transport accepts connections. The container smoke test separately exercises the
 default unauthenticated HTTP page and its LiveView assets; host tests cover the
 optional Basic Auth path. Startup has a 15-minute health-check grace period to
 match Tay's bounded recovery deadline; this does not weaken steady-state health

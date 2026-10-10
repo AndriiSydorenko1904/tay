@@ -19,6 +19,9 @@ defmodule Tay.Storage.Writer do
   alias Tay.Storage.V2.Reducer, as: V2Reducer
   alias Tay.Storage.V2.Reader, as: V2Reader
   @test Mix.env() == :test
+  @maintenance_io_timeout_ms 120_000
+  @online_catch_up_target_events 1_024
+  @online_catch_up_target_bytes 1_048_576
 
   def start_link(options) do
     if Keyword.keyword?(options),
@@ -343,7 +346,13 @@ defmodule Tay.Storage.Writer do
           {:error, %{kind: :resource_limit, reason: :deadline}}
 
         true ->
-          Native.request_owned(native, operation, body)
+          timeout =
+            min(
+              @maintenance_io_timeout_ms,
+              max(deadline - System.monotonic_time(:millisecond), 1)
+            )
+
+          Native.request_owned(%{native | timeout: timeout}, operation, body)
       end
 
     {:reply, result, state}
@@ -394,8 +403,8 @@ defmodule Tay.Storage.Writer do
                 :ok
               end,
               live_snapshot: true,
-              online_catch_up: fn ->
-                GenServer.call(owner, {:compact_online_freeze, ref}, :infinity)
+              online_catch_up: fn action ->
+                GenServer.call(owner, {:compact_online_catch_up, ref, action}, :infinity)
               end
             }
             |> with_compaction_hook(rotated)
@@ -421,6 +430,8 @@ defmodule Tay.Storage.Writer do
             deadline: deadline,
             cancel_flag: cancel_flag,
             delta: [],
+            delta_events: 0,
+            delta_bytes: 0,
             freezing: false,
             frozen: false,
             freeze_from: nil,
@@ -450,18 +461,44 @@ defmodule Tay.Storage.Writer do
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call(
-        {:compact_online_freeze, ref},
+        {:compact_online_catch_up, ref, :poll},
+        {pid, _},
+        %{online_compaction: %{ref: ref, pid: pid, freezing: false, frozen: false} = online} =
+          state
+      ) do
+    records = Enum.reverse(online.delta)
+
+    {:reply, {:ok, records},
+     %{
+       state
+       | online_compaction: %{online | delta: [], delta_events: 0, delta_bytes: 0}
+     }}
+  end
+
+  def handle_call(
+        {:compact_online_catch_up, ref, :freeze},
         {pid, _} = from,
         %{online_compaction: %{ref: ref, pid: pid, freezing: false, frozen: false} = online} =
           state
       ) do
-    send(online.notify, {:compact_online_switch_requested, self(), online.token})
+    if online.delta_events > @online_catch_up_target_events or
+         online.delta_bytes > @online_catch_up_target_bytes do
+      records = Enum.reverse(online.delta)
 
-    {:noreply,
-     %{
-       state
-       | online_compaction: %{online | freezing: true, freeze_from: from}
-     }}
+      {:reply, {:catch_up, records},
+       %{
+         state
+         | online_compaction: %{online | delta: [], delta_events: 0, delta_bytes: 0}
+       }}
+    else
+      send(online.notify, {:compact_online_switch_requested, self(), online.token})
+
+      {:noreply,
+       %{
+         state
+         | online_compaction: %{online | freezing: true, freeze_from: from}
+       }}
+    end
   end
 
   def handle_call(
@@ -489,7 +526,9 @@ defmodule Tay.Storage.Writer do
              | freezing: false,
                frozen: true,
                freeze_from: nil,
-               delta: []
+               delta: [],
+               delta_events: 0,
+               delta_bytes: 0
            }
        }}
     else
@@ -731,8 +770,19 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  defp journal_compaction(%{online_compaction: %{frozen: false} = online} = state, record),
-    do: %{state | online_compaction: %{online | delta: [record | online.delta]}}
+  defp journal_compaction(
+         %{online_compaction: %{frozen: false} = online} = state,
+         {_, _, payload} = record
+       ) do
+    next = %{
+      online
+      | delta: [record | online.delta],
+        delta_events: online.delta_events + 1,
+        delta_bytes: online.delta_bytes + byte_size(payload) + 28
+    }
+
+    %{state | online_compaction: next}
+  end
 
   defp journal_compaction(state, _record), do: state
 
@@ -742,8 +792,11 @@ defmodule Tay.Storage.Writer do
         {:reply, reply, next} ->
           reply =
             case {delivered, reply} do
-              {false, {:ok, value}} -> {:ok, value, {:online_compaction, stats}}
-              _ -> reply
+              {false, {:ok, value}} when is_map(stats) ->
+                {:ok, value, {:online_compaction, stats}}
+
+              _ ->
+                reply
             end
 
           GenServer.reply(from, reply)
@@ -816,11 +869,16 @@ defmodule Tay.Storage.Writer do
       ) do
     Process.demonitor(online.monitor, [:flush])
 
-    if not online.freezing and not online.frozen do
-      abort_online_preparation(state, online, reason)
-    else
-      send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-      {:noreply, poison(state, reason)}
+    cond do
+      not online.freezing and not online.frozen ->
+        abort_online_preparation(state, online, reason)
+
+      safe_to_resume_source?(reason) ->
+        resume_source_after_compaction_failure(state, online, reason)
+
+      true ->
+        send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
+        {:noreply, poison(state, reason)}
     end
   end
 
@@ -893,6 +951,27 @@ defmodule Tay.Storage.Writer do
 
       {:error, abort_reason} ->
         error = {:compaction_abort_failed, reason, abort_reason}
+        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
+        {:noreply, poison(state, error)}
+    end
+  end
+
+  defp safe_to_resume_source?({:unknown_publication_outcome, _}), do: false
+  defp safe_to_resume_source?(_), do: true
+
+  defp resume_source_after_compaction_failure(state, online, reason) do
+    native = %{state.native | deadline: nil}
+
+    with :ok <- Native.v2_abort(native),
+         {:ok, _} <-
+           Native.open_active(native, canonical(state.segment.id), state.segment.identity) do
+      next = %{state | native: native, online_compaction: nil}
+      {next, _} = resume_pending(next, Enum.reverse(online.pending), nil)
+      send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
+      {:noreply, next, {:continue, :release_transient_heap}}
+    else
+      rollback_error ->
+        error = {:compaction_source_resume_failed, reason, rollback_error}
         send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
         {:noreply, poison(state, error)}
     end

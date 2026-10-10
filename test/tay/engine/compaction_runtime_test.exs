@@ -246,6 +246,102 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, _} = Task.await(enqueue, 5_000)
   end
 
+  test "online checkpoint catches up a burst before requesting the short final fence", %{
+    path: path
+  } do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :before_online_freeze}, _native ->
+        if :atomics.compare_exchange(gate, 1, 1, 2) == :ok do
+          send(owner, {:before_online_freeze, self()})
+          receive do: (:continue_online_freeze -> :ok)
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path,
+      compaction: false,
+      writer_hook: hook,
+      client_slots: 32,
+      max_insert_payload_bytes: 2_097_152,
+      max_insert_args_bytes: 2_097_152
+    )
+
+    insert(%{"seed" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:before_online_freeze, publisher}, 5_000
+    assert %{state: :compacting, phase: :preparing} = Tay.status(name: @name)
+
+    payload = String.duplicate("x", 1_100_000)
+    burst = insert(%{"burst" => payload}, scheduled_at: 100_000)
+    send(publisher, :continue_online_freeze)
+
+    assert {:ok, stats} = Task.await(compact, 60_000)
+    assert stats.catch_up_rounds >= 2
+    assert stats.catch_up_events >= 1
+    assert stats.catch_up_bytes > 1_048_576
+    assert stats.final_delta_bytes <= 1_048_576
+    assert {:ok, %{id: id}} = Tay.get_job(burst.id, name: @name)
+    assert id == burst.id
+  end
+
+  test "known candidate failure after the fence reopens the source and releases enqueue", %{
+    path: path
+  } do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :before_current}, _native ->
+        if :atomics.compare_exchange(gate, 1, 1, 2) == :ok do
+          send(owner, {:before_current, self()})
+
+          receive do
+            :fail_candidate -> {:error, :injected_candidate_failure}
+          end
+        else
+          :ok
+        end
+
+      _, _native ->
+        :ok
+    end
+
+    start(path, compaction: false, writer_hook: hook)
+    insert(%{"seed" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    engine = :sys.get_state(@name).engine
+    writer = :sys.get_state(@name).writer
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:before_current, publisher}, 5_000
+    assert %{state: :compacting, phase: :switching} = Tay.status(name: @name)
+
+    {:ok, intent} = EngineWorker.new(%{"after_rollback" => true}, scheduled_at: 100_000)
+    enqueue = Task.async(fn -> Tay.insert(intent, name: @name) end)
+    refute Task.yield(enqueue, 50)
+    send(publisher, :fail_candidate)
+
+    assert {:error, %Tay.Error{kind: :unknown_outcome}} = Task.await(compact, 60_000)
+    assert {:ok, job} = Task.await(enqueue, 5_000)
+    assert Process.alive?(engine)
+    assert Process.alive?(writer)
+    assert %{state: :ready} = Tay.status(name: @name)
+    assert %{state: :ready} = Tay.Storage.Writer.status(writer)
+    assert {:ok, %{id: id}} = Tay.get_job(job.id, name: @name)
+    assert id == job.id
+  end
+
   test "Store-v2 execution and admission continue throughout background preparation", %{
     path: path
   } do

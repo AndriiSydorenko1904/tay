@@ -22,6 +22,8 @@ defmodule Tay.Standalone.HealthTest do
     end)
 
     assert :ok = Tay.Standalone.Health.check!(%{state: :ready})
+    assert :ok = Tay.Standalone.Health.check!(%{state: :compacting, phase: :preparing})
+    assert :ok = Tay.Standalone.Health.check!(%{state: :compacting, phase: :switching})
 
     assert_raise RuntimeError, ~r/not ready/, fn ->
       Tay.Standalone.Health.check!(%{state: :recovering})

@@ -129,10 +129,17 @@ checkpoints capture the Engine's active ETS projection and disposable terminal
 projection at an exact durable sequence frontier; they do not reconstruct that
 state by replaying the old journal. Concurrent mutations that arrive after the
 capture are appended to the candidate tail. The temporary ETS snapshot is
-released as soon as the publisher has consumed it. The new `CURRENT` is
-published only after sync and independent verification, and restart replays the
-canonical snapshot followed by that tail. The durable sequence frontier—not a
-wall-clock timestamp—decides which mutations are already covered.
+consumed directly into one retained map and released without first materializing
+a full ETS list and a second full map. The publisher performs repeated ordered
+catch-up rounds while admission remains open. It requests the final fence only
+when the pending tail is at most 1,024 events and 1 MiB; a new burst above that
+limit becomes another online round. A builder that cannot converge within the
+bounded round limit abandons the candidate and leaves the source epoch writable.
+The new `CURRENT` is published only after the candidate and its incremental tail
+are validated and synced. The post-publication authority check is bounded;
+restart still performs the full replay of the canonical snapshot followed by
+its tail. The durable sequence frontier—not a wall-clock timestamp—decides which
+mutations are already covered.
 The first checkpoint of a Store-v1 root performs the existing safe migration
 path, which briefly drains execution because Store v1 has no online catch-up
 boundary; subsequent Store-v2 checkpoints prepare online.
@@ -199,15 +206,17 @@ verification/reconciliation before retiring Engine and defers reclamation.
 No source bytes are deleted to obtain candidate headroom. Payload-free aggregate
 events are structured Logger debug metadata under `:tay_compaction`; enable
 debug logging to observe evaluation/gate/defer/start/completion/failure events.
+Successful checkpoint measurements include catch-up rounds/events/bytes, final
+delta events/bytes, and fenced `pause_ms`.
 
 On Store v2, candidate construction runs in the background. The public status
 is `state: :compacting, phase: :preparing`; admission, dispatch, and execution
 remain live, and committed mutations are journaled for candidate catch-up. The
 final fenced publication reports `phase: :switching` and closes admission while
-the old tail is synchronized, catch-up is appended, the candidate is revalidated,
-and CURRENT is atomically replaced. The expensive candidate construction remains
-online, but switch duration still depends on retained history and filesystem
-validation throughput. The Engine process is retained. The first Store-v1 to
+the old tail is synchronized, the bounded final delta is appended, and CURRENT
+is atomically replaced and authority-checked. Full candidate replay is kept out
+of this fence, so switch duration is independent of retained-history replay.
+The Engine process is retained. The first Store-v1 to
 Store-v2 adoption instead reports `state: :migrating` and uses the existing
 drain/recovery path because Store v1 has no safe online catch-up boundary.
 The qualification suite covers finite workload measurements and the documented
