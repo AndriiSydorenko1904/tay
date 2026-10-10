@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.3.3 — 2026-10-11
+
+### Fixed
+
+- Changed periodic Store-v2 checkpoints to capture the live active and terminal
+  projections at an exact durable sequence frontier instead of replaying every
+  old journal segment. Checkpoints can now run with active jobs, preserve
+  concurrent mutations in the ordered tail, release their temporary ETS copy
+  after ingestion, and retain the existing verified atomic publication path.
 
 ## 1.3.2 — 2026-10-10
 

@@ -100,8 +100,8 @@ admission internally. Calls arriving during that short switch wait for the new
 generation within their configured caller timeout instead of receiving an
 immediate `unavailable`. Initial Store-v1 adoption still drains and
 recovers because that format has no safe online catch-up boundary. Reclaim-policy
-thresholds are conjunctive. All automatic maintenance, including a periodic
-checkpoint, is deferred while active jobs exist; a checkpoint timer additionally
+thresholds are conjunctive. Retention compaction is deferred while active jobs
+exist. A due periodic checkpoint may run with active jobs and additionally
 requires at least one new durable tail event. Cooldown uses the later
 of the verified manifest capture time and post-publication recovered activation
 time. Restart conservatively extends cooldown rather than shortening it by
@@ -125,13 +125,14 @@ compaction: [
 `checkpoint_interval: 0` disables periodic checkpoints. A positive millisecond
 value checkpoints only after at least one new durable tail event. The evaluator
 runs at the smaller of `check_interval` and `checkpoint_interval`. Automatic
-checkpoints wait until there are no active jobs, avoiding whole-state candidate
-amplification while a live backlog is being admitted or executed. Concurrent
-mutations that arrive after preparation starts are appended to the candidate
-tail; the new `CURRENT` is published only after sync and verification, and
-restart replays the canonical snapshot followed by that tail. The durable
-sequence frontier—not a wall-clock timestamp—decides which mutations are already
-covered.
+checkpoints capture the Engine's active ETS projection and disposable terminal
+projection at an exact durable sequence frontier; they do not reconstruct that
+state by replaying the old journal. Concurrent mutations that arrive after the
+capture are appended to the candidate tail. The temporary ETS snapshot is
+released as soon as the publisher has consumed it. The new `CURRENT` is
+published only after sync and independent verification, and restart replays the
+canonical snapshot followed by that tail. The durable sequence frontier—not a
+wall-clock timestamp—decides which mutations are already covered.
 The first checkpoint of a Store-v1 root performs the existing safe migration
 path, which briefly drains execution because Store v1 has no online catch-up
 boundary; subsequent Store-v2 checkpoints prepare online.

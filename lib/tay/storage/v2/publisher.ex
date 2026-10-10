@@ -136,6 +136,19 @@ defmodule Tay.Storage.V2.Publisher do
        when is_map(jobs),
        do: {:ok, source}
 
+  defp load_source_jobs(_native, %{jobs_table: table} = source, _limits, _value_limits)
+       when is_reference(table) do
+    try do
+      jobs = Map.new(:ets.tab2list(table))
+
+      with :ok <- source.snapshot_loaded.() do
+        {:ok, source |> Map.delete(:jobs_table) |> Map.put(:jobs, jobs)}
+      end
+    catch
+      :error, :badarg -> {:error, :source_snapshot_unavailable}
+    end
+  end
+
   defp load_source_jobs(
          native,
          %{epoch_id: epoch_id, exclude_segment_id: exclude, frontier: frontier} = source,
@@ -164,6 +177,20 @@ defmodule Tay.Storage.V2.Publisher do
     case :crypto.strong_rand_bytes(16) do
       <<0::128>> -> new_id()
       bytes -> bytes
+    end
+  end
+
+  defp source_inventory(native, _store_id, %{live_snapshot: true} = source) do
+    with {:ok, entries} <- Native.list(native, :segments),
+         {:ok, classified} <- Reader.classify_entries(entries, :segments),
+         true <- classified.canonical != [] || {:error, :source_segments_missing} do
+      {:ok,
+       %{
+         frontier: source.frontier,
+         sealed: [],
+         total_bytes: Enum.sum(Enum.map(classified.canonical, fn {_, entry} -> entry.size end)),
+         segment_count: length(classified.canonical)
+       }}
     end
   end
 

@@ -141,6 +141,7 @@ defmodule Tay.Engine do
           lifecycle_operation: nil,
           lifecycle_fenced: nil,
           online_compaction: nil,
+          online_snapshot: nil,
           group_commit: nil,
           deferred_transitions: nil,
           memory_reclaim: nil,
@@ -306,23 +307,33 @@ defmodule Tay.Engine do
         {:noreply, s}
 
       true ->
-        case Writer.compact_online(
-               s.writer,
-               s.admission,
-               deadline,
-               retention,
-               Clock.wall(s.config.clock),
-               cancel_flag,
-               self(),
-               token
-             ) do
-          {:ok, rotation} ->
-            case adopt_online_rotation(s, rotation) do
-              {:ok, next} ->
-                {:noreply, %{next | online_compaction: token}}
+        case create_online_snapshot(s) do
+          {:ok, snapshot} ->
+            case Writer.compact_online(
+                   s.writer,
+                   s.admission,
+                   deadline,
+                   retention,
+                   Clock.wall(s.config.clock),
+                   cancel_flag,
+                   self(),
+                   token,
+                   snapshot
+                 ) do
+              {:ok, rotation} ->
+                case adopt_online_rotation(s, rotation) do
+                  {:ok, next} ->
+                    {:noreply, %{next | online_compaction: token, online_snapshot: snapshot}}
+
+                  {:error, reason} ->
+                    delete_online_snapshot(snapshot)
+                    exit({:invalid_online_compaction_rotation, reason})
+                end
 
               {:error, reason} ->
-                exit({:invalid_online_compaction_rotation, reason})
+                delete_online_snapshot(snapshot)
+                send(guardian, {:online_compaction_result, self(), token, {:error, reason}})
+                {:noreply, s}
             end
 
           {:error, reason} ->
@@ -342,6 +353,14 @@ defmodule Tay.Engine do
   end
 
   def handle_info(
+        {:compact_online_snapshot_loaded, writer, token},
+        %{writer: writer, online_compaction: token} = s
+      ) do
+    delete_online_snapshot(s.online_snapshot)
+    {:noreply, %{s | online_snapshot: nil}}
+  end
+
+  def handle_info(
         {:online_compaction_switch_ack, guardian, token},
         %{guardian: guardian, online_compaction: token} = s
       ) do
@@ -355,7 +374,8 @@ defmodule Tay.Engine do
         {:compact_online_result, writer, token, {:ok, stats, false}},
         %{writer: writer, online_compaction: token} = s
       ) do
-    next = adopt_online_compaction(s, stats)
+    delete_online_snapshot(s.online_snapshot)
+    next = %{adopt_online_compaction(s, stats) | online_snapshot: nil}
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
     {:noreply, publish(wake_queues(next)), {:continue, :release_transient_heap}}
   end
@@ -364,9 +384,10 @@ defmodule Tay.Engine do
         {:compact_online_result, writer, token, {:ok, stats, true}},
         %{writer: writer, online_compaction: {:switched, token}} = s
       ) do
+    delete_online_snapshot(s.online_snapshot)
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
 
-    {:noreply, publish(wake_queues(%{s | online_compaction: nil})),
+    {:noreply, publish(wake_queues(%{s | online_compaction: nil, online_snapshot: nil})),
      {:continue, :release_transient_heap}}
   end
 
@@ -374,8 +395,9 @@ defmodule Tay.Engine do
         {:compact_online_result, writer, token, {:error, reason}},
         %{writer: writer, online_compaction: token} = s
       ) do
+    delete_online_snapshot(s.online_snapshot)
     send(s.guardian, {:online_compaction_result, self(), token, {:error, reason}})
-    {:noreply, %{s | online_compaction: nil}}
+    {:noreply, %{s | online_compaction: nil, online_snapshot: nil}}
   end
 
   def handle_info(
@@ -1928,6 +1950,61 @@ defmodule Tay.Engine do
         last_compaction_at: max(stats.captured_at, Clock.wall(s.config.clock)),
         online_compaction: nil
     }
+  end
+
+  defp create_online_snapshot(s) do
+    table =
+      :ets.new(Tay.Engine.OnlineSnapshot, [
+        :set,
+        :protected,
+        read_concurrency: true
+      ])
+
+    try do
+      :ok =
+        JobIndex.fold(
+          s.projection.jobs,
+          fn job, :ok ->
+            true = :ets.insert(table, {job.id, job})
+            :ok
+          end,
+          :ok
+        )
+
+      :ok =
+        TerminalStore.fold(
+          s.terminal_store,
+          fn job, :ok ->
+            true = :ets.insert(table, {job.id, job})
+            :ok
+          end,
+          :ok
+        )
+
+      {:ok,
+       %{
+         table: table,
+         frontier: s.next_sequence - 1,
+         next_availability_order: s.next_availability_order
+       }}
+    catch
+      kind, reason ->
+        delete_online_snapshot(table)
+        {:error, {:snapshot_capture_failed, {kind, reason}}}
+    end
+  end
+
+  defp delete_online_snapshot(nil), do: :ok
+
+  defp delete_online_snapshot(%{table: table}), do: delete_online_snapshot(table)
+
+  defp delete_online_snapshot(table) when is_reference(table) do
+    try do
+      :ets.delete(table)
+      :ok
+    catch
+      :error, :badarg -> :ok
+    end
   end
 
   defp recovered_compaction_config(config, summary) do

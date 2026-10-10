@@ -127,13 +127,14 @@ defmodule Tay.Storage.Writer do
         captured_at,
         cancel_flag,
         notify,
-        token
+        token,
+        snapshot
       ),
       do:
         GenServer.call(
           writer,
           {:compact_online, admission_ref, deadline, retention, captured_at, cancel_flag, notify,
-           token},
+           token, snapshot},
           :infinity
         )
 
@@ -352,8 +353,8 @@ defmodule Tay.Storage.Writer do
     do: {:reply, {:error, %{kind: :native_owner, reason: :invalid_delegate}}, state}
 
   def handle_call(
-        {:compact_online, reference, deadline, retention, captured_at, cancel_flag, notify,
-         token},
+        {:compact_online, reference, deadline, retention, captured_at, cancel_flag, notify, token,
+         snapshot},
         {caller, _},
         %{recovery: recovery, epoch_id: epoch_id} = state
       )
@@ -362,6 +363,9 @@ defmodule Tay.Storage.Writer do
       recovery.status == :ready and caller == recovery.caller and
         reference == recovery.admission_ref and is_nil(Map.get(state, :online_compaction)) and
         is_integer(deadline) and deadline > System.monotonic_time(:millisecond) and
+        is_map(snapshot) and is_reference(Map.get(snapshot, :table)) and
+        Map.get(snapshot, :frontier) == state.next_sequence - 1 and
+        is_integer(Map.get(snapshot, :next_availability_order)) and
         Tay.Storage.V2.Retention.validate(retention) == :ok
 
     if valid do
@@ -383,6 +387,13 @@ defmodule Tay.Storage.Writer do
               value_limits: rotated.value_limits,
               terminal_retention: retention,
               captured_at: captured_at,
+              jobs_table: snapshot.table,
+              next_availability_order: snapshot.next_availability_order,
+              snapshot_loaded: fn ->
+                send(notify, {:compact_online_snapshot_loaded, owner, token})
+                :ok
+              end,
+              live_snapshot: true,
               online_catch_up: fn ->
                 GenServer.call(owner, {:compact_online_freeze, ref}, :infinity)
               end
@@ -435,7 +446,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:compact_online, _, _, _, _, _, _, _, _}, _, state),
+  def handle_call({:compact_online, _, _, _, _, _, _, _, _, _}, _, state),
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call(

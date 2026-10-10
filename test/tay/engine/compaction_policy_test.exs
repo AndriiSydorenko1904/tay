@@ -121,7 +121,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
     assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 10)
   end
 
-  test "a due Store-v2 checkpoint waits for idle state and requires new tail events" do
+  test "a due Store-v2 checkpoint may run with active jobs and requires new tail events" do
     config = %{CompactionConfig.defaults() | checkpoint_interval: 5_000}
 
     summary = %{
@@ -134,7 +134,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
     }
 
     assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 14_999)
-    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 15_000)
+    assert :ok = CompactionPolicy.eligible(summary, config, 15_000)
 
     assert :ok = CompactionPolicy.eligible(%{summary | active_jobs: 0}, config, 15_000)
 

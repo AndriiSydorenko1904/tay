@@ -93,7 +93,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(engine).last_compaction_at == 100_100
   end
 
-  test "periodic checkpoint waits for idle state and recovery replays its tail", %{path: path} do
+  test "periodic checkpoint captures idle state and recovery replays its tail", %{path: path} do
     root =
       start(path,
         compaction: [checkpoint_interval: 10, check_interval: 60_000]
@@ -143,6 +143,57 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     recovered_engine = :sys.get_state(@name).engine
     assert :sys.get_state(recovered_engine).events_since_checkpoint == 2
+  end
+
+  test "periodic checkpoint snapshots active jobs and recovery starts from that epoch", %{
+    path: path
+  } do
+    root =
+      start(path,
+        compaction: [checkpoint_interval: 10, check_interval: 60_000]
+      )
+
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+    active = insert(%{"active_checkpoint" => true}, scheduled_at: 100_000)
+    assert Tay.status(name: @name).active_jobs == 1
+
+    ExecutionHelpers.set_clock(110)
+    p = policy(root)
+    evaluate(p)
+
+    assert EngineHelpers.eventually(fn ->
+             match?({:ok, _}, :sys.get_state(p).last_result) and
+               File.exists?(Path.join(path, "CURRENT"))
+           end)
+
+    engine = :sys.get_state(@name).engine
+    assert :sys.get_state(engine).events_since_checkpoint == 0
+    assert Tay.status(name: @name).active_jobs == 1
+
+    checkpoint_epoch = :sys.get_state(engine).epoch_id
+
+    manifest_path =
+      Path.join([
+        path,
+        "epochs",
+        "e-" <> Base.encode16(checkpoint_epoch, case: :lower),
+        "MANIFEST"
+      ])
+
+    assert {:ok, manifest} =
+             manifest_path |> File.read!() |> Tay.Storage.V2.Authority.decode_manifest()
+
+    assert manifest.source_segments == []
+    assert {:ok, %{id: active_id, state: :scheduled}} = Tay.get_job(active.id, name: @name)
+    assert active_id == active.id
+
+    EngineHelpers.stop(root)
+    start(path, compaction: false)
+
+    assert {:ok, %{id: ^active_id, state: :scheduled}} =
+             Tay.get_job(active.id, name: @name)
+
+    assert :sys.get_state(:sys.get_state(@name).engine).events_since_checkpoint == 0
   end
 
   test "idle engine performs a full collection after its active workload drains", %{path: path} do
@@ -239,6 +290,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     writer = :sys.get_state(@name).writer
     refute Map.has_key?(:sys.get_state(writer).online_compaction.source, :jobs)
+    assert EngineHelpers.eventually(fn -> :sys.get_state(engine).online_snapshot == nil end)
 
     {intent, execution_token} = ExecutionHelpers.job()
     assert {:ok, job} = Tay.insert(intent, name: @name)
@@ -249,6 +301,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     send(builder, :finish_online_preparation)
     assert {:ok, _} = Task.await(compact, 60_000)
+    assert :sys.get_state(engine).online_snapshot == nil
     assert %{state: :ready} = Tay.status(name: @name)
     assert :sys.get_state(@name).engine == engine
   end
@@ -953,10 +1006,20 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     root = start(path, test_hook: hook)
     p = policy(root)
     generation = :sys.get_state(@name).meta.generation
-    GenServer.cast(@name, {:automatic_compaction, p, make_ref(), make_ref(), {nil, 1}})
+
+    GenServer.cast(
+      @name,
+      {:automatic_compaction, p, make_ref(), make_ref(), {nil, 1}, :eligible}
+    )
+
     assert :sys.get_state(@name).operation == nil
     insert()
-    GenServer.cast(@name, {:automatic_compaction, p, make_ref(), generation, {nil, 1}})
+
+    GenServer.cast(
+      @name,
+      {:automatic_compaction, p, make_ref(), generation, {nil, 1}, :eligible}
+    )
+
     assert EngineHelpers.eventually(fn -> :sys.get_state(@name).operation == nil end)
     refute_receive {:drain_barrier, _}
     assert :sys.get_state(@name).meta.generation == generation

@@ -336,7 +336,7 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   def handle_cast(
-        {:automatic_compaction, policy, token, generation, source},
+        {:automatic_compaction, policy, token, generation, source, reason},
         %{policy: policy} = s
       ) do
     deadline = System.monotonic_time(:millisecond) + 900_000
@@ -356,7 +356,7 @@ defmodule Tay.Engine.Lifecycle do
              s
            ) do
         {:noreply, next} ->
-          Tay.Engine.CompactionEvents.emit(:automatic_compaction_started, :eligible)
+          Tay.Engine.CompactionEvents.emit(:automatic_compaction_started, reason)
           {:noreply, next}
 
         {:reply, reply, next} ->
