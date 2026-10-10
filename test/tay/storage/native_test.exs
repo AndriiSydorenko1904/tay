@@ -139,6 +139,25 @@ defmodule Tay.Storage.NativeTest do
     Native.shutdown(n)
   end
 
+  test "path validation rejects an externally changed writable size", %{path: path} do
+    {:ok, n} = native(path)
+    :ok = Native.mkdir_segments(n)
+    source = stage()
+    {:ok, staged_identity} = Native.create_stage(n, :segments, source)
+    {:ok, %{identity: identity}} = Native.write(n, 0, header())
+    :ok = Native.sync(n)
+    :ok = Native.close_write(n)
+    :ok = Native.publish(n, :segments, source, canonical(1), staged_identity)
+    :ok = Native.sync_dir(n, :segments)
+    {:ok, _} = Native.open_active(n, canonical(1), identity)
+
+    File.write!(Path.join([path, "segments", canonical(1)]), <<0>>, [:append])
+
+    assert {:error, %{reason: "path_or_extent_changed"}} = Native.check(n)
+    assert {:error, %{reason: "poisoned"}} = Native.write(n, 45, <<0>>)
+    Native.shutdown(n)
+  end
+
   test "a failed pwrite syscall reports unknown bytes instead of claiming zero", %{path: path} do
     {:ok, n} = native(path)
     :ok = Native.mkdir_segments(n)

@@ -1279,46 +1279,6 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  defp inspect_for_writer(%{epoch_id: epoch_id} = state) when is_binary(epoch_id) do
-    with {:ok, result} <-
-           V2Reader.recover(
-             state.native,
-             V2Reducer.candidate(state.candidate_limits, state.value_limits),
-             selected: true
-           ),
-         true <- result.epoch_id == epoch_id || {:error, :writer_epoch_changed} do
-      {:ok, result.store}
-    end
-  end
-
-  defp inspect_for_writer(%{recovery: %{status: :awaiting_activation, options: opts}} = state) do
-    with {:ok, view} <- Reader.preflight(state.native, Map.to_list(opts)) do
-      old = state.recovery.view
-
-      normalize_root = fn entries ->
-        Enum.map(entries, fn entry ->
-          if entry.name == "segments" and entry.type == :directory,
-            # APFS counts regular children in directory st_nlink. Publication
-            # may change size/links, but never inode/mode or the exact inventory.
-            do: Map.drop(entry, [:size, :links]),
-            else: entry
-        end)
-      end
-
-      old_entries =
-        Enum.reject(view.segment_entries, &(&1.name == canonical(state.segment.id + 1)))
-
-      if Enum.drop(view.store.segments, -1) == old.store.segments and
-           view.marker == old.marker and view.marker_identity == old.marker_identity and
-           old_entries == old.segment_entries and
-           normalize_root.(view.root_entries) == normalize_root.(old.root_entries),
-         do: {:ok, view.store},
-         else: {:error, :unexpected_post_activation_history}
-    end
-  end
-
-  defp inspect_for_writer(state), do: Reader.inspect_store(state.native)
-
   defp options(options) do
     allowed =
       [
@@ -1458,28 +1418,45 @@ defmodule Tay.Storage.Writer do
              first_sequence: state.next_sequence,
              store_id: state.store_id
            }),
-         {:ok, identity} <-
+         {:ok, staged_identity} <-
            step(state, {:r3, :created}, fn -> Native.create_stage(native, :segments, source) end),
-         {:ok, _} <- step(state, :r3, fn -> Native.write(native, 0, bytes) end),
+         {:ok, %{identity: identity}} <-
+           step(state, :r3, fn -> Native.write(native, 0, bytes) end),
          :ok <- step(state, {:r4, :synced}, fn -> Native.sync(native) end),
          :ok <- step(state, :r4, fn -> Native.close_write(native) end),
          :ok <-
            step(state, :r5, fn ->
-             Native.publish(native, :segments, source, canonical(id), identity)
+             Native.publish(native, :segments, source, canonical(id), staged_identity)
            end),
          :ok <- Native.sync_dir(native, :segments),
-         {:ok, store} <- inspect_for_writer(state),
-         true <-
-           (store.highest.id == id and store.highest.state == :active and
-              store.highest.count == 0 and store.next_sequence == state.next_sequence) ||
-             {:error, :successor_mismatch},
+         {:ok, successor} <- successor(bytes, identity, id, state.next_sequence, state.store_id),
          :ok <- step(state, :r6, fn -> Native.check(native) end),
          {:ok, _} <-
            step(state, :r7, fn ->
-             Native.open_active(native, canonical(id), store.highest.identity)
+             Native.open_active(native, canonical(id), successor.identity)
            end),
          :ok <- Native.check(native) do
-      {:ok, %{state | segment: store.highest}}
+      {:ok, %{state | segment: successor}}
+    end
+  end
+
+  # Rotation already owns the store lock and every acknowledged append was
+  # written, read back, and incorporated into the in-memory CRC frontier.  A
+  # successor is therefore proved by the header we just encoded plus the
+  # identity returned by that exact write.  Replaying the complete epoch here
+  # made rollover latency proportional to all retained history.
+  defp successor(bytes, identity, id, first_sequence, store_id) do
+    with {:ok, segment} <-
+           Segment.decode_header(bytes, %{id: id, store_id: store_id}),
+         true <- segment.first_sequence == first_sequence || {:error, :successor_mismatch},
+         true <- identity.size == byte_size(bytes) || {:error, :successor_mismatch} do
+      {:ok,
+       %{
+         segment
+         | state: :active,
+           identity: identity,
+           crc_state: CRC32C.update(CRC32C.initial(), bytes)
+       }}
     end
   end
 
@@ -1525,31 +1502,11 @@ defmodule Tay.Storage.Writer do
   defp check_append(state) when is_map_key(state, :group_commit), do: :ok
   defp check_append(state), do: Native.check(state.native)
 
-  defp verify_current(state) do
-    with {:ok, store} <- inspect_for_writer(state) do
-      fields = [
-        :id,
-        :first_sequence,
-        :store_id,
-        :state,
-        :last_sequence,
-        :count,
-        :bytes,
-        :crc_state
-      ]
-
-      if Map.take(store.highest, fields) == Map.take(state.segment, fields) and
-           store.highest.identity.device == state.segment.identity.device and
-           store.highest.identity.inode == state.segment.identity.inode do
-        {:ok, %{state | segment: store.highest}}
-      else
-        {:error, :writer_state_mismatch}
-      end
-    end
-  end
-
   defp seal_segment(state) do
-    with {:ok, state} <- step(state, :r0, fn -> verify_current(state) end) do
+    # Native.check is O(1): it revalidates the pinned directory/file identity
+    # and exact size.  The Writer's serialized state supplies count, sequence,
+    # and CRC; full semantic replay belongs to startup recovery, not rollover.
+    with :ok <- step(state, :r0, fn -> Native.check(state.native) end) do
       footer = %{
         id: state.segment.id,
         first_sequence: state.segment.first_sequence,

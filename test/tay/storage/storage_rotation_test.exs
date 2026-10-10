@@ -45,6 +45,28 @@ defmodule Tay.Storage.RotationTest do
     GenServer.stop(reopened)
   end
 
+  test "rotation does not rescan retained segment contents", %{path: path} do
+    {:ok, w} = start(path)
+    assert {:ok, %{sequence: 1}} = Writer.append(w, 1, 1, "retained")
+
+    # A foreground replay would consume this injected READ_AT fault. Rotation
+    # must use only bounded identity/size checks and the maintained CRC state.
+    :ok = Writer.inject_fault(w, :read, 1, :error, 5)
+    assert {:ok, %{id: 2, count: 0}} = Writer.rotate(w)
+    assert {:ok, %{sequence: 2, segment_id: 2}} = Writer.append(w, 1, 1, "next")
+
+    # Prove the fault was still pending, rather than silently ignored.
+    assert {:error, _} = Writer.reduce(w, [], fn record, _, acc -> [record.sequence | acc] end)
+    GenServer.stop(w)
+
+    assert {:ok, reopened} = start(path)
+
+    assert {:ok, [2, 1]} =
+             Writer.reduce(reopened, [], fn record, _, acc -> [record.sequence | acc] end)
+
+    GenServer.stop(reopened)
+  end
+
   test "highest sealed creates only its proved header successor on startup", %{path: path} do
     {:ok, w} = start(path)
     {:ok, _} = Writer.append(w, 1, 1, "sealed")

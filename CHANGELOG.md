@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.3.2 — 2026-10-10
+
+### Fixed
+
+- Made segment rollover constant-time with respect to retained history by
+  replacing foreground semantic replay with pinned identity, exact-size, CRC,
+  and successor-header validation. Durable file and directory sync barriers
+  remain unchanged.
+
 ## 1.3.1 — 2026-10-10
 
 ### Added

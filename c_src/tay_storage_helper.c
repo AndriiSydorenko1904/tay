@@ -454,13 +454,13 @@ static int validate_paths(void) {
     struct stat now;
     e=checked_regular(write_fd,scope_fd(write_scope),write_name,&now);
     if (e) return e;
-    if (!same(&now,&write_identity)) return ESTALE;
+    if (!same(&now,&write_identity) || now.st_size!=write_identity.st_size) return ESTALE;
   }
   if (candidate_write_fd>=0) {
     struct stat now;
     e=checked_regular(candidate_write_fd,scope_fd(candidate_write_scope),candidate_write_name,&now);
     if (e) return e;
-    if (!same(&now,&candidate_write_identity)) return ESTALE;
+    if (!same(&now,&candidate_write_identity) || now.st_size!=candidate_write_identity.st_size) return ESTALE;
   }
   return 0;
 }
