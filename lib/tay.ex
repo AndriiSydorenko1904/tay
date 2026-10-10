@@ -199,7 +199,8 @@ defmodule Tay do
   migration still drains and recovers because the frozen v1 format has no online
   catch-up boundary. Uses the Engine's bounded terminal retention by default. Administrative
   `terminal_retention: :infinity` retains all jobs; `{:minutes, n}` or
-  `{:hours, n}` overrides the bounded duration. No override bypasses the
+  `{:hours, n}` overrides the bounded duration. Zero removes every terminal job
+  while preserving all active jobs. No override bypasses the
   publication fence, headroom, or exact validation.
   """
   def compact(options \\ []) do
@@ -373,8 +374,33 @@ defmodule Tay do
       {:ok, %{status: %{state: :compacting, phase: :preparing}} = meta} ->
         {:ok, meta}
 
+      {:ok, %{status: %{state: :compacting, phase: :switching}} = meta} ->
+        await_ready(name, System.monotonic_time(:millisecond) + meta.timeout)
+
       _ ->
         {:error, :unavailable}
+    end
+  end
+
+  defp await_ready(name, deadline) do
+    if System.monotonic_time(:millisecond) < deadline do
+      Process.sleep(1)
+
+      case Admission.metadata(name) do
+        {:ok, %{status: %{state: state}} = meta} when state in [:ready, :draining, :drained] ->
+          {:ok, meta}
+
+        {:ok, %{status: %{state: :compacting, phase: :preparing}} = meta} ->
+          {:ok, meta}
+
+        {:ok, %{status: %{state: :compacting, phase: :switching}}} ->
+          await_ready(name, deadline)
+
+        _ ->
+          {:error, :unavailable}
+      end
+    else
+      {:error, :unavailable}
     end
   end
 

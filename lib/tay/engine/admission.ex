@@ -45,6 +45,46 @@ defmodule Tay.Engine.Admission do
   end
 
   def request(name, meta, payload, bytes, operation, id, timeout, expected_revision \\ nil) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    request_until(
+      name,
+      meta,
+      payload,
+      bytes,
+      operation,
+      id,
+      deadline,
+      expected_revision
+    )
+  end
+
+  defp request_until(name, meta, payload, bytes, operation, id, deadline, expected_revision) do
+    timeout = max(deadline - System.monotonic_time(:millisecond), 1)
+
+    result =
+      request_once(name, meta, payload, bytes, operation, id, timeout, expected_revision)
+
+    case result do
+      {:error, %Error{kind: :unavailable, reason: reason}}
+      when reason in [:unavailable, :revoked] ->
+        retry_after_switch(
+          name,
+          payload,
+          bytes,
+          operation,
+          id,
+          deadline,
+          expected_revision,
+          result
+        )
+
+      _ ->
+        result
+    end
+  end
+
+  defp request_once(name, meta, payload, bytes, operation, id, timeout, expected_revision) do
     with true <- bytes <= meta.slot_bytes || {:error, :client_bytes},
          {:ok, permit} <- claim(name, meta, timeout) do
       try do
@@ -63,6 +103,54 @@ defmodule Tay.Engine.Admission do
       end
     else
       {:error, reason} -> {:error, Error.new(:capacity, reason, id, operation, expected_revision)}
+    end
+  end
+
+  defp retry_after_switch(
+         name,
+         payload,
+         bytes,
+         operation,
+         id,
+         deadline,
+         expected_revision,
+         fallback
+       ) do
+    if System.monotonic_time(:millisecond) < deadline do
+      Process.sleep(1)
+
+      case metadata(name) do
+        {:ok, %{status: %{state: state}} = meta}
+        when state in [:ready, :draining, :drained] ->
+          request_until(
+            name,
+            meta,
+            payload,
+            bytes,
+            operation,
+            id,
+            deadline,
+            expected_revision
+          )
+
+        {:ok, %{status: %{state: :compacting, phase: phase}} = meta}
+        when phase in [:preparing, :switching] ->
+          request_until(
+            name,
+            meta,
+            payload,
+            bytes,
+            operation,
+            id,
+            deadline,
+            expected_revision
+          )
+
+        _ ->
+          fallback
+      end
+    else
+      fallback
     end
   end
 

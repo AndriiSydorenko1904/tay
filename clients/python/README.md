@@ -69,7 +69,7 @@ worker = TayHTTPWorker(
 )
 
 
-@worker.task(name="reports.rebuild.v1")
+@worker.task(name="reports.rebuild.v1", retries=3, backoff="exponential")
 def rebuild(report_id: str) -> dict:
     return {"report_id": report_id, "rebuilt": True}
 
@@ -119,12 +119,17 @@ def refresh(account_id: str, force: bool = False) -> None:
     ...
 
 
-@tay.task(name="accounts.refresh.v1")
+@tay.task(name="accounts.refresh.v1", retries=3, backoff="exponential")
 def public_refresh(account_id: str) -> None: ...
 
 
 job = await refresh.enqueue("acct-42", force=True)
 ```
+
+`retries` and `backoff` declared on either `Tay.task` or
+`TayHTTPWorker.task` become defaults when the decorated task enqueues a job.
+Pass an option such as `retries=0` to `task.enqueue()` to override a default for
+one submission.
 
 Registered handlers are available in `tay.tasks`, keyed by job name.  Calling
 `await tay.enqueue("accounts.refresh.v1", {"account_id": "acct-42"})`
@@ -134,7 +139,7 @@ For payments and other external effects, pass the same stable business
 operation identifier as Tay's `submission_id` and the provider's idempotency
 key. A Tay retry can then repeat delivery without repeating the external
 effect. See the repository's
-[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.2.0/docs/idempotency.md)
+[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.3.1/docs/idempotency.md)
 for crash cases and a complete financial-operation example.
 
 For a long-running worker that adds or removes capabilities later, explicitly

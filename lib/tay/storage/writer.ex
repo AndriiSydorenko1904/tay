@@ -7,6 +7,10 @@ defmodule Tay.Storage.Writer do
   poisons this instance; no automatic restart/retry is permitted. An embedding
   supervisor may start this temporary child explicitly. Physical readiness is
   not Event validation, job insertion, or semantic recovery readiness.
+
+  Strict group commits are private Engine-owned sessions: appends update the
+  physical stream in order, one final sync/check closes the group, and the
+  Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
   alias Tay.Storage.{CRC32C, Native, Reader, Record, Recovery, Segment}
@@ -83,6 +87,14 @@ defmodule Tay.Storage.Writer do
         {:admitted, admission_ref, {:append, type, schema, payload}},
         :infinity
       )
+
+  @doc false
+  def begin_group_commit(writer, admission_ref),
+    do: GenServer.call(writer, {:begin_group_commit, admission_ref}, :infinity)
+
+  @doc false
+  def finish_group_commit(writer, admission_ref),
+    do: GenServer.call(writer, {:finish_group_commit, admission_ref}, :infinity)
 
   def seal(writer, admission_ref),
     do: GenServer.call(writer, {:admitted, admission_ref, :seal}, :infinity)
@@ -550,6 +562,57 @@ defmodule Tay.Storage.Writer do
        else: {:reply, {:error, :mutation_not_admitted}, state}
   end
 
+  def handle_call({:begin_group_commit, reference}, {caller, _}, %{recovery: recovery} = state)
+      when is_map(recovery) do
+    cond do
+      recovery.status != :ready or reference != recovery.admission_ref or
+          caller != recovery.caller ->
+        {:reply, {:error, :mutation_not_admitted}, state}
+
+      state.options.durability != :sync ->
+        {:reply, {:error, :group_commit_requires_sync}, state}
+
+      Map.get(state, :group_commit) != nil ->
+        {:reply, {:error, :group_commit_active}, state}
+
+      true ->
+        {:reply, :ok,
+         Map.put(state, :group_commit, %{owner: caller, reference: reference, count: 0})}
+    end
+  end
+
+  def handle_call({:finish_group_commit, reference}, {caller, _}, state) do
+    case Map.get(state, :group_commit) do
+      %{owner: ^caller, reference: ^reference, count: count} ->
+        started = System.monotonic_time()
+
+        result =
+          if count == 0,
+            do: :ok,
+            else: step(state, :append_synced, fn -> Native.sync(state.native) end)
+
+        duration = System.monotonic_time() - started
+
+        case result do
+          :ok ->
+            case Native.check(state.native) do
+              :ok ->
+                {:reply, {:ok, %{size: count, fsync_duration: duration}},
+                 Map.delete(state, :group_commit)}
+
+              {:error, reason} ->
+                {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
+        end
+
+      _ ->
+        {:reply, {:error, :group_commit_not_active}, state}
+    end
+  end
+
   def handle_call(
         {:compact, reference, deadline, retention, captured_at, cancel_flag},
         {caller, _},
@@ -867,6 +930,7 @@ defmodule Tay.Storage.Writer do
             epoch_id: view.epoch_id,
             compaction_captured_at: view.manifest.captured_at,
             compaction_terminal_retention: view.manifest.terminal_retention,
+            checkpoint_tail_events: view.next_sequence - view.manifest.tail_first_sequence,
             segments: store.segments,
             highest: store.highest,
             exhausted: store.exhausted,
@@ -1425,7 +1489,7 @@ defmodule Tay.Storage.Writer do
     with {:ok, %{identity: identity}} <-
            step(state, :append_written, fn -> Native.write(state.native, offset, bytes) end),
          :ok <- sync_append(state),
-         :ok <- Native.check(state.native) do
+         :ok <- check_append(state) do
       segment = %{
         state.segment
         | last_sequence: state.next_sequence,
@@ -1442,12 +1506,24 @@ defmodule Tay.Storage.Writer do
         durability: state.options.durability
       }
 
-      {:ok, %{state | segment: segment, next_sequence: state.next_sequence + 1}, receipt}
+      next = %{state | segment: segment, next_sequence: state.next_sequence + 1}
+
+      next =
+        case Map.get(next, :group_commit) do
+          nil -> next
+          group -> Map.put(next, :group_commit, %{group | count: group.count + 1})
+        end
+
+      {:ok, next, receipt}
     end
   end
 
   defp sync_append(%{options: %{durability: :write}}), do: :ok
+  defp sync_append(state) when is_map_key(state, :group_commit), do: :ok
   defp sync_append(state), do: step(state, :append_synced, fn -> Native.sync(state.native) end)
+
+  defp check_append(state) when is_map_key(state, :group_commit), do: :ok
+  defp check_append(state), do: Native.check(state.native)
 
   defp verify_current(state) do
     with {:ok, store} <- inspect_for_writer(state) do

@@ -2,7 +2,7 @@ defmodule Tay.Storage.V2RetentionTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
   alias Tay.Event.V2
-  alias Tay.Storage.V2.{Authority, Retention}
+  alias Tay.Storage.V2.{Authority, Retention, Snapshot}
   @directory Path.expand("../../fixtures/storage/v2/phase_c", __DIR__)
 
   defp fixtures do
@@ -21,6 +21,7 @@ defmodule Tay.Storage.V2RetentionTest do
 
     for {label, policy} <- [
           {"infinity", :infinity},
+          {"zero", {:hours, 0}},
           {"bounded", {:hours, 24}},
           {"maximum", {:hours, Retention.max_hours()}}
         ] do
@@ -46,7 +47,7 @@ defmodule Tay.Storage.V2RetentionTest do
   end
 
   test "validly checksummed malformed literal retention never falls back to infinity" do
-    for {label, bytes} <- fixtures(), label not in ["infinity", "bounded", "maximum"] do
+    for {label, bytes} <- fixtures(), label not in ["infinity", "zero", "bounded", "maximum"] do
       assert {:error, :terminal_retention} = Authority.decode_manifest(bytes), label
     end
 
@@ -56,12 +57,43 @@ defmodule Tay.Storage.V2RetentionTest do
           24,
           "24h",
           {:days, 1},
-          {:hours, 0},
           {:hours, -1},
           {:hours, 1.0},
           {:hours, Retention.max_hours() + 1}
         ] do
       assert {:error, :terminal_retention} = Retention.validate(policy)
+    end
+  end
+
+  test "zero retention is durable and expires every terminal timestamp" do
+    for policy <- [{:minutes, 0}, {:hours, 0}] do
+      assert :ok = Retention.validate(policy)
+      assert {:ok, 0} = Retention.duration(policy)
+      assert {:ok, true} = Retention.expired?(V2.max_time(), policy, 0)
+      assert Retention.persisted(policy) == {:hours, 1}
+    end
+
+    manifest =
+      fixtures()["bounded"]
+      |> Authority.decode_manifest()
+      |> elem(1)
+      |> Map.put(:terminal_retention, {:hours, 0})
+
+    assert {:ok, encoded} = Authority.encode_manifest(manifest)
+    assert {:ok, decoded} = Authority.decode_manifest(encoded)
+    assert decoded.terminal_retention == {:hours, 0}
+
+    for state <- [:completed, :cancelled, :discarded] do
+      assert {:ok, :expire} =
+               Snapshot.classify(
+                 %{state: state, terminal_at: V2.max_time()},
+                 {:hours, 0},
+                 0
+               )
+    end
+
+    for state <- [:available, :scheduled, :executing, :retryable] do
+      assert {:ok, :retain} = Snapshot.classify(%{state: state}, {:hours, 0}, 0)
     end
   end
 

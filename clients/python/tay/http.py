@@ -286,9 +286,23 @@ class TayHTTPWorker(TayHTTP):
         return self._tasks.copy()
 
     def task(
-        self, function: Callable[..., Any] | None = None, *, name: str | None = None
+        self,
+        function: Callable[..., Any] | None = None,
+        *,
+        name: str | None = None,
+        retries: int | None = None,
+        backoff: str | None = None,
     ) -> Task | Callable[[Callable[..., Any]], Task]:
         """Register a callable, either as ``@worker.task`` or ``@worker.task(...)``."""
+
+        if retries is not None and (
+            type(retries) is not int or retries not in range(65_535)
+        ):
+            raise ValidationError("retries must be an integer in 0..65534")
+        if backoff is not None and backoff != "exponential":
+            raise ValidationError("backoff must be 'exponential'")
+
+        config = TaskConfig(retries=retries, backoff=backoff)
 
         def register(fn: Callable[..., Any]) -> Task:
             if not callable(fn):
@@ -301,7 +315,7 @@ class TayHTTPWorker(TayHTTP):
                 raise TaskRegistrationError(
                     f"task name {key!r} is already registered to another callable"
                 )
-            declared = Task(self, fn, name=key, config=TaskConfig())
+            declared = Task(self, fn, name=key, config=config)
             self._tasks[key] = declared
             return declared
 

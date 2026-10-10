@@ -26,6 +26,7 @@ defmodule Tay.Engine do
   alias Tay.Storage.{Writer, Segment}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
+  @memory_reclaim_idle_ms 1_000
   @segment_catalog_limit 128
   @states [:available, :scheduled, :executing, :retryable, :completed, :cancelled, :discarded]
 
@@ -113,6 +114,8 @@ defmodule Tay.Engine do
               nil -> nil
               captured -> max(captured, Clock.wall(config.clock))
             end,
+          events_since_checkpoint:
+            Map.get(summary, :checkpoint_tail_events, summary.record_count),
           store_id: summary.store_id,
           epoch_id: Map.get(summary, :epoch_id),
           next_availability_order: Map.get(candidate, :next_availability_order, 1),
@@ -138,6 +141,9 @@ defmodule Tay.Engine do
           lifecycle_operation: nil,
           lifecycle_fenced: nil,
           online_compaction: nil,
+          group_commit: nil,
+          deferred_transitions: nil,
+          memory_reclaim: nil,
           history_bytes:
             summary.total_segment_bytes +
               44 * (summary.highest.id - inspection.summary.highest.id),
@@ -214,7 +220,14 @@ defmodule Tay.Engine do
       ensure_generation_live!(s)
 
       case intent do
+        {:insert, _, _, _}
+        when s.config.durability == :sync and s.config.group_commit_interval_ms > 0 and
+               s.mode == :ready ->
+          {:noreply, enqueue_group_commit(s, permit, intent, from)}
+
         {:drain, deadline} when is_integer(deadline) ->
+          s = flush_group_commit(s)
+
           timer =
             Process.send_after(
               self(),
@@ -228,6 +241,7 @@ defmodule Tay.Engine do
           {:noreply, publish(complete_drains(next))}
 
         _ ->
+          s = flush_group_commit(s)
           {reply, next} = command(intent, s)
           next = complete_drains(next)
           reply_command(next, permit, from, reply)
@@ -237,6 +251,32 @@ defmodule Tay.Engine do
       {:noreply, s}
     end
   end
+
+  def handle_info({:flush_group_commit, token}, %{group_commit: %{token: token}} = s),
+    do: {:noreply, s |> flush_group_commit() |> wake_controls()}
+
+  def handle_info({:flush_group_commit, _}, s), do: {:noreply, s}
+
+  def handle_info(
+        {:reclaim_memory, token},
+        %{memory_reclaim: {_, token}, active_budget: %{count: 0}, running: running} = s
+      )
+      when map_size(running) == 0 do
+    if Process.alive?(s.writer), do: :erlang.garbage_collect(s.writer)
+    :erlang.garbage_collect()
+    hook(s.config, :memory_reclaimed)
+    {:noreply, %{s | memory_reclaim: nil}}
+  end
+
+  def handle_info({:reclaim_memory, token}, %{memory_reclaim: {_, token}} = s),
+    do:
+      {:noreply,
+       if(s.active_budget.count == 0,
+         do: schedule_memory_reclaim(%{s | memory_reclaim: nil}),
+         else: %{s | memory_reclaim: nil}
+       )}
+
+  def handle_info({:reclaim_memory, _}, s), do: {:noreply, s}
 
   def handle_info({:DOWN, _, :process, guardian, _}, %{guardian: guardian} = s),
     do: {:stop, :guardian_lost, s}
@@ -254,6 +294,8 @@ defmodule Tay.Engine do
          expected_source, cancel_flag},
         %{generation: generation, guardian: guardian, online_compaction: nil} = s
       ) do
+    s = flush_group_commit(s)
+
     cond do
       not is_binary(s.epoch_id) ->
         send(guardian, {:online_compaction_unsupported, self(), token})
@@ -294,6 +336,7 @@ defmodule Tay.Engine do
         {:compact_online_switch_requested, writer, token},
         %{writer: writer, online_compaction: token} = s
       ) do
+    s = flush_group_commit(s)
     send(s.guardian, {:online_compaction_switch_requested, self(), token})
     {:noreply, s}
   end
@@ -339,6 +382,8 @@ defmodule Tay.Engine do
         {:lifecycle_drain, generation, token, guardian, expected_source},
         %{generation: generation, guardian: guardian} = s
       ) do
+    s = flush_group_commit(s)
+
     if Tay.Engine.Operations.draining?(s.config.name, generation, token, guardian) do
       cond do
         not is_nil(expected_source) and s.mode != :ready ->
@@ -403,6 +448,7 @@ defmodule Tay.Engine do
           {:ok,
            Map.merge(estimate, %{
              last_compaction_at: s.last_compaction_at,
+             checkpoint_events: s.events_since_checkpoint,
              generation: s.generation,
              source: {s.epoch_id, s.next_sequence}
            })}
@@ -528,6 +574,65 @@ defmodule Tay.Engine do
   end
 
   def handle_info(_, s), do: {:noreply, s}
+
+  defp enqueue_group_commit(%{group_commit: nil} = s, permit, intent, from) do
+    token = make_ref()
+
+    timer =
+      Process.send_after(self(), {:flush_group_commit, token}, s.config.group_commit_interval_ms)
+
+    %{
+      s
+      | group_commit: %{
+          token: token,
+          timer: timer,
+          started: System.monotonic_time(),
+          commands: [{permit, intent, from}]
+        }
+    }
+  end
+
+  defp enqueue_group_commit(s, permit, intent, from),
+    do: update_in(s.group_commit.commands, &[{permit, intent, from} | &1])
+
+  defp flush_group_commit(%{group_commit: nil} = s), do: s
+
+  defp flush_group_commit(s) do
+    group = s.group_commit
+    Process.cancel_timer(group.timer)
+    wait = System.monotonic_time() - group.started
+    :ok = Writer.begin_group_commit(s.writer, s.admission)
+    initial = %{s | group_commit: nil, deferred_transitions: []}
+
+    {next, replies} =
+      Enum.reduce(Enum.reverse(group.commands), {initial, []}, fn
+        {permit, intent, from}, {acc, replies} ->
+          {reply, acc} = command(intent, acc)
+          {acc, [{permit, from, reply} | replies]}
+      end)
+
+    case Writer.finish_group_commit(next.writer, next.admission) do
+      {:ok, %{size: size, fsync_duration: fsync_duration}} ->
+        Tay.Telemetry.group_commit(next.config.name, size, wait, fsync_duration)
+
+        next.deferred_transitions
+        |> Enum.reverse()
+        |> Enum.each(fn {operation, previous, job} ->
+          Tay.Telemetry.transition(next.config.name, operation, previous, job)
+        end)
+
+        next = %{next | deferred_transitions: nil}
+
+        Enum.each(Enum.reverse(replies), fn {permit, from, reply} ->
+          reply_command(next, permit, from, reply)
+        end)
+
+        complete_drains(next)
+
+      _ ->
+        exit(:writer_commit_unknown)
+    end
+  end
 
   defp submitted?(s, {slot, token}, {owner, _}) do
     with {:ok, meta} <- Admission.metadata(s.config.name),
@@ -1431,7 +1536,6 @@ defmodule Tay.Engine do
             Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
 
           :ok = publish_projection(s, previous, job)
-          Tay.Telemetry.transition(s.config.name, telemetry_operation(type), previous, job)
 
           next = %{
             s
@@ -1442,6 +1546,7 @@ defmodule Tay.Engine do
               compaction_estimate:
                 CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
+              events_since_checkpoint: s.events_since_checkpoint + 1,
               settlement_reserve: reserve,
               history_bytes: s.history_bytes + history_delta(s, byte_size(payload)),
               segment_count: s.segment_count + receipt.segment_id - s.segment.id,
@@ -1456,6 +1561,12 @@ defmodule Tay.Engine do
               },
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
+
+          next =
+            next
+            |> record_transition(telemetry_operation(type), previous, job)
+            |> maybe_schedule_memory_reclaim(previous, job)
+            |> ensure_active_accounting!()
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, type, :post_projection})
@@ -1514,13 +1625,6 @@ defmodule Tay.Engine do
           hook(s.config, {:execution, 8, :post_append})
           :ok = publish_projection(s, previous, job)
 
-          Tay.Telemetry.transition(
-            s.config.name,
-            telemetry_operation(event.record_type),
-            previous,
-            job
-          )
-
           next = %{
             s
             | budget: budget,
@@ -1530,6 +1634,7 @@ defmodule Tay.Engine do
               compaction_estimate:
                 CompactionEstimate.replace(s.compaction_estimate, previous, job),
               next_sequence: s.next_sequence + 1,
+              events_since_checkpoint: s.events_since_checkpoint + 1,
               next_availability_order: next_order,
               settlement_reserve: reserve,
               history_bytes: s.history_bytes + history_delta(s, byte_size(payload)),
@@ -1545,6 +1650,12 @@ defmodule Tay.Engine do
               },
               segment_catalog: update_segment_catalog(s, receipt, byte_size(payload))
           }
+
+          next =
+            next
+            |> record_transition(telemetry_operation(event.record_type), previous, job)
+            |> maybe_schedule_memory_reclaim(previous, job)
+            |> ensure_active_accounting!()
 
           hook(s.config, :post_projection)
           hook(s.config, {:execution, 8, :post_projection})
@@ -1568,6 +1679,15 @@ defmodule Tay.Engine do
       )
 
   defp encoded_event(_s, event, payload), do: {:ok, {event.record_type, 1, payload}}
+
+  defp record_transition(%{deferred_transitions: transitions} = s, operation, previous, job)
+       when is_list(transitions),
+       do: %{s | deferred_transitions: [{operation, previous, job} | transitions]}
+
+  defp record_transition(s, operation, previous, job) do
+    Tay.Telemetry.transition(s.config.name, operation, previous, job)
+    s
+  end
 
   defp ensure_generation_live!(%{fence: nil}), do: :ok
 
@@ -1774,8 +1894,7 @@ defmodule Tay.Engine do
       :ok
     )
 
-    {active_budget, terminal_budget} = partition_budgets(jobs)
-    budget = recovered.candidate |> Transition.accounting() |> Map.merge(active_budget)
+    {_recovered_active_budget, terminal_budget} = partition_budgets(jobs)
 
     segment_catalog =
       recovered.store.segments
@@ -1792,9 +1911,12 @@ defmodule Tay.Engine do
         segment_catalog: segment_catalog,
         history_bytes: recovered.total_segment_bytes,
         segment_count: recovered.segment_count,
-        active_budget: active_budget,
+        # Keep the live charge ledger paired with the live ETS projection.
+        # Re-decoded snapshot terms can have a different heap representation
+        # even though their durable semantics are identical.
+        active_budget: s.active_budget,
         terminal_budget: terminal_budget,
-        budget: budget,
+        budget: s.budget,
         terminal_stats: terminal_statistics(jobs),
         definition_bytes:
           Enum.reduce(jobs, 0, fn {_id, job}, total -> total + byte_size(job.definition_bytes) end),
@@ -1802,6 +1924,7 @@ defmodule Tay.Engine do
           Enum.reduce(jobs, CompactionEstimate.new(), fn {_id, job}, acc ->
             CompactionEstimate.replace(acc, nil, job)
           end),
+        events_since_checkpoint: recovered.next_sequence - recovered.manifest.tail_first_sequence,
         last_compaction_at: max(stats.captured_at, Clock.wall(s.config.clock)),
         online_compaction: nil
     }
@@ -1815,7 +1938,13 @@ defmodule Tay.Engine do
   end
 
   defp put_compaction_retention(config, retention),
-    do: %{config | compaction: %{config.compaction | terminal_retention: retention}}
+    do: %{
+      config
+      | compaction: %{
+          config.compaction
+          | terminal_retention: Tay.Storage.V2.Retention.persisted(retention)
+        }
+    }
 
   defp adopt_online_rotation(
          s,
@@ -1898,6 +2027,34 @@ defmodule Tay.Engine do
       count: budget.count + sign,
       bytes: budget.bytes + sign * job.charge.bytes
     })
+  end
+
+  defp maybe_schedule_memory_reclaim(s, previous, job) do
+    if not terminal?(previous) and terminal?(job) and s.active_budget.count == 0 do
+      schedule_memory_reclaim(s)
+    else
+      s
+    end
+  end
+
+  defp schedule_memory_reclaim(s) do
+    if s.memory_reclaim, do: Process.cancel_timer(elem(s.memory_reclaim, 0))
+    token = make_ref()
+    timer = Process.send_after(self(), {:reclaim_memory, token}, @memory_reclaim_idle_ms)
+    %{s | memory_reclaim: {timer, token}}
+  end
+
+  defp ensure_active_accounting!(s) do
+    active = s.active_budget
+    budget = s.budget
+
+    if active.count >= 0 and active.bytes >= 0 and
+         (active.count > 0 or active.bytes == 0) and
+         active.count == budget.count and active.bytes == budget.bytes do
+      s
+    else
+      exit(:invalid_active_memory_accounting)
+    end
   end
 
   defp startup_error(%Tay.Storage.Recovery.Error{} = error),

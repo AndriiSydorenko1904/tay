@@ -64,7 +64,9 @@ VOLUME ["/var/lib/tay"]
 EXPOSE 4000 8080
 
 # `rpc` is the OTP release command for checking the running BEAM node, not gRPC.
-HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
+# Recovery has a bounded 15-minute default deadline. Do not mark a large but
+# valid Store unhealthy while it is still inside that startup contract.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=15m --retries=12 \
   CMD ["bin/tay_standalone", "rpc", "Tay.Standalone.Health.check!()"]
 
 ENTRYPOINT ["/opt/tay/bin/tay_standalone"]

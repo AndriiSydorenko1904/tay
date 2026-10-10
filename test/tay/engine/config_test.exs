@@ -6,6 +6,11 @@ defmodule Tay.Engine.ConfigTest do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, c} = Config.new(base)
     assert c.initialize == :never
+    assert c.group_commit_interval_ms == 0
+
+    assert {:ok, %{group_commit_interval_ms: 1_000}} =
+             Config.new(base ++ [group_commit_interval_ms: 1_000])
+
     assert {:ok, %{initialize: :if_missing}} = Config.new(base ++ [initialize: :if_missing])
 
     assert {c.max_insert_payload_bytes, c.max_insert_args_bytes, c.insert_value_depth,
@@ -39,6 +44,9 @@ defmodule Tay.Engine.ConfigTest do
           [workers: %{"" => __MODULE__}],
           [workers: %{"w" => "Elixir.NeverFromDisk"}],
           [client_slots: 0],
+          [group_commit_interval_ms: -1],
+          [group_commit_interval_ms: 1_001],
+          [group_commit_interval_ms: "5"],
           [client_bytes: 1],
           [caller_timeout: :infinity],
           [initialize: :always],

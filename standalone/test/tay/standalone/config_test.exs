@@ -8,6 +8,62 @@ defmodule Tay.Standalone.ConfigTest do
     assert config.data_dir == "/var/lib/tay"
     assert config.socket_path == "/run/tay/tay.sock"
     assert config.initialize == :never
+    assert config.default_queue_concurrency == 10
+    assert config.caller_timeout_ms == 5_000
+    assert config.group_commit_interval_ms == 0
+    assert config.checkpoint_interval_ms == 60_000
+  end
+
+  test "configures the Engine caller timeout" do
+    assert {:ok, %{caller_timeout_ms: 25_000}} =
+             Config.load(%{"TAY_CALLER_TIMEOUT_MS" => "25000"})
+
+    for value <- ["0", "4294967296", "-1", "5s", ""] do
+      assert {:error, message} = Config.load(%{"TAY_CALLER_TIMEOUT_MS" => value})
+      assert message =~ "TAY_CALLER_TIMEOUT_MS"
+    end
+  end
+
+  test "configures the default queue concurrency" do
+    for concurrency <- [1, 10, 20, 100, 65_536] do
+      assert {:ok, config} =
+               Config.load(%{"TAY_DEFAULT_QUEUE_CONCURRENCY" => Integer.to_string(concurrency)})
+
+      assert config.default_queue_concurrency == concurrency
+    end
+
+    for value <- ["0", "65537", "-1", "1.5", "many"] do
+      assert {:error, message} = Config.load(%{"TAY_DEFAULT_QUEUE_CONCURRENCY" => value})
+      assert message =~ "TAY_DEFAULT_QUEUE_CONCURRENCY"
+    end
+  end
+
+  test "validates the durable enqueue group-commit interval" do
+    for interval <- [0, 1, 5, 10, 50, 100, 1_000] do
+      assert {:ok, config} =
+               Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => Integer.to_string(interval)})
+
+      assert config.group_commit_interval_ms == interval
+    end
+
+    for value <- ["-1", "1001", "1.0", " 5", "", "five"] do
+      assert {:error, message} = Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => value})
+      assert message =~ "TAY_GROUP_COMMIT_INTERVAL_MS"
+    end
+  end
+
+  test "configures periodic semantic checkpoints" do
+    for interval <- [0, 1_000, 60_000, 4_294_967_295] do
+      assert {:ok, config} =
+               Config.load(%{"TAY_CHECKPOINT_INTERVAL_MS" => Integer.to_string(interval)})
+
+      assert config.checkpoint_interval_ms == interval
+    end
+
+    for value <- ["-1", "4294967296", "1.0", " 1000", "", "minute"] do
+      assert {:error, message} = Config.load(%{"TAY_CHECKPOINT_INTERVAL_MS" => value})
+      assert message =~ "TAY_CHECKPOINT_INTERVAL_MS"
+    end
   end
 
   test "allows HTTP-only runtime without a Unix socket" do

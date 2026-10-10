@@ -182,6 +182,7 @@ class Task:
         """Submit a durable job using this task's stable identity."""
 
         task_kwargs, options = self._split_enqueue_kwargs(kwargs)
+        options = {**self.config.execution_options(), **options}
         serialized_args = self._arguments_from_call(args, task_kwargs)
         return await self.tay.enqueue(self.name, serialized_args, options=options)
 

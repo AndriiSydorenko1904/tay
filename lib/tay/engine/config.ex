@@ -4,22 +4,48 @@ defmodule Tay.Engine.Config do
   alias Tay.Executor.SocketPath
   alias Tay.Storage.Recovery
   @environment Mix.env()
+  @bytes_per_mebibyte 1_048_576
+  @bytes_per_kibibyte 1_024
+  @default_rotation_target_bytes 64 * @bytes_per_mebibyte
+  @default_insert_payload_bytes 1 * @bytes_per_mebibyte
+  @default_insert_args_bytes 256 * @bytes_per_kibibyte
+  @default_client_bytes 64 * @bytes_per_mebibyte
+  @default_executor_frame_bytes 1 * @bytes_per_mebibyte
+  @default_executor_result_bytes 64 * @bytes_per_kibibyte
+  @default_executor_error_bytes 8 * @bytes_per_kibibyte
+  @default_http_body_bytes 1 * @bytes_per_mebibyte
+  # Shared hard ceiling for bounded Event values and public protocol bodies.
+  @max_protocol_payload_bytes 16 * @bytes_per_mebibyte
+  @max_rotation_target_bytes 1_024 * @bytes_per_mebibyte
+  @default_max_state_bytes 256 * @bytes_per_mebibyte
+  # The canonical encoding of an empty arguments object occupies five bytes.
+  @minimum_encoded_args_bytes 5
+  @minimum_client_slot_bytes 256
+  # Admission deadlines are carried as unsigned 32-bit millisecond values.
+  @max_caller_timeout_ms 4_294_967_295
+  @max_client_slots 65_536
+  @group_commit_interval_range 0..1_000
+  @execution_batch_range 1..1_024
+  @execution_wake_range_ms 1..1_000
+  @max_executor_socket_bytes 100
+  @tcp_port_range 1..65_535
   @defaults %{
     name: Tay.Engine,
     workers: %{},
     durability: :sync,
+    group_commit_interval_ms: 0,
     initialize: :never,
     validated_filesystem: false,
-    rotation_target_bytes: 67_108_864,
+    rotation_target_bytes: @default_rotation_target_bytes,
     storage_timeout: 10_000,
     recovery: [],
-    max_insert_payload_bytes: 1_048_576,
-    max_insert_args_bytes: 262_144,
+    max_insert_payload_bytes: @default_insert_payload_bytes,
+    max_insert_args_bytes: @default_insert_args_bytes,
     insert_value_depth: 32,
     insert_value_nodes: 10_000,
-    max_state_bytes: 268_435_456,
+    max_state_bytes: @default_max_state_bytes,
     client_slots: 64,
-    client_bytes: 67_108_864,
+    client_bytes: @default_client_bytes,
     caller_timeout: 5_000,
     execution_batch: 32,
     execution_wake_ms: 1_000,
@@ -27,15 +53,15 @@ defmodule Tay.Engine.Config do
     # path to override discovery, or explicitly pass nil to disable it.
     executor_socket: :auto,
     executor_socket_mode: 0o600,
-    executor_max_frame_bytes: 1_048_576,
+    executor_max_frame_bytes: @default_executor_frame_bytes,
     executor_max_connections: 128,
     executor_max_tasks_per_connection: 256,
-    executor_result_bytes: 65_536,
-    executor_error_bytes: 8_192,
+    executor_result_bytes: @default_executor_result_bytes,
+    executor_error_bytes: @default_executor_error_bytes,
     executor_max_results: 10_000,
     http_port: nil,
     http_ip: "127.0.0.1",
-    http_max_body_bytes: 1_048_576,
+    http_max_body_bytes: @default_http_body_bytes,
     http_tls_certfile: nil,
     http_tls_keyfile: nil,
     http_tls_cacertfile: nil,
@@ -122,7 +148,30 @@ defmodule Tay.Engine.Config do
         Enum.all?(Keyword.keys(options), &(&1 in allowed))
 
   defp validate(c, r) do
-    positive = [
+    with :ok <- validate_identity(c),
+         :ok <- validate_numeric_limits(c),
+         :ok <- validate_execution(c),
+         :ok <- validate_transport(c),
+         :ok <- validate_storage(c),
+         :ok <- validate_payloads(c, r),
+         :ok <- validate_test_options(c),
+         do: :ok
+  end
+
+  defp validate_identity(c) do
+    valid_name = is_atom(c.name) and c.name not in [nil, false, true]
+
+    valid_workers =
+      is_map(c.workers) and not is_struct(c.workers) and
+        Enum.all?(c.workers, fn {key, module} ->
+          V2.key?(key) and is_atom(module) and module not in [nil, false, true]
+        end)
+
+    valid(valid_name and valid_workers)
+  end
+
+  defp validate_numeric_limits(c) do
+    positive_fields = [
       :storage_timeout,
       :rotation_target_bytes,
       :client_slots,
@@ -139,67 +188,112 @@ defmodule Tay.Engine.Config do
       :http_max_body_bytes
     ]
 
-    nonnegative = [
+    nonnegative_fields = [
       :max_insert_payload_bytes,
       :max_insert_args_bytes,
       :max_state_bytes
     ]
 
-    valid =
-      is_atom(c.name) and c.name not in [nil, false, true] and
-        is_map(c.workers) and not is_struct(c.workers) and
-        Enum.all?(c.workers, fn {key, mod} ->
-          V2.key?(key) and is_atom(mod) and mod not in [nil, false, true]
-        end) and Enum.all?(positive, &(is_integer(c[&1]) and c[&1] > 0)) and
-        Enum.all?(nonnegative, &(is_integer(c[&1]) and c[&1] >= 0)) and
-        c.caller_timeout <= 4_294_967_295 and c.client_slots <= 65_536 and
-        is_integer(c.execution_batch) and c.execution_batch in 1..1_024 and
-        is_integer(c.execution_wake_ms) and c.execution_wake_ms in 1..1_000 and
-        executor_socket?(c.executor_socket) and c.executor_socket_mode in [0o600, 0o660] and
-        is_boolean(c.executor_socket_private_directory) and
-        executor_socket_outside_data_dir?(c.executor_socket, c.data_dir) and
-        c.executor_max_frame_bytes <= 16_777_216 and
-        c.executor_result_bytes <= c.executor_max_frame_bytes and
-        c.executor_error_bytes <= c.executor_max_frame_bytes and
-        http_port?(c.http_port) and http_ip?(c.http_ip) and http_tls?(c) and
-        c.http_max_body_bytes <= 16_777_216 and
-        is_boolean(c.start_paused) and
-        Enum.all?([c.max_history_bytes, c.max_segments], fn limit ->
-          limit == :infinity or (is_integer(limit) and limit >= 0)
-        end) and
-        c.client_bytes >= c.client_slots * 256 and
-        c.rotation_target_bytes >= Tay.Storage.Segment.min_rotation_bytes() and
-        c.rotation_target_bytes <= 1_073_741_824 and
-        is_boolean(c.validated_filesystem) and c.durability in [:write, :sync] and
-        c.initialize in [:never, :if_missing] and
-        (c.durability != :sync or (c.validated_filesystem and :os.type() == {:unix, :linux})) and
-        production_durability?(c) and
-        c.max_insert_payload_bytes <= r.max_decode_payload_bytes and
-        c.max_insert_payload_bytes <= r.event_limits.binary_bytes and
-        c.max_insert_payload_bytes >= 1 and c.max_insert_args_bytes >= 5 and
-        c.max_insert_args_bytes <= 16_777_216 and
-        c.insert_value_depth <= r.event_limits.depth and
-        c.insert_value_nodes <= r.event_limits.output_nodes and
-        is_boolean(Map.get(c, :test_helper, false)) and
-        is_boolean(Map.get(c, :test_execution, true)) and
-        is_atom(Map.get(c, :test_clock, Tay.Execution.Clock)) and
-        Map.get(c, :test_clock, Tay.Execution.Clock) not in [nil, false, true] and
-        (is_nil(Map.get(c, :test_hook)) or is_function(c.test_hook, 1)) and
-        (is_nil(Map.get(c, :test_terminate)) or is_function(c.test_terminate, 1)) and
-        (is_nil(Map.get(c, :writer_hook)) or is_function(c.writer_hook, 2))
-
-    if valid, do: :ok, else: {:error, :invalid_engine_options}
+    validate_all([
+      Enum.all?(positive_fields, &positive_integer?(c[&1])),
+      Enum.all?(nonnegative_fields, &nonnegative_integer?(c[&1])),
+      integer_in?(c.group_commit_interval_ms, @group_commit_interval_range),
+      c.caller_timeout <= @max_caller_timeout_ms,
+      c.client_slots <= @max_client_slots,
+      c.client_bytes >= c.client_slots * @minimum_client_slot_bytes
+    ])
   end
+
+  defp validate_execution(c) do
+    validate_all([
+      integer_in?(c.execution_batch, @execution_batch_range),
+      integer_in?(c.execution_wake_ms, @execution_wake_range_ms),
+      is_boolean(c.start_paused)
+    ])
+  end
+
+  defp validate_transport(c) do
+    validate_all([
+      executor_socket?(c.executor_socket),
+      c.executor_socket_mode in [0o600, 0o660],
+      is_boolean(c.executor_socket_private_directory),
+      executor_socket_outside_data_dir?(c.executor_socket, c.data_dir),
+      c.executor_max_frame_bytes <= @max_protocol_payload_bytes,
+      c.executor_result_bytes <= c.executor_max_frame_bytes,
+      c.executor_error_bytes <= c.executor_max_frame_bytes,
+      http_port?(c.http_port),
+      http_ip?(c.http_ip),
+      http_tls?(c),
+      c.http_max_body_bytes <= @max_protocol_payload_bytes
+    ])
+  end
+
+  defp validate_storage(c) do
+    validate_all([
+      limit?(c.max_history_bytes),
+      limit?(c.max_segments),
+      c.rotation_target_bytes >= Tay.Storage.Segment.min_rotation_bytes(),
+      c.rotation_target_bytes <= @max_rotation_target_bytes,
+      is_boolean(c.validated_filesystem),
+      c.durability in [:write, :sync],
+      c.initialize in [:never, :if_missing],
+      sync_durability_supported?(c),
+      production_durability?(c)
+    ])
+  end
+
+  defp validate_payloads(c, recovery) do
+    validate_all([
+      c.max_insert_payload_bytes >= 1,
+      c.max_insert_payload_bytes <= recovery.max_decode_payload_bytes,
+      c.max_insert_payload_bytes <= recovery.event_limits.binary_bytes,
+      c.max_insert_args_bytes >= @minimum_encoded_args_bytes,
+      c.max_insert_args_bytes <= @max_protocol_payload_bytes,
+      c.insert_value_depth <= recovery.event_limits.depth,
+      c.insert_value_nodes <= recovery.event_limits.output_nodes
+    ])
+  end
+
+  defp validate_test_options(c) do
+    clock = Map.get(c, :test_clock, Tay.Execution.Clock)
+
+    validate_all([
+      is_boolean(Map.get(c, :test_helper, false)),
+      is_boolean(Map.get(c, :test_execution, true)),
+      is_atom(clock),
+      clock not in [nil, false, true],
+      optional_function?(Map.get(c, :test_hook), 1),
+      optional_function?(Map.get(c, :test_terminate), 1),
+      optional_function?(Map.get(c, :writer_hook), 2)
+    ])
+  end
+
+  defp positive_integer?(value), do: is_integer(value) and value > 0
+  defp nonnegative_integer?(value), do: is_integer(value) and value >= 0
+  defp integer_in?(value, range), do: is_integer(value) and value in range
+  defp limit?(:infinity), do: true
+  defp limit?(value), do: nonnegative_integer?(value)
+  defp optional_function?(nil, _arity), do: true
+  defp optional_function?(function, arity), do: is_function(function, arity)
+
+  defp sync_durability_supported?(%{durability: :write}), do: true
+
+  defp sync_durability_supported?(%{durability: :sync, validated_filesystem: validated}),
+    do: validated and :os.type() == {:unix, :linux}
+
+  defp valid(true), do: :ok
+  defp valid(false), do: {:error, :invalid_engine_options}
+  defp validate_all(checks), do: valid(Enum.all?(checks))
 
   defp executor_socket?(nil), do: true
 
   defp executor_socket?(path) when is_binary(path) do
-    path != "" and byte_size(path) <= 100 and String.valid?(path) and
+    path != "" and byte_size(path) <= @max_executor_socket_bytes and String.valid?(path) and
       not String.contains?(path, <<0>>) and Path.type(path) == :absolute
   end
 
   defp http_port?(nil), do: true
-  defp http_port?(port), do: is_integer(port) and port in 1..65_535
+  defp http_port?(port), do: integer_in?(port, @tcp_port_range)
 
   defp http_ip?(ip) when is_binary(ip) do
     match?({:ok, _}, :inet.parse_address(String.to_charlist(ip)))

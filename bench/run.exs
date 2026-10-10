@@ -12,6 +12,7 @@ Code.require_file("harness.exs", __DIR__)
       args_bytes: :integer,
       clients: :integer,
       client_slots: :integer,
+      group_commit_interval_ms: :integer,
       deadline_ms: :integer,
       rotation_segments: :integer,
       replay_segments: :string
@@ -27,7 +28,8 @@ scenario =
     "replay" -> :replay
     "schedule" -> :schedule
     "reserve" -> :reserve
-    _ -> raise("scenario must be lifecycle, rotation, replay, schedule, or reserve")
+    "group_commit" -> :group_commit
+    _ -> raise("scenario must be lifecycle, rotation, replay, schedule, reserve, or group_commit")
   end
 
 mode =

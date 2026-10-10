@@ -3,6 +3,16 @@ defmodule Tay.Standalone.Config do
 
   @data_default "/var/lib/tay"
   @socket_default "/run/tay/tay.sock"
+  @default_queue_concurrency 10
+  @queue_concurrency_range 1..65_536
+  @default_caller_timeout_ms 5_000
+  @caller_timeout_range 1..4_294_967_295
+  @default_max_state_bytes 256 * 1_024 * 1_024
+  @default_group_commit_interval_ms 0
+  @group_commit_interval_range 0..1_000
+  @default_checkpoint_interval_ms 60_000
+  @checkpoint_interval_range 0..4_294_967_295
+  @max_tcp_port 65_535
 
   defstruct data_dir: @data_default,
             socket_path: @socket_default,
@@ -12,7 +22,11 @@ defmodule Tay.Standalone.Config do
             http_tls_keyfile: nil,
             http_tls_cacertfile: nil,
             initialize: :never,
-            max_state_bytes: 268_435_456,
+            default_queue_concurrency: @default_queue_concurrency,
+            caller_timeout_ms: @default_caller_timeout_ms,
+            group_commit_interval_ms: @default_group_commit_interval_ms,
+            checkpoint_interval_ms: @default_checkpoint_interval_ms,
+            max_state_bytes: @default_max_state_bytes,
             terminal_retention: {:hours, 24}
 
   @type t :: %__MODULE__{
@@ -24,6 +38,10 @@ defmodule Tay.Standalone.Config do
           http_tls_keyfile: nil | String.t(),
           http_tls_cacertfile: nil | String.t(),
           initialize: :never | :if_missing,
+          default_queue_concurrency: pos_integer(),
+          caller_timeout_ms: pos_integer(),
+          group_commit_interval_ms: 0..1_000,
+          checkpoint_interval_ms: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
@@ -42,8 +60,12 @@ defmodule Tay.Standalone.Config do
          :ok <- validate_http(http_port, http_ip, tls),
          :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
+         {:ok, default_queue_concurrency} <- default_queue_concurrency(environment),
+         {:ok, caller_timeout_ms} <- caller_timeout(environment),
+         {:ok, group_commit_interval_ms} <- group_commit_interval(environment),
+         {:ok, checkpoint_interval_ms} <- checkpoint_interval(environment),
          {:ok, max_state_bytes} <-
-           byte_size(environment, "TAY_MAX_STATE_BYTES", 268_435_456),
+           byte_size(environment, "TAY_MAX_STATE_BYTES", @default_max_state_bytes),
          {:ok, terminal_retention} <- terminal_retention(environment) do
       {:ok,
        %__MODULE__{
@@ -55,6 +77,10 @@ defmodule Tay.Standalone.Config do
          http_tls_keyfile: tls.keyfile,
          http_tls_cacertfile: tls.cacertfile,
          initialize: initialize,
+         default_queue_concurrency: default_queue_concurrency,
+         caller_timeout_ms: caller_timeout_ms,
+         group_commit_interval_ms: group_commit_interval_ms,
+         checkpoint_interval_ms: checkpoint_interval_ms,
          max_state_bytes: max_state_bytes,
          terminal_retention: terminal_retention
        }}
@@ -78,7 +104,7 @@ defmodule Tay.Standalone.Config do
 
       value when is_binary(value) ->
         case Integer.parse(value) do
-          {port, ""} when port in 1..65_535 -> {:ok, port}
+          {port, ""} when port in 1..@max_tcp_port -> {:ok, port}
           _ -> {:error, "TAY_HTTP_PORT must be a TCP port from 1 to 65535"}
         end
 
@@ -193,6 +219,57 @@ defmodule Tay.Standalone.Config do
       value ->
         {:error,
          "TAY_INITIALIZE_IF_MISSING must be one of true, false, TRUE, FALSE, 1, or 0; got: #{inspect(value)}"}
+    end
+  end
+
+  defp group_commit_interval(environment) do
+    integer_in_range(
+      environment,
+      "TAY_GROUP_COMMIT_INTERVAL_MS",
+      @default_group_commit_interval_ms,
+      @group_commit_interval_range
+    )
+  end
+
+  defp checkpoint_interval(environment) do
+    integer_in_range(
+      environment,
+      "TAY_CHECKPOINT_INTERVAL_MS",
+      @default_checkpoint_interval_ms,
+      @checkpoint_interval_range
+    )
+  end
+
+  defp default_queue_concurrency(environment) do
+    integer_in_range(
+      environment,
+      "TAY_DEFAULT_QUEUE_CONCURRENCY",
+      @default_queue_concurrency,
+      @queue_concurrency_range
+    )
+  end
+
+  defp caller_timeout(environment) do
+    integer_in_range(
+      environment,
+      "TAY_CALLER_TIMEOUT_MS",
+      @default_caller_timeout_ms,
+      @caller_timeout_range
+    )
+  end
+
+  defp integer_in_range(environment, name, default, range) do
+    message = "#{name} must be an integer from #{range.first} to #{range.last}"
+
+    case Map.get(environment, name, Integer.to_string(default)) do
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {number, ""} -> if(number in range, do: {:ok, number}, else: {:error, message})
+          _ -> {:error, message}
+        end
+
+      _ ->
+        {:error, message}
     end
   end
 

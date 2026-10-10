@@ -35,6 +35,9 @@ defmodule Tay.Engine.CompactionPolicy do
       Map.get(summary, :active_jobs, 0) > 0 ->
         {:error, :active_jobs_present}
 
+      checkpoint_due?(summary, config, now) ->
+        :ok
+
       not is_nil(summary.last_compaction_at) and
           now - summary.last_compaction_at < config.min_interval ->
         {:error, :cooldown}
@@ -84,9 +87,13 @@ defmodule Tay.Engine.CompactionPolicy do
       Map.put(summary, :evaluation_us, elapsed)
     )
 
-    case eligible(summary, s.config, Clock.wall(s.clock)) do
+    now = Clock.wall(s.clock)
+
+    case eligible(summary, s.config, now) do
       :ok ->
-        Events.emit(:compaction_eligible, :eligible, summary)
+        reason = if checkpoint_due?(summary, s.config, now), do: :checkpoint_due, else: :eligible
+
+        Events.emit(:compaction_eligible, reason, summary)
 
         GenServer.cast(
           s.guardian,
@@ -139,7 +146,20 @@ defmodule Tay.Engine.CompactionPolicy do
     :ok
   end
 
-  defp schedule(s), do: schedule(s, s.config.check_interval)
+  defp checkpoint_due?(summary, config, now) do
+    interval = config.checkpoint_interval
+    last = summary.last_compaction_at
+
+    interval > 0 and Map.get(summary, :checkpoint_events, 0) > 0 and
+      (is_nil(last) or (now >= last and now - last >= interval))
+  end
+
+  defp evaluation_interval(%{checkpoint_interval: 0, check_interval: interval}), do: interval
+
+  defp evaluation_interval(config),
+    do: min(config.check_interval, config.checkpoint_interval)
+
+  defp schedule(s), do: schedule(s, evaluation_interval(s.config))
 
   defp schedule(s, delay) do
     if s.timer, do: Process.cancel_timer(elem(s.timer, 0))

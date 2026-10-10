@@ -104,12 +104,14 @@ defmodule Tay.State.Transition do
       completed_at: V2.max_time(),
       diagnostic: %{"code" => 7, "version" => 1},
       revision: 18_446_744_073_709_551_615,
+      terminal_at: V2.max_time(),
+      availability_order: 18_446_744_073_709_551_615,
       charge: %{bytes: 18_446_744_073_709_551_615}
     }
 
     flat_heap_bytes =
       job
-      |> Map.delete(:charge)
+      |> Map.drop([:charge, :terminal_at, :available_sequence, :availability_order])
       |> Map.merge(lifecycle_max)
       |> :erts_debug.flat_size()
       |> Kernel.*(:erlang.system_info(:wordsize))

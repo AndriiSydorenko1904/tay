@@ -51,11 +51,12 @@ defmodule Tay.Dashboard.OverviewLive do
 
   def handle_event("compact", %{"terminal_retention_hours" => value}, socket) do
     case Integer.parse(value) do
-      {hours, ""} when hours > 0 ->
+      {hours, ""} when hours >= 0 ->
         compact(socket, hours)
 
       _ ->
-        {:noreply, assign(socket, flash_error: "Retention must be a positive number of hours.")}
+        {:noreply,
+         assign(socket, flash_error: "Retention must be a non-negative number of hours.")}
     end
   end
 
@@ -165,11 +166,17 @@ defmodule Tay.Dashboard.OverviewLive do
       <h3>Job status</h3>
       <p class="section-help">Current jobs grouped by where they are in their lifecycle.</p>
       <div class="cards">
-        <div :for={{state, count} <- @stats} class={["card", "state-#{state}"]}>
+        <.link
+          :for={{state, count} <- @stats}
+          id={"job-state-#{state}"}
+          class={["card", "job-state-card", "state-#{state}"]}
+          navigate={@dashboard_path <> "/jobs?state=" <> Atom.to_string(state)}
+          aria-label={"View #{state} jobs"}
+        >
           <div>{state |> Atom.to_string() |> String.capitalize()}</div>
           <div class="count">{count}</div>
           <div class="card-help">{state_description(state)}</div>
-        </div>
+        </.link>
       </div>
       <section style="margin-top:28px">
         <h3>Application memory</h3>
@@ -307,6 +314,7 @@ defmodule Tay.Dashboard.OverviewLive do
           <strong>Run compaction now?</strong>
           <p>
             Completed, cancelled, and discarded jobs older than this period cannot be recovered afterward.
+            Set it to 0 to remove all completed, cancelled, and discarded jobs.
           </p>
           <label for="terminal-retention-hours">Configure terminal retention</label>
           <div class="actions">
@@ -314,7 +322,7 @@ defmodule Tay.Dashboard.OverviewLive do
               id="terminal-retention-hours"
               name="terminal_retention_hours"
               type="number"
-              min="1"
+              min="0"
               required
               value={@retention_hours}
               style="width:7rem"
@@ -406,7 +414,11 @@ defmodule Tay.Dashboard.OverviewLive do
     retained = Map.get(stats, :retained_terminal_jobs, 0)
     reclaimed = Map.get(stats, :reclaimed_bytes, 0)
 
-    "Compaction completed with #{retention_hours} h retention: removed #{expired} expired jobs, reclaimed #{format_bytes(reclaimed)}, and retained #{retained} terminal jobs."
+    if retention_hours == 0 do
+      "Compaction completed: full terminal-history purge removed #{expired} terminal jobs, reclaimed #{format_bytes(reclaimed)}, and retained #{retained}. Future finished-job retention is 1 h."
+    else
+      "Compaction completed with #{retention_hours} h retention: removed #{expired} expired jobs, reclaimed #{format_bytes(reclaimed)}, and retained #{retained} terminal jobs."
+    end
   end
 
   @doc false

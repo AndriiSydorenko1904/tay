@@ -50,6 +50,9 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Overview"
     assert html =~ "Available"
     assert html =~ "Toggle color theme"
+    assert html =~ "document.documentElement.dataset.tayTheme"
+    assert html =~ ~s(html[data-tay-theme="dark"] #tay-dashboard)
+    refute html =~ ~s(#tay-dashboard[data-theme="dark"])
     assert html =~ "Run compaction"
     assert html =~ "Stored job history"
     assert html =~ "MiB"
@@ -71,6 +74,15 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "00000000000000000001.tay"
     assert html =~ "active"
 
+    for state <- Tay.Dashboard.Live.states() do
+      name = Atom.to_string(state)
+
+      assert has_element?(
+               view,
+               "a#job-state-#{name}[href='/tay/jobs?state=#{name}'][aria-label='View #{name} jobs']"
+             )
+    end
+
     refute has_element?(view, "#storage-segments[open]")
     view |> element("#storage-segments summary") |> render_click()
     assert has_element?(view, "#storage-segments[open]")
@@ -87,13 +99,24 @@ defmodule Tay.Dashboard.LiveTest do
     assert render_click(view, "prepare-compaction") =~ "cannot be recovered"
     assert has_element?(view, "#confirm-compaction")
     assert has_element?(view, "#terminal-retention-hours[value='24']")
+    assert has_element?(view, "#terminal-retention-hours[min='0']")
 
-    assert render_submit(view, "compact", %{"terminal_retention_hours" => "1"}) =~
+    assert render_submit(view, "compact", %{"terminal_retention_hours" => "0"}) =~
              "Compaction is running in the background"
 
     assert EngineHelpers.eventually(fn -> has_element?(view, "#compaction-result") end)
     assert render(view) =~ "Compaction completed"
-    assert render(view) =~ "1 h"
+    assert render(view) =~ "Future finished-job retention is 1 h"
+    EngineHelpers.stop(root)
+  end
+
+  test "job status cards navigate to the matching jobs filter", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @engine)
+    {:ok, view, _html} = live(build_conn(), "/tay/")
+
+    assert {:error, {:live_redirect, %{to: "/tay/jobs?state=completed"}}} =
+             view |> element("#job-state-completed") |> render_click()
+
     EngineHelpers.stop(root)
   end
 
@@ -175,7 +198,7 @@ defmodule Tay.Dashboard.LiveTest do
       end
 
     {:ok, list, html} = live(build_conn(), "/tay/jobs")
-    assert html =~ "v1.3.0"
+    assert html =~ "v1.3.1"
     assert html =~ "Next page"
     assert html =~ "Last page"
     refute html =~ "Apply filters"

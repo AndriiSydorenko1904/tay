@@ -93,6 +93,108 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(engine).last_compaction_at == 100_100
   end
 
+  test "periodic checkpoint waits for idle state and recovery replays its tail", %{path: path} do
+    root =
+      start(path,
+        compaction: [checkpoint_interval: 10, check_interval: 60_000]
+      )
+
+    checkpointed = insert(%{"checkpointed" => true}, scheduled_at: 100_000)
+
+    assert {:ok, _} =
+             Tay.cancel(checkpointed.id,
+               name: @name,
+               expected_revision: checkpointed.revision
+             )
+
+    ExecutionHelpers.set_clock(110)
+    p = policy(root)
+    evaluate(p)
+
+    assert EngineHelpers.eventually(fn ->
+             match?({:ok, _}, :sys.get_state(p).last_result) and
+               File.exists?(Path.join(path, "CURRENT"))
+           end)
+
+    engine = :sys.get_state(@name).engine
+    assert :sys.get_state(engine).events_since_checkpoint == 0
+    checkpoint_epoch = :sys.get_state(engine).epoch_id
+    Process.sleep(50)
+    assert :sys.get_state(engine).epoch_id == checkpoint_epoch
+
+    tail = insert(%{"tail" => true}, scheduled_at: 100_000)
+    assert :sys.get_state(engine).events_since_checkpoint == 1
+
+    {:ok, tail_view} = Tay.get_job(tail.id, name: @name)
+
+    assert {:ok, _} = Tay.cancel(tail.id, name: @name, expected_revision: tail_view.revision)
+
+    status = Tay.status(name: @name)
+    assert status.active_jobs == 0
+    assert status.active_state_bytes_charged == 0
+
+    EngineHelpers.stop(root)
+    start(path, compaction: false)
+
+    assert {:ok, recovered_checkpointed} = Tay.get_job(checkpointed.id, name: @name)
+    assert {:ok, recovered_tail} = Tay.get_job(tail.id, name: @name)
+    assert recovered_checkpointed.definition["args"] == %{"checkpointed" => true}
+    assert recovered_tail.definition["args"] == %{"tail" => true}
+
+    recovered_engine = :sys.get_state(@name).engine
+    assert :sys.get_state(recovered_engine).events_since_checkpoint == 2
+  end
+
+  test "idle engine performs a full collection after its active workload drains", %{path: path} do
+    owner = self()
+
+    hook = fn
+      :memory_reclaimed -> send(owner, :memory_reclaimed)
+      _ -> :ok
+    end
+
+    start(path, compaction: false, test_hook: hook)
+    job = insert(%{"gc" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+    assert_receive :memory_reclaimed, 2_000
+    assert Tay.status(name: @name).active_state_bytes_charged == 0
+  end
+
+  test "enqueue waits through the fenced online checkpoint switch", %{path: path} do
+    owner = self()
+    gate = :atomics.new(1, [])
+
+    hook = fn
+      {:compaction, :before_current}, _native ->
+        if :atomics.get(gate, 1) == 1 do
+          send(owner, {:checkpoint_switch_blocked, self()})
+          receive do: (:continue_checkpoint -> :ok)
+        end
+
+        :ok
+
+      _, _native ->
+        :ok
+    end
+
+    start(path, compaction: false, writer_hook: hook)
+    insert(%{"seed" => true}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+
+    :atomics.put(gate, 1, 1)
+    compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
+    assert_receive {:checkpoint_switch_blocked, publisher}, 5_000
+    assert %{state: :compacting, phase: :switching} = Tay.status(name: @name)
+
+    {:ok, intent} = EngineWorker.new(%{"during_switch" => true}, scheduled_at: 100_000)
+    enqueue = Task.async(fn -> Tay.insert(intent, name: @name) end)
+    refute Task.yield(enqueue, 50)
+    send(publisher, :continue_checkpoint)
+
+    assert {:ok, _} = Task.await(compact, 60_000)
+    assert {:ok, _} = Task.await(enqueue, 5_000)
+  end
+
   test "Store-v2 execution and admission continue throughout background preparation", %{
     path: path
   } do
@@ -639,9 +741,43 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, stats} = Tay.compact(name: @name, timeout: 60_000)
     assert stats.recovered.manifest.terminal_retention == {:hours, 1}
 
-    for invalid <- [false, nil, :forever, {:hours, 0}, {:hours, 1.0}] do
+    for invalid <- [false, nil, :forever, {:hours, -1}, {:hours, 1.0}] do
       assert {:error, %{kind: :invalid}} = Tay.compact(name: @name, terminal_retention: invalid)
     end
+  end
+
+  test "zero retention removes all terminal jobs and preserves active jobs across recovery", %{
+    path: path
+  } do
+    root = start(path, compaction: false)
+
+    terminal =
+      for at <- 1..3 do
+        ExecutionHelpers.set_clock(at)
+        job = insert(%{"terminal" => at})
+        assert {:ok, cancelled} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
+        cancelled
+      end
+
+    live = insert(%{"live" => true}, scheduled_at: 100_000)
+
+    assert {:ok, stats} =
+             Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 0})
+
+    assert stats.expired_jobs == 3
+    assert stats.retained_terminal_jobs == 0
+    assert stats.recovered.manifest.terminal_retention == {:hours, 1}
+    assert Tay.status(name: @name).compaction_terminal_retention == {:hours, 1}
+
+    for job <- terminal, do: assert({:error, :not_found} = Tay.get_job(job.id, name: @name))
+    assert {:ok, %{state: :scheduled}} = Tay.get_job(live.id, name: @name)
+
+    EngineHelpers.stop(root)
+    start(path, compaction: false)
+
+    for job <- terminal, do: assert({:error, :not_found} = Tay.get_job(job.id, name: @name))
+    assert {:ok, %{state: :scheduled}} = Tay.get_job(live.id, name: @name)
+    assert Tay.status(name: @name).compaction_terminal_retention == {:hours, 1}
   end
 
   test "manual compaction does not expire fresh terminal history by count", %{

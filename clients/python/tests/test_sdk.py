@@ -143,6 +143,33 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_task_decorator_options_are_enqueue_defaults_and_can_be_overridden(
+        self,
+    ) -> None:
+        client = Tay(mode="client")
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def request(kind: str, fields: dict[str, object]) -> dict[str, object]:
+            calls.append((kind, fields))
+            return {"job_id": "job-1"}
+
+        client._request = request  # type: ignore[method-assign]
+
+        @client.task(name="accounts.retry.v1", retries=3, backoff="exponential")
+        def retry(account_id: str) -> None:
+            return None
+
+        await retry.enqueue("account-1")
+        await retry.enqueue("account-2", retries=0)
+
+        self.assertEqual(
+            [fields["options"] for _, fields in calls],
+            [
+                {"retries": 3, "backoff": "exponential"},
+                {"retries": 0, "backoff": "exponential"},
+            ],
+        )
+
     async def test_task_decorator_rejects_duplicate_names(self) -> None:
         client = Tay(mode="client")
 
@@ -194,6 +221,12 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.code, "capacity")
         self.assertEqual(error.details["reason"], "client_slots")
 
+    async def test_server_error_message_includes_code_without_reason(self) -> None:
+        error = _server_error_from_payload({"code": "unavailable"})
+        self.assertEqual(str(error), "Tay rejected the request (unavailable)")
+        self.assertEqual(error.code, "unavailable")
+        self.assertEqual(error.details, {"code": "unavailable"})
+
     async def test_http_client_uses_json_endpoints(self) -> None:
         client = TayHTTP()
         calls = []
@@ -209,6 +242,19 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await job.result(), 42)
         self.assertEqual(calls[0][0:2], ("POST", "/jobs"))
         self.assertEqual(calls[1][0:2], ("GET", "/jobs/http-job/result"))
+
+    async def test_http_worker_task_accepts_retry_defaults(self) -> None:
+        worker = TayHTTPWorker("http://127.0.0.1:8080")
+
+        @worker.task(name="tests.http.retry", retries=4, backoff="exponential")
+        def retry(value: int) -> int:
+            return value
+
+        self.assertEqual(retry.config.retries, 4)
+        self.assertEqual(retry.config.backoff, "exponential")
+
+        with self.assertRaisesRegex(ValidationError, "0..65534"):
+            worker.task(name="tests.invalid", retries=65_535)
 
     async def test_http_response_limit_reads_only_one_extra_byte(self) -> None:
         module = importlib.import_module("tay.http")

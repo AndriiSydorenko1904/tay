@@ -155,6 +155,25 @@ Focused harness checks, intentionally without organic large rotation:
 mix test test/tay/qualification/benchmark_test.exs --warnings-as-errors
 ```
 
+## Group commit comparison
+
+On a validated Linux filesystem, run the same concurrent enqueue workload for
+all supported comparison points. Each report includes throughput plus the
+existing nearest-rank enqueue RTT `p50`, `p95`, and `p99` measurements:
+
+```sh
+for interval in 0 1 5 10 50 100 1000; do
+  MIX_ENV=prod mix run --no-start bench/run.exs --scenario group_commit --mode sync \
+    --validated-filesystem --path "/validated/local/group-${interval}" \
+    --output "/validated/local/group-${interval}.json" --jobs 20000 --clients 64 \
+    --group-commit-interval-ms "$interval"
+done
+```
+
+Every path and output file must be new. Compare
+`measurements.enqueues_per_second` and
+`measurements.insert_roundtrip_us.{p50,p95,p99}` across the seven reports.
+
 The final qualification report must retain exact commands, outputs, physical
 fixture hashes and platform evidence. Publish only measured envelopes and leave
 R5, hardware certification, actual workload RAM/disk headroom and unmeasured

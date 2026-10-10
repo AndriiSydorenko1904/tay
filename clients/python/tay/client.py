@@ -92,12 +92,14 @@ class ScheduleHandle:
 
 def _server_error_from_payload(payload: Any) -> ServerError:
     if isinstance(payload, Mapping):
-        message = (
-            payload.get("message")
-            or payload.get("reason")
-            or "Tay rejected the request"
-        )
         code = payload.get("code") or payload.get("type")
+        message = payload.get("message") or payload.get("reason")
+        if not message:
+            message = (
+                f"Tay rejected the request ({code})"
+                if code
+                else "Tay rejected the request"
+            )
         if payload.get("remote_task") or code in {"task_failed", "TaskFailed"}:
             return RemoteTaskError(
                 str(message), code=str(code) if code else None, details=dict(payload)

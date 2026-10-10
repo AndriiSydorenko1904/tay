@@ -16,12 +16,15 @@ defmodule Tay.Standalone.Application do
               data_dir: config.data_dir,
               initialize: config.initialize,
               durability: :sync,
+              group_commit_interval_ms: config.group_commit_interval_ms,
               validated_filesystem: true,
               workers: %{},
-              queues: [default: 10],
+              queues: [default: config.default_queue_concurrency],
+              caller_timeout: config.caller_timeout_ms,
               max_state_bytes: config.max_state_bytes,
               compaction: [
-                terminal_retention: config.terminal_retention
+                terminal_retention: config.terminal_retention,
+                checkpoint_interval: config.checkpoint_interval_ms
               ],
               executor_socket: config.socket_path,
               executor_socket_mode: 0o660,

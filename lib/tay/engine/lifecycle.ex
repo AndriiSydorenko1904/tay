@@ -11,11 +11,9 @@ defmodule Tay.Engine.Lifecycle do
   # should sit ahead of execution completions and queue demand in the Engine
   # mailbox. Lifecycle owns both the permits and command delivery, so this FIFO
   # window bounds that interference without changing public admission capacity.
-  # Writer is already the single serialized durable owner, so one delivered
-  # mutation preserves storage throughput while allowing execution traffic to
-  # interleave at every append boundary.
-  @engine_command_window 1
-
+  # Writer is the single serialized durable owner. Immediate modes deliver one
+  # command at a time; configured strict group commit widens the delivery window
+  # so the Engine can collect concurrent enqueue requests behind one barrier.
   def start_link(config), do: GenServer.start_link(__MODULE__, config, name: config.name)
 
   def init(config) do
@@ -410,7 +408,7 @@ defmodule Tay.Engine.Lifecycle do
         s = release(s, slot, token)
         GenServer.reply(from, reply)
         send(engine, {:command_replied, self(), slot, token})
-        {:noreply, dispatch_commands(s, @engine_command_window)}
+        {:noreply, dispatch_commands(s, engine_command_window(s))}
 
       _ ->
         {:noreply, s}
@@ -430,7 +428,7 @@ defmodule Tay.Engine.Lifecycle do
   def handle_info({:command_yielded, engine, permit}, %{engine: engine} = s),
     do:
       {:noreply,
-       s |> finish_command_delivery(permit) |> dispatch_commands(@engine_command_window)}
+       s |> finish_command_delivery(permit) |> dispatch_commands(engine_command_window(s))}
 
   def handle_info({:execution_child_dead, generation, relay, task}, s) do
     if s.fence && generation == s.meta.generation, do: LocalFence.dead(s.fence, relay, task)
@@ -825,7 +823,7 @@ defmodule Tay.Engine.Lifecycle do
   defp enqueue_command(s, command) do
     s
     |> Map.update!(:command_queue, &:queue.in(command, &1))
-    |> dispatch_commands(@engine_command_window)
+    |> then(fn next -> dispatch_commands(next, engine_command_window(next)) end)
   end
 
   defp dispatch_commands(s, limit) when s.commands_inflight < limit do
@@ -847,6 +845,14 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp dispatch_commands(s, _limit), do: s
+
+  defp engine_command_window(%{
+         config: %{durability: :sync, group_commit_interval_ms: interval, client_slots: slots}
+       })
+       when interval > 0,
+       do: slots
+
+  defp engine_command_window(_), do: 1
 
   defp flush_commands(s),
     do: dispatch_commands(s, s.commands_inflight + :queue.len(s.command_queue))
@@ -976,7 +982,13 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp put_compaction_retention(config, retention),
-    do: %{config | compaction: %{config.compaction | terminal_retention: retention}}
+    do: %{
+      config
+      | compaction: %{
+          config.compaction
+          | terminal_retention: Tay.Storage.V2.Retention.persisted(retention)
+        }
+    }
 
   def format_status(status),
     do:

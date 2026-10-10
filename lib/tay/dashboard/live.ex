@@ -122,21 +122,39 @@ defmodule Tay.Dashboard.Live do
           --tay-text:#17202a; --tay-muted:#65717e; --tay-border:#dfe4ea;
           --tay-link:#3157d5; --tay-primary:#3157d5; --tay-primary-hover:#2546b8;
           --tay-error-bg:#fff0f0; --tay-error-text:#8a1f1f;
+          --tay-completed-bg:#d9fbe5; --tay-completed-text:#17663a;
+          --tay-discarded-bg:#ffe1e3; --tay-discarded-text:#9b1c31;
+          --tay-executing-bg:#dceaff; --tay-executing-text:#174ea6;
+          --tay-retryable-bg:#ffedcc; --tay-retryable-text:#8a4b08;
+          --tay-scheduled-bg:#eadfff; --tay-scheduled-text:#6035a8;
+          --tay-neutral-bg:#ececef; --tay-neutral-text:#555b66;
           color:var(--tay-text); color-scheme:light;
         }
-        #tay-dashboard[data-theme="dark"] {
+        html[data-tay-theme="dark"] #tay-dashboard {
           --tay-bg:#0d1117; --tay-surface:#161b22; --tay-surface-muted:#21262d;
           --tay-text:#e6edf3; --tay-muted:#9da7b3; --tay-border:#30363d;
           --tay-link:#78a9ff; --tay-primary:#4169e1; --tay-primary-hover:#5b7bec;
           --tay-error-bg:#3d171c; --tay-error-text:#ffb4b8;
+          --tay-completed-bg:#173b2a; --tay-completed-text:#7ee2a8;
+          --tay-discarded-bg:#4a1d27; --tay-discarded-text:#ff9ca8;
+          --tay-executing-bg:#18375f; --tay-executing-text:#8fc0ff;
+          --tay-retryable-bg:#493014; --tay-retryable-text:#ffc977;
+          --tay-scheduled-bg:#35245a; --tay-scheduled-text:#c9acff;
+          --tay-neutral-bg:#30363d; --tay-neutral-text:#c6ced7;
           color-scheme:dark;
         }
         @media (prefers-color-scheme: dark) {
-          #tay-dashboard:not([data-theme]) {
+          html:not([data-tay-theme]) #tay-dashboard {
             --tay-bg:#0d1117; --tay-surface:#161b22; --tay-surface-muted:#21262d;
             --tay-text:#e6edf3; --tay-muted:#9da7b3; --tay-border:#30363d;
             --tay-link:#78a9ff; --tay-primary:#4169e1; --tay-primary-hover:#5b7bec;
             --tay-error-bg:#3d171c; --tay-error-text:#ffb4b8;
+            --tay-completed-bg:#173b2a; --tay-completed-text:#7ee2a8;
+            --tay-discarded-bg:#4a1d27; --tay-discarded-text:#ff9ca8;
+            --tay-executing-bg:#18375f; --tay-executing-text:#8fc0ff;
+            --tay-retryable-bg:#493014; --tay-retryable-text:#ffc977;
+            --tay-scheduled-bg:#35245a; --tay-scheduled-text:#c9acff;
+            --tay-neutral-bg:#30363d; --tay-neutral-text:#c6ced7;
             color-scheme:dark;
           }
         }
@@ -148,6 +166,9 @@ defmodule Tay.Dashboard.Live do
         #tay-dashboard .primary-nav a.active { color:var(--tay-text); border-color:var(--tay-primary); font-weight:650; }
         #tay-dashboard .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
         #tay-dashboard .card { border:1px solid var(--tay-border); border-radius:10px; padding:16px; background:var(--tay-surface); }
+        #tay-dashboard .job-state-card { display:block; color:inherit; transition:border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+        #tay-dashboard .job-state-card:hover { color:inherit; border-color:var(--tay-primary); box-shadow:0 4px 14px rgba(0,0,0,.12); transform:translateY(-1px); }
+        #tay-dashboard .job-state-card:focus-visible { color:inherit; outline:3px solid var(--tay-primary); outline-offset:2px; }
         #tay-dashboard .count { font-size:28px; font-weight:700; margin-top:6px; }
         #tay-dashboard .card-help { color:var(--tay-muted); font-size:12px; line-height:1.35; margin-top:8px; }
         #tay-dashboard .section-help { color:var(--tay-muted); margin-top:-4px; }
@@ -156,19 +177,12 @@ defmodule Tay.Dashboard.Live do
         #tay-dashboard th, #tay-dashboard td { text-align:left; padding:10px; border-bottom:1px solid var(--tay-border); vertical-align:top; }
         #tay-dashboard th { color:var(--tay-muted); font-size:12px; text-transform:uppercase; }
         #tay-dashboard .badge { border-radius:999px; padding:3px 8px; white-space:nowrap; font-weight:600; }
-        #tay-dashboard .state-completed, #tay-dashboard .state-running { background:#d9fbe5; color:#17663a; }
-        #tay-dashboard .state-discarded { background:#ffe1e3; color:#9b1c31; }
-        #tay-dashboard .state-executing { background:#dceaff; color:#174ea6; }
-        #tay-dashboard .state-retryable { background:#ffedcc; color:#8a4b08; }
-        #tay-dashboard .state-scheduled { background:#eadfff; color:#6035a8; }
-        #tay-dashboard .state-available { background:#e8edf3; color:#3f4b59; }
-        #tay-dashboard .state-cancelled, #tay-dashboard .state-paused { background:#ececef; color:#555b66; }
-        #tay-dashboard[data-theme="dark"] .state-completed, #tay-dashboard[data-theme="dark"] .state-running { background:#173b2a; color:#7ee2a8; }
-        #tay-dashboard[data-theme="dark"] .state-discarded { background:#4a1d27; color:#ff9ca8; }
-        #tay-dashboard[data-theme="dark"] .state-executing { background:#18375f; color:#8fc0ff; }
-        #tay-dashboard[data-theme="dark"] .state-retryable { background:#493014; color:#ffc977; }
-        #tay-dashboard[data-theme="dark"] .state-scheduled { background:#35245a; color:#c9acff; }
-        #tay-dashboard[data-theme="dark"] .state-available, #tay-dashboard[data-theme="dark"] .state-cancelled, #tay-dashboard[data-theme="dark"] .state-paused { background:#30363d; color:#c6ced7; }
+        #tay-dashboard .state-completed, #tay-dashboard .state-running { background:var(--tay-completed-bg); color:var(--tay-completed-text); }
+        #tay-dashboard .state-discarded { background:var(--tay-discarded-bg); color:var(--tay-discarded-text); }
+        #tay-dashboard .state-executing { background:var(--tay-executing-bg); color:var(--tay-executing-text); }
+        #tay-dashboard .state-retryable { background:var(--tay-retryable-bg); color:var(--tay-retryable-text); }
+        #tay-dashboard .state-scheduled { background:var(--tay-scheduled-bg); color:var(--tay-scheduled-text); }
+        #tay-dashboard .state-available, #tay-dashboard .state-cancelled, #tay-dashboard .state-paused { background:var(--tay-neutral-bg); color:var(--tay-neutral-text); }
         #tay-dashboard .error { background:var(--tay-error-bg); color:var(--tay-error-text); padding:12px; border-radius:8px; margin:12px 0; }
         #tay-dashboard .notice { background:var(--tay-surface-muted); border:1px solid var(--tay-border); padding:12px; border-radius:8px; margin:12px 0; }
         #tay-dashboard .actions { display:flex; gap:8px; align-items:end; flex-wrap:wrap; margin:14px 0; }
@@ -194,7 +208,7 @@ defmodule Tay.Dashboard.Live do
           type="button"
           class="secondary"
           aria-label="Toggle color theme"
-          onclick="var d=document.getElementById('tay-dashboard'),n=d.dataset.theme==='dark'?'light':'dark';d.dataset.theme=n;try{localStorage.setItem('tay-dashboard-theme',n)}catch(e){}"
+          onclick="var h=document.documentElement,n=h.dataset.tayTheme==='dark'?'light':'dark';h.dataset.tayTheme=n;try{localStorage.setItem('tay-dashboard-theme',n)}catch(e){}"
         >◐ Theme</button>
       </header>
       <nav class="primary-nav">
@@ -204,7 +218,7 @@ defmodule Tay.Dashboard.Live do
       </nav>
       {render_slot(@inner_block)}
       <script>
-        try { var t=localStorage.getItem('tay-dashboard-theme'); if(t!=='dark'&&t!=='light') t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; document.getElementById('tay-dashboard').dataset.theme=t } catch(e) {}
+        try { var t=localStorage.getItem('tay-dashboard-theme'); if(t!=='dark'&&t!=='light') t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; document.documentElement.dataset.tayTheme=t } catch(e) {}
       </script>
     </div>
     """

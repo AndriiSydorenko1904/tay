@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 For a ready-made Tay deployment example:
@@ -86,7 +86,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 ## Why Tay?
@@ -432,7 +432,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.3.0
+ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -442,7 +442,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -542,6 +542,17 @@ requirements are documented explicitly.
 
 Production `:sync` requires Linux and an explicitly validated supported local
 filesystem.
+
+Strict-durability Engines may set `group_commit_interval_ms: 0..1000` (default
+`0`). A positive value batches concurrent enqueue writes behind one fsync and
+returns every ACK only after that fsync succeeds. `durability: :write` is never
+delayed by this setting.
+
+Store-v2 Engines may also set `compaction: [checkpoint_interval: milliseconds]`
+(`0` disables it). Periodic checkpoints publish a verified semantic snapshot
+only after new durable events and after active jobs drain; restart then replays
+that snapshot and its ordered tail. The standalone equivalent is
+`TAY_CHECKPOINT_INTERVAL_MS`.
 
 Before production use, read:
 

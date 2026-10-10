@@ -143,6 +143,17 @@ defmodule Tay.State.TransitionTest do
     refute Map.has_key?(legacy.limits, :max_nodes)
   end
 
+  test "retained-byte charge is stable across v1 and v2 projection-only fields" do
+    job = step(nil, H.expected("E1"), 1)
+    {:ok, stats} = Value.measure(job.definition)
+
+    v1 = job |> Map.put(:available_sequence, 1) |> Map.delete(:availability_order)
+    v2 = job |> Map.put(:availability_order, 1) |> Map.delete(:available_sequence)
+
+    assert T.retained_bytes(v1, stats.binary_bytes) ==
+             T.retained_bytes(v2, stats.binary_bytes)
+  end
+
   property "live effects and encoded/decoded pure reconstruction are identical" do
     check all(
             count <- integer(1..50),

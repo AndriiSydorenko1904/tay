@@ -3,7 +3,9 @@
 Store v2 supports two schema-1 MANIFEST representations for the existing
 `terminal_retention` key: the original `"infinity"` value and the canonical
 one-key Value map `{"hours" => N}`, where `N` is in
-`1..2_562_047_788_015`. Framing versions, keys, CRC32C, and CURRENT's manifest
+`0..2_562_047_788_015`. Readers accept zero as a full-purge marker and normalize
+the runtime policy to the one-hour minimum; new full-purge compactions persist
+one hour directly. Framing versions, keys, CRC32C, and CURRENT's manifest
 digest are unchanged. Readers that predate bounded retention may fail closed on
 the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
@@ -49,6 +51,10 @@ restart-durable, while job completion remains durable.
   claim. Windows, network/object storage, distributed store ownership, and
   unvalidated production filesystems are unsupported. Production builds do
   not silently downgrade to `:write`.
+- Strict `:sync` enqueue group commit is optional and defaults to an immediate
+  per-event fsync (`group_commit_interval_ms: 0`). Positive intervals preserve
+  record order and acknowledge a batch only after its fsync; they do not change
+  the on-disk format or recovery compatibility.
 - External effects are at-least-once, not exactly-once. There is no live
   backup, automatic torn-tail repair, durable successful-result backend, or
   multi-host executor protocol. Store-v2 compaction is online during candidate

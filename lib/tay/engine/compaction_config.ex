@@ -3,10 +3,12 @@ defmodule Tay.Engine.CompactionConfig do
   alias Tay.Storage.V2.Retention
   @max_timer 4_294_967_295
   @max_time 9_223_372_036_854_775_807
+  @checkpoint_disabled 0
   @defaults %{
     enabled: true,
     terminal_retention: {:hours, 24},
     check_interval: 60_000,
+    checkpoint_interval: @checkpoint_disabled,
     min_interval: 3_600_000,
     min_sealed_segments: 1,
     min_reclaimable_bytes: 16_777_216,
@@ -31,7 +33,10 @@ defmodule Tay.Engine.CompactionConfig do
          true <- is_boolean(config.enabled),
          :ok <- Retention.validate(config.terminal_retention),
          true <- config.terminal_retention != :infinity,
-         true <- timer?(config.check_interval) and timer?(config.min_interval),
+         true <- Retention.persisted(config.terminal_retention) == config.terminal_retention,
+         true <- timer?(config.check_interval),
+         true <- checkpoint_interval?(config.checkpoint_interval),
+         true <- timer?(config.min_interval),
          true <-
            is_integer(config.min_sealed_segments) and
              config.min_sealed_segments in 1..4_294_967_295,
@@ -49,5 +54,6 @@ defmodule Tay.Engine.CompactionConfig do
 
   def new(_), do: {:error, :compaction_configuration}
   defp timer?(n), do: is_integer(n) and n in 1..@max_timer
+  defp checkpoint_interval?(n), do: is_integer(n) and n in @checkpoint_disabled..@max_timer
   defp legacy_terminal_limit?(n), do: is_integer(n) and n in 0..4_294_967_295
 end

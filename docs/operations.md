@@ -92,11 +92,17 @@ protect its router scope with the host application's administrator pipeline.
 ## Store-v2 automatic compaction
 
 The per-Engine policy is enabled when `compaction:` is omitted. It uses finite
-terminal retention and conservative sealed-history estimates, not periodic full
-replay. Store-v2 candidate construction runs online; only the final fenced
-publication switch closes admission. Initial Store-v1 adoption still drains and
-recovers because that format has no safe online catch-up boundary. All thresholds
-are conjunctive; a timer alone never authorizes a rewrite. Cooldown uses the later
+terminal retention and conservative sealed-history estimates. Optional periodic
+semantic checkpoints use the same crash-safe Store-v2 epoch publication; they
+never serialize private ETS implementation details. Store-v2 candidate
+construction runs online; only the final fenced publication switch closes
+admission internally. Calls arriving during that short switch wait for the new
+generation within their configured caller timeout instead of receiving an
+immediate `unavailable`. Initial Store-v1 adoption still drains and
+recovers because that format has no safe online catch-up boundary. Reclaim-policy
+thresholds are conjunctive. All automatic maintenance, including a periodic
+checkpoint, is deferred while active jobs exist; a checkpoint timer additionally
+requires at least one new durable tail event. Cooldown uses the later
 of the verified manifest capture time and post-publication recovered activation
 time. Restart conservatively extends cooldown rather than shortening it by
 construction time. Backward clocks conservatively defer.
@@ -108,6 +114,7 @@ compaction: [
   enabled: true,
   terminal_retention: {:hours, 24},
   check_interval: 60_000,
+  checkpoint_interval: 0,
   min_interval: 3_600_000,
   min_sealed_segments: 1,
   min_reclaimable_bytes: 16_777_216,
@@ -115,10 +122,27 @@ compaction: [
 ]
 ```
 
+`checkpoint_interval: 0` disables periodic checkpoints. A positive millisecond
+value checkpoints only after at least one new durable tail event. The evaluator
+runs at the smaller of `check_interval` and `checkpoint_interval`. Automatic
+checkpoints wait until there are no active jobs, avoiding whole-state candidate
+amplification while a live backlog is being admitted or executed. Concurrent
+mutations that arrive after preparation starts are appended to the candidate
+tail; the new `CURRENT` is published only after sync and verification, and
+restart replays the canonical snapshot followed by that tail. The durable
+sequence frontier—not a wall-clock timestamp—decides which mutations are already
+covered.
+The first checkpoint of a Store-v1 root performs the existing safe migration
+path, which briefly drains execution because Store v1 has no online catch-up
+boundary; subsequent Store-v2 checkpoints prepare online.
+
 Unknown/duplicate keys, unbounded/nonpositive timers or byte/count limits and
 invalid ratios fail configuration. Timers/counts fit unsigned 32 bits; bytes fit
 signed durable time/integer range. Bounded hours use the shared manifest rule
-`1..2_562_047_788_015`, not a separate configuration duration syntax. Ratios are
+`1..2_562_047_788_015`, not a separate configuration duration syntax. A manual
+zero-retention request is a one-shot full terminal-history purge: it preserves
+every non-terminal job and persists the minimum future retention of one hour.
+Ratios are
 positive finite numbers at most one. Automatic configuration rejects infinity.
 
 Terminal jobs are removed from the hot ETS job projection as soon as they
@@ -131,6 +155,10 @@ payload bytes. The former `max_state_nodes` option is accepted when valid but
 ignored for 1.x configuration compatibility.
 Aggregate terminal state and queue counters remain in memory. The append-only
 Store remains authoritative for both projections and rebuilds them on restart.
+When the last active job becomes terminal, Tay schedules an idle full collection
+for the Engine and Writer. This releases transient heaps and binary references
+grown by a burst; allocator/VM baseline memory is not forcibly returned below
+what the Erlang runtime still needs.
 
 For release-candidate compatibility, the former `max_jobs` and
 `max_terminal_jobs` options are accepted when valid but ignored.
@@ -156,6 +184,7 @@ remains available:
 
 ```elixir
 {:ok, stats} = Tay.compact(timeout: 900_000)
+{:ok, stats} = Tay.compact(terminal_retention: {:hours, 0})
 {:ok, stats} = Tay.compact(terminal_retention: {:hours, 48})
 {:ok, stats} = Tay.compact(terminal_retention: :infinity)
 ```

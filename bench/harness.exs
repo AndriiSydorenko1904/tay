@@ -234,6 +234,7 @@ defmodule Tay.Bench.Harness do
   alias Tay.Bench.{Stats, Observer, Worker, Memory}
   alias Tay.Storage.{Writer, Segment}
   @name Tay.Bench.Engine
+  @group_commit_interval_range 0..1_000
   @defaults %{
     mode: :sync,
     validated_filesystem: false,
@@ -241,6 +242,7 @@ defmodule Tay.Bench.Harness do
     args_bytes: 1024,
     clients: 8,
     client_slots: 64,
+    group_commit_interval_ms: 0,
     deadline_ms: 900_000,
     rotation_segments: 2,
     replay_segments: [1, 10, 100]
@@ -256,6 +258,7 @@ defmodule Tay.Bench.Harness do
         (c.mode != :sync or (c.validated_filesystem and :os.type() == {:unix, :linux})) and
         c.jobs in 1..100_000 and c.args_bytes in 0..262_000 and c.clients in 1..64 and
         c.client_slots in 1..65_536 and c.clients <= c.client_slots and
+        c.group_commit_interval_ms in @group_commit_interval_range and
         c.deadline_ms in 1000..3_600_000 and c.rotation_segments in 2..100 and
         is_list(c.replay_segments) and c.replay_segments != [] and
         Enum.all?(c.replay_segments, &(&1 in 1..100)) and
@@ -267,7 +270,7 @@ defmodule Tay.Bench.Harness do
   def options(_), do: {:error, :invalid_benchmark_options}
 
   def run(scenario, supplied)
-      when scenario in [:lifecycle, :rotation, :replay, :schedule, :reserve] do
+      when scenario in [:lifecycle, :rotation, :replay, :schedule, :reserve, :group_commit] do
     {:ok, c} = options(supplied)
 
     if File.exists?(c.path),
@@ -291,6 +294,42 @@ defmodule Tay.Bench.Harness do
       }
     after
       if Process.alive?(observer), do: GenServer.stop(observer)
+    end
+  end
+
+  def group_commit(c) do
+    initialize(c)
+    {root, startup_us, owner_retries} = start(c)
+    engine = engine(root)
+    trace(engine)
+    due = System.system_time(:millisecond) + 86_400_000
+    started = System.monotonic_time(:microsecond)
+
+    try do
+      ids =
+        1..c.jobs
+        |> Task.async_stream(&insert_one(c, &1, due),
+          max_concurrency: c.clients,
+          ordered: false,
+          timeout: c.deadline_ms
+        )
+        |> Enum.map(fn {:ok, id} -> id end)
+
+      elapsed = System.monotonic_time(:microsecond) - started
+      flush_trace(engine)
+
+      Map.merge(observed(Observer.result()), %{
+        jobs: length(ids),
+        total_elapsed_us: elapsed,
+        enqueues_per_second: length(ids) * 1_000_000 / elapsed,
+        startup_us: startup_us,
+        startup_owner_retries: owner_retries,
+        canonical_bytes: canonical_bytes(c.path),
+        status: stable_status()
+      })
+    after
+      untrace(engine)
+      stop(root)
     end
   end
 
@@ -730,6 +769,7 @@ defmodule Tay.Bench.Harness do
         workers: %{"tay.benchmark.v1" => Worker},
         queues: [alpha: 2, beta: 2],
         client_slots: c.client_slots,
+        group_commit_interval_ms: c.group_commit_interval_ms,
         caller_timeout: c.deadline_ms,
         execution_wake_ms: 50,
         recovery: [deadline_ms: c.deadline_ms, activation_deadline_ms: c.deadline_ms]

@@ -2,11 +2,60 @@
 
 ## Unreleased
 
-### Fixed
+## 1.3.1 — 2026-10-10
 
+### Added
+
+- Added configurable strict-durability group commit for concurrent enqueue
+  requests via `group_commit_interval_ms` and standalone
+  `TAY_GROUP_COMMIT_INTERVAL_MS`, including batch telemetry, fault/shutdown
+  coverage, and a seven-interval throughput/latency benchmark recipe.
+- Added standalone `TAY_DEFAULT_QUEUE_CONCURRENCY` configuration instead of a
+  hard-coded execution limit of 10 for the `default` queue.
+- Added standalone `TAY_CALLER_TIMEOUT_MS` configuration and preserved a
+  bounded reason in HTTP `unknown_outcome` responses for diagnosis.
+- Added optional periodic Store-v2 semantic checkpoints through
+  `compaction: [checkpoint_interval: ...]` and standalone
+  `TAY_CHECKPOINT_INTERVAL_MS`. Checkpoints publish a verified snapshot plus
+  ordered tail without blocking normal preparation-time admission, skip
+  unchanged state, defer while active jobs exist, and recover from the durable
+  sequence frontier. Standalone enables them every 60 seconds by default; `0`
+  explicitly disables them.
+- Made every Overview job-status card navigate to the Jobs page with its state
+  filter selected, including keyboard focus and visible hover/focus feedback.
+- Released `tay-client` 1.3.0 with `retries` and `backoff` support on
+  `TayHTTPWorker.task`; decorator retry settings now also act as defaults for
+  `Task.enqueue` and can be overridden per submission.
+
+### Changed
+
+- Split Engine configuration validation into named, thematic validators and
+  replaced unexplained numeric limits with documented module attributes.
+- Defined zero Dashboard/API terminal retention as a one-shot full
+  terminal-history compaction; active jobs remain protected and the durable
+  future retention is clamped to the one-hour minimum.
 - Decoupled `tay-client` releases from Tay versions. The release helper and
   PyPI workflow now skip an unchanged Python client and require its independent
   version to increase only when `clients/python/` changes.
+
+### Fixed
+
+- Kept the live active-memory charge ledger across online checkpoint adoption,
+  made retained-byte charging stable across Event-v1 and Store-v2 projection
+  fields, and fail closed on negative or divergent active accounting.
+- Made enqueue wait through the short fenced checkpoint switch instead of
+  returning `unavailable`, bounded by the configured caller timeout.
+- Added an idle full-GC pass for the Engine and Writer after the active workload
+  drains, releasing transient process heaps and binary references retained by a
+  large burst.
+- Included the HTTP error code in Python `ServerError` messages when Tay does
+  not provide a human-readable reason, while retaining the structured `code`
+  and `details` attributes.
+- Aligned the OCI health-check startup grace period with Tay's 15-minute
+  recovery deadline so large valid histories are not declared unhealthy while
+  replay is still in progress.
+- Kept the selected Dashboard theme stable across LiveView refreshes and made
+  status cards use the complete dark palette during system-theme fallback.
 
 ## 1.3.0 — 2026-10-09
 

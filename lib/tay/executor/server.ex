@@ -839,8 +839,8 @@ defmodule Tay.Executor.Server do
          {:ok, job} <- Tay.enqueue(task, args, [name: engine_name] ++ options) do
       {:ok, "enqueued", %{"job_id" => job.id, "job" => public_job(job)}}
     else
-      {:error, %Tay.Error{kind: :unknown_outcome}} ->
-        {:error, "unknown_outcome"}
+      {:error, %Tay.Error{kind: :unknown_outcome, reason: reason}} ->
+        {:error, "unknown_outcome", %{"reason" => unknown_outcome_reason(reason)}}
 
       {:error, %Tay.Error{kind: :capacity, reason: reason}} ->
         {:error, "capacity", %{"reason" => capacity_reason(reason)}}
@@ -858,6 +858,10 @@ defmodule Tay.Executor.Server do
 
   defp capacity_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp capacity_reason(_), do: "capacity_exhausted"
+
+  defp unknown_outcome_reason(:submitted_request_lost), do: "caller_timeout_or_disconnect"
+  defp unknown_outcome_reason({:generation_lost, _component}), do: "generation_lost"
+  defp unknown_outcome_reason(_), do: "outcome_unknown"
 
   defp status(engine_name, %{"job_id" => id}) do
     case Tay.get_job(id, name: engine_name) do

@@ -13,6 +13,7 @@ defmodule Tay.Engine.CompactionEvents do
   ]
   @reasons [
     :eligible,
+    :checkpoint_due,
     :evaluated,
     :completed,
     :not_enough_reclaimable_bytes,
@@ -43,6 +44,7 @@ defmodule Tay.Engine.CompactionEvents do
     :expired_terminals,
     :ratio,
     :evaluation_us,
+    :checkpoint_events,
     :source_bytes,
     :candidate_bytes,
     :reclaimed_bytes,

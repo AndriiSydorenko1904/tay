@@ -23,8 +23,12 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_HTTP_IP` | `127.0.0.1` | Listener IP; non-loopback requires mTLS. |
 | `TAY_HTTP_TLS_{CERTFILE,KEYFILE,CACERTFILE}` | unset | Absolute PEM paths for server certificate, private key and client CA. Set all three together. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
+| `TAY_DEFAULT_QUEUE_CONCURRENCY` | `10` | Maximum concurrently executing jobs in the standalone `default` queue (`1..65536`). Actual execution is also bounded by registered worker capacity. |
+| `TAY_CALLER_TIMEOUT_MS` | `5000` | Maximum time an admitted Engine call may wait for its reply. A timeout after submission is reported as `unknown_outcome`; reconcile with the same job ID. |
+| `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | Durable enqueue group-commit window in milliseconds (`0..1000`). `0` preserves immediate fsync behavior. Invalid values stop startup. |
+| `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Automatic checkpoints wait until no active jobs remain, run only after new durable events, and recovery replays the snapshot plus its tail. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs. Accepts bytes or an integer with `KB`, `KiB`, `MB`, `MiB`, `GB`, or `GiB`, for example `5GiB`. |
-| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
+| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. The Dashboard/API may use zero as a one-shot full terminal-history purge, after which the persisted retention is `1h`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
 | `TAY_DASHBOARD_PORT` | `4000` | Dashboard listener port. |
@@ -42,6 +46,13 @@ Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
 `0660` so a worker can use a shared group where the deployment platform
 supports it.
+
+With a positive group-commit interval, concurrent durable enqueue requests are
+written in arrival order and acknowledged together only after their batch fsync
+succeeds. It trades up to the configured wait for fewer fsync calls. It does not
+change recovery, capacity accounting, or failure semantics; a write/fsync error
+fails the generation without returning success for that batch. Embedded Engines
+use the `:group_commit_interval_ms` option. `durability: :write` remains immediate.
 
 `TAY_MAX_STATE_BYTES` uses decimal multipliers for `KB`, `MB`, and `GB`, and
 binary multipliers for `KiB`, `MiB`, and `GiB`. For example, `5GB` is
@@ -126,7 +137,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.3.0
+  ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -134,11 +145,14 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.3.0/clients/python).
+[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.3.1/clients/python).
 
 The health check succeeds only when the Engine reports `ready` and the selected
 transport is available (HTTP if the socket is disabled, otherwise the UDS).
-A live BEAM process alone is not healthy.
+A live BEAM process alone is not healthy. The image grants startup a 15-minute
+health-check grace period, matching the default bounded recovery deadline;
+steady-state failures still use the ordinary 12 attempts at five-second
+intervals.
 
 ## Persistence and operations
 

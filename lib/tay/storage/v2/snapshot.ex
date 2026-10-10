@@ -8,15 +8,15 @@ defmodule Tay.Storage.V2.Snapshot do
 
   def classify(job, :infinity, _now) when is_map(job), do: {:ok, :retain}
 
-  def classify(%{state: state, terminal_at: at}, {:hours, hours}, now)
-      when state in @terminal do
-    with {:ok, expired} <- Retention.expired?(at, {:hours, hours}, now),
+  def classify(%{state: state, terminal_at: at}, {unit, amount} = retention, now)
+      when state in @terminal and unit in [:minutes, :hours] and is_integer(amount) do
+    with {:ok, expired} <- Retention.expired?(at, retention, now),
          do: {:ok, if(expired, do: :expire, else: :retain)}
   end
 
-  def classify(%{state: state}, {:hours, hours}, now)
-      when state not in @terminal do
-    with :ok <- Retention.validate({:hours, hours}),
+  def classify(%{state: state}, {unit, amount} = retention, now)
+      when state not in @terminal and unit in [:minutes, :hours] and is_integer(amount) do
+    with :ok <- Retention.validate(retention),
          true <- Tay.Event.V2.time?(now) || {:error, :retention_timestamp_unavailable},
          do: {:ok, :retain}
   end

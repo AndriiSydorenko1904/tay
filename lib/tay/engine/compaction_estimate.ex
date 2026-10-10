@@ -79,6 +79,9 @@ defmodule Tay.Engine.CompactionEstimate do
           :infinity ->
             {0, 0}
 
+          {unit, 0} when unit in [:minutes, :hours] ->
+            {estimate.terminal_jobs, estimate.terminal_bytes}
+
           finite ->
             {:ok, duration} = Retention.duration(finite)
             cutoff = now - duration

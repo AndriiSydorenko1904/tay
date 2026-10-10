@@ -9,7 +9,7 @@ defmodule Tay.Storage.V2.Publisher do
 
   alias Tay.Event.V2
   alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
-  alias Tay.Storage.V2.{Authority, Codec, Reducer, Snapshot}
+  alias Tay.Storage.V2.{Authority, Codec, Reducer, Retention, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
 
   @max 18_446_744_073_709_551_615
@@ -110,7 +110,7 @@ defmodule Tay.Storage.V2.Publisher do
         }
         |> Map.merge(retention_stats)
         |> Map.merge(%{
-          terminal_retention: source.terminal_retention,
+          terminal_retention: Retention.persisted(source.terminal_retention),
           captured_at: source.captured_at
         })
 
@@ -624,7 +624,7 @@ defmodule Tay.Storage.V2.Publisher do
       source_epoch_id: source.epoch_id,
       source_frontier: inventory.frontier,
       captured_at: source.captured_at,
-      terminal_retention: source.terminal_retention,
+      terminal_retention: Retention.persisted(source.terminal_retention),
       source_segments: inventory.sealed,
       base_segments: base,
       tail_segment_id: tail_id,

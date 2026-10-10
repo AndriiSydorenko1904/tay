@@ -10,11 +10,15 @@ defmodule Tay.Storage.V2.Retention do
   def max_hours, do: @max_hours
   def validate(:infinity), do: :ok
 
-  def validate({:minutes, minutes}) when is_integer(minutes) and minutes in 1..@max_minutes,
+  def validate({:minutes, minutes}) when is_integer(minutes) and minutes in 0..@max_minutes,
     do: :ok
 
-  def validate({:hours, hours}) when is_integer(hours) and hours in 1..@max_hours, do: :ok
+  def validate({:hours, hours}) when is_integer(hours) and hours in 0..@max_hours, do: :ok
   def validate(_), do: {:error, :terminal_retention}
+
+  @doc "Returns the durable policy used after a one-shot compaction request."
+  def persisted({unit, 0}) when unit in [:minutes, :hours], do: {:hours, 1}
+  def persisted(retention), do: retention
 
   def duration({:minutes, minutes} = retention) do
     with :ok <- validate(retention), do: {:ok, minutes * @minute_ms}
@@ -50,6 +54,9 @@ defmodule Tay.Storage.V2.Retention do
       case retention do
         :infinity ->
           {:ok, false}
+
+        {unit, 0} when unit in [:minutes, :hours] ->
+          {:ok, true}
 
         retention ->
           {:ok, duration} = duration(retention)

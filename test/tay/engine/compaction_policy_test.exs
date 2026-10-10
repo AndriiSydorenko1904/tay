@@ -53,6 +53,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
   test "strict finite config, shared duration bound, disabled opt-out" do
     assert {:ok, defaults} = CompactionConfig.new([])
     assert defaults.enabled
+    assert defaults.checkpoint_interval == 0
     assert {:ok, %{enabled: false}} = CompactionConfig.new(false)
     assert {:ok, _} = CompactionConfig.new(terminal_retention: {:hours, Retention.max_hours()})
     assert {:ok, legacy} = CompactionConfig.new(max_terminal_jobs: 5_000)
@@ -73,6 +74,9 @@ defmodule Tay.Engine.CompactionPolicyTest do
           [check_interval: :infinity],
           [check_interval: 0],
           [check_interval: 4_294_967_296],
+          [checkpoint_interval: -1],
+          [checkpoint_interval: 4_294_967_296],
+          [checkpoint_interval: 1.0],
           [min_interval: -1],
           [min_interval: 1.0],
           [min_sealed_segments: 0],
@@ -115,6 +119,27 @@ defmodule Tay.Engine.CompactionPolicyTest do
     }
 
     assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 10)
+  end
+
+  test "a due Store-v2 checkpoint waits for idle state and requires new tail events" do
+    config = %{CompactionConfig.defaults() | checkpoint_interval: 5_000}
+
+    summary = %{
+      active_jobs: 1,
+      last_compaction_at: 10_000,
+      checkpoint_events: 1,
+      sealed_segments: 0,
+      reclaimable_bytes: 0,
+      ratio: 0
+    }
+
+    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 14_999)
+    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 15_000)
+
+    assert :ok = CompactionPolicy.eligible(%{summary | active_jobs: 0}, config, 15_000)
+
+    assert {:error, :active_jobs_present} =
+             CompactionPolicy.eligible(%{summary | checkpoint_events: 0}, config, 15_000)
   end
 
   test "all gates conjunctive, cooldown equality and minimal generations do not churn" do
@@ -367,9 +392,15 @@ defmodule Tay.Engine.CompactionPolicyTest do
           :automatic_compaction_completed,
           :automatic_compaction_failed
         ] do
-      assert %{event: ^event, reason: :publication_failed, source_bytes: 10} =
+      assert %{
+               event: ^event,
+               reason: :publication_failed,
+               source_bytes: 10,
+               checkpoint_events: 3
+             } =
                CompactionEvents.normalize(event, {:raw, "secret"}, %{
                  source_bytes: 10,
+                 checkpoint_events: 3,
                  args: "secret",
                  job_id: <<1::128>>,
                  recovered: %{jobs: %{}},

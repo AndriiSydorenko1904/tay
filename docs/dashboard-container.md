@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay:1.3.0
+  ghcr.io/andriisydorenko1904/tay:1.3.1
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -89,7 +89,11 @@ The image accepts the runtime and dashboard settings below. The Bandit API's
 | `TAY_DATA_DIR` | `/var/lib/tay` | no | Authoritative Store root. Use `/var/lib/tay/store` with a named volume. |
 | `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | no | Executor Protocol v1 Unix socket. |
 | `TAY_INITIALIZE_IF_MISSING` | `false` | no | Initialize only a genuinely absent Store. |
-| `TAY_TERMINAL_RETENTION` | `24h` | no | Initial terminal retention such as `30m`, `1h`, `24h`, or `7d`. A retention saved by successful Dashboard compaction takes priority on restart. |
+| `TAY_DEFAULT_QUEUE_CONCURRENCY` | `10` | no | Maximum concurrently executing jobs in the standalone `default` queue (`1..65536`). |
+| `TAY_CALLER_TIMEOUT_MS` | `5000` | no | Engine call timeout in milliseconds; submitted timeouts have an unknown outcome and require same-ID reconciliation. |
+| `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | no | Strict-durability enqueue batching window (`0..1000` ms); invalid values fail startup. |
+| `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | no | Crash-safe Store-v2 semantic checkpoint interval (`0..4294967295` ms); `0` disables it. |
+| `TAY_TERMINAL_RETENTION` | `24h` | no | Initial terminal retention such as `30m`, `1h`, `24h`, or `7d`. Dashboard/API zero is a one-shot full terminal-history purge and persists `1h` afterward. A retention saved by successful Dashboard compaction takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | no | Enable the bundled HTTP dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | no | Public hostname accepted for LiveView origin checks; no scheme, port, or path. |
 | `TAY_DASHBOARD_PORT` | `4000` | no | Container HTTP listen port. |
@@ -136,7 +140,9 @@ volume deletes job history.
 The OCI health check succeeds only after the Engine is ready and the selected
 transport accepts connections. The container smoke test separately exercises the
 default unauthenticated HTTP page and its LiveView assets; host tests cover the
-optional Basic Auth path.
+optional Basic Auth path. Startup has a 15-minute health-check grace period to
+match Tay's bounded recovery deadline; this does not weaken steady-state health
+checks.
 
 Use the same cold backup and restore process as the headless runtime. Stop the
 old container before starting a new image against its volume. Never use a
