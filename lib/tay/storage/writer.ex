@@ -13,15 +13,21 @@ defmodule Tay.Storage.Writer do
   Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{CRC32C, Native, Reader, Record, Recovery, Segment}
+  alias Tay.Storage.{Native, Reader, Recovery}
   alias Tay.Storage.Recovery.Error
-  alias Tay.Storage.V2.{Publisher, Reclaimer, Snapshot, V1Migration}
-  alias Tay.Storage.V2.Reducer, as: V2Reducer
-  alias Tay.Storage.V2.Reader, as: V2Reader
+
+  alias Tay.Storage.Writer.{
+    Compaction,
+    Config,
+    GroupCommit,
+    OnlineCompaction,
+    OnlineCompactionLifecycle,
+    RecoveryLifecycle,
+    SegmentOps,
+    State
+  }
+
   @test Mix.env() == :test
-  @maintenance_io_timeout_ms 120_000
-  @online_catch_up_target_events 1_024
-  @online_catch_up_target_bytes 1_048_576
 
   def start_link(options) do
     if Keyword.keyword?(options),
@@ -56,7 +62,7 @@ defmodule Tay.Storage.Writer do
 
   @doc "Replays an existing store, retaining its owner/Port/lock and private candidate."
   def start_recovered_link(storage_options, replay_spec) do
-    with {:ok, storage} <- options(storage_options),
+    with {:ok, storage} <- Config.new(storage_options),
          true <-
            not storage.bootstrap ||
              {:error, Error.new(:argument, :recovery_cannot_bootstrap, :validation)},
@@ -165,94 +171,9 @@ defmodule Tay.Storage.Writer do
   def init({:recovered, options, spec, budgets, deadline, caller}) do
     Process.flag(:trap_exit, true)
 
-    native_options = [
-      durability: options.durability,
-      validated_filesystem: options.validated_filesystem,
-      test_helper: options.test_helper,
-      timeout: budgets.io_timeout_ms,
-      max_directory_entries: budgets.max_directory_entries,
-      deadline: deadline
-    ]
-
-    case Native.open_existing(options.data_dir, native_options) do
-      {:ok, native} ->
-        state = %{
-          native: native,
-          options: options,
-          segment: nil,
-          store_id: nil,
-          epoch_id: nil,
-          v2_current: nil,
-          candidate_limits:
-            if(is_map(spec.initial_acc), do: Map.get(spec.initial_acc, :limits, %{}), else: %{}),
-          value_limits:
-            if(is_map(spec.initial_acc),
-              do: Map.get(spec.initial_acc, :value_limits, Tay.Event.Value.defaults()),
-              else: Tay.Event.Value.defaults()
-            ),
-          compacted: false,
-          retired_ports: MapSet.new(),
-          next_sequence: 1,
-          poisoned: nil,
-          recovery: nil
-        }
-
-        with :ok <- hook(state, :recovery_acquired),
-             :ok <- V2Reader.reconcile_adoption(native),
-             {:ok, result, candidate, view, identity} <-
-               prepare_recovered(native, spec),
-             true <-
-               Process.alive?(caller) ||
-                 {:error, Error.new(:ownership_unavailable, :caller_lost, :replay)},
-             :ok <- hook(state, :recovery_replayed) do
-          reference = make_ref()
-
-          recovery = %{
-            status: :awaiting_activation,
-            result: result,
-            candidate: candidate,
-            view: view,
-            provider: identity,
-            session_ref: reference,
-            admission_ref: nil,
-            caller: caller,
-            monitor: Process.monitor(caller),
-            options: budgets,
-            expires_at: System.monotonic_time(:millisecond) + budgets.activation_window_ms
-          }
-
-          schedule_expiry(recovery)
-
-          {:ok,
-           %{
-             state
-             | segment: view.store.highest,
-               store_id: view.store.store_id,
-               epoch_id: Map.get(view, :epoch_id),
-               v2_current: Map.get(view, :current),
-               next_sequence: view.store.next_sequence,
-               recovery: recovery
-           }}
-        else
-          {:error, reason} ->
-            Native.shutdown(native)
-            {:stop, Error.wrap(reason, :replay)}
-        end
-
-      {:error, reason} ->
-        error = Error.wrap(reason, :ownership)
-
-        error =
-          if match?(%{reason: "enoent"}, reason),
-            do: %{error | kind: :ownership_unavailable, reason: :existing_root_or_lock_missing},
-            else: error
-
-        error =
-          if match?(%{reason: "invalid_protocol"}, reason),
-            do: %{error | kind: :ownership_unavailable, reason: :incompatible_native_helper},
-            else: error
-
-        {:stop, error}
+    case RecoveryLifecycle.open(options, spec, budgets, deadline, caller) do
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
@@ -263,7 +184,7 @@ defmodule Tay.Storage.Writer do
   defp init_if_missing(options) do
     Process.flag(:trap_exit, true)
 
-    with {:ok, options} <- options(options),
+    with {:ok, options} <- Config.new(options),
          {:ok, native} <- Native.open_if_missing(options.data_dir, Map.to_list(options)) do
       if native.facts.created do
         init_opened(native, options, true)
@@ -281,7 +202,7 @@ defmodule Tay.Storage.Writer do
   defp init_physical(options, initialize_only) do
     Process.flag(:trap_exit, true)
 
-    with {:ok, options} <- options(options),
+    with {:ok, options} <- Config.new(options),
          {:ok, native} <- Native.open(options.data_dir, Map.to_list(options)) do
       init_opened(native, options, initialize_only)
     else
@@ -290,24 +211,9 @@ defmodule Tay.Storage.Writer do
   end
 
   defp init_opened(native, options, initialize_only) do
-    state = %{
-      native: native,
-      options: options,
-      segment: nil,
-      store_id: nil,
-      epoch_id: nil,
-      v2_current: nil,
-      candidate_limits: %{},
-      value_limits: Tay.Event.Value.defaults(),
-      compacted: false,
-      online_compaction: nil,
-      retired_ports: MapSet.new(),
-      next_sequence: 1,
-      poisoned: nil,
-      initialize_only: initialize_only
-    }
+    state = State.physical(native, options, initialize_only)
 
-    case prepare(state) do
+    case State.prepare(state) do
       {:ok, state} ->
         {:ok, state}
 
@@ -318,7 +224,7 @@ defmodule Tay.Storage.Writer do
   end
 
   @impl true
-  def handle_call(:status, _from, state), do: {:reply, public_status(state), state}
+  def handle_call(:status, _from, state), do: {:reply, State.public_status(state), state}
 
   # Online compaction is orchestrated outside the Writer process, but every
   # native operation still executes here, in the sole Port owner. Individual
@@ -337,25 +243,14 @@ defmodule Tay.Storage.Writer do
           }
         } = state
       ) do
-    result =
-      cond do
-        :atomics.get(cancel_flag, 1) == 1 ->
-          {:error, %{kind: :resource_limit, reason: :compaction_cancelled}}
-
-        System.monotonic_time(:millisecond) >= deadline ->
-          {:error, %{kind: :resource_limit, reason: :deadline}}
-
-        true ->
-          timeout =
-            min(
-              @maintenance_io_timeout_ms,
-              max(deadline - System.monotonic_time(:millisecond), 1)
-            )
-
-          Native.request_owned(%{native | timeout: timeout}, operation, body)
-      end
-
-    {:reply, result, state}
+    OnlineCompactionLifecycle.native_request(
+      state,
+      native,
+      deadline,
+      cancel_flag,
+      operation,
+      body
+    )
   end
 
   def handle_call({:tay_native_request, _, _, _, _}, _from, state),
@@ -365,96 +260,21 @@ defmodule Tay.Storage.Writer do
         {:compact_online, reference, deadline, retention, captured_at, cancel_flag, notify, token,
          snapshot},
         {caller, _},
-        %{recovery: recovery, epoch_id: epoch_id} = state
+        %{recovery: _recovery, epoch_id: epoch_id} = state
       )
       when is_binary(epoch_id) and is_pid(notify) do
-    valid =
-      recovery.status == :ready and caller == recovery.caller and
-        reference == recovery.admission_ref and is_nil(Map.get(state, :online_compaction)) and
-        is_integer(deadline) and deadline > System.monotonic_time(:millisecond) and
-        is_map(snapshot) and is_reference(Map.get(snapshot, :table)) and
-        Map.get(snapshot, :frontier) == state.next_sequence - 1 and
-        is_integer(Map.get(snapshot, :next_availability_order)) and
-        Tay.Storage.V2.Retention.validate(retention) == :ok
-
-    if valid do
-      case rotate_segment(state) do
-        {:ok, rotated} ->
-          owner = self()
-          ref = make_ref()
-          compaction_native = %{rotated.native | deadline: deadline, delegate: ref}
-
-          source =
-            %{
-              store_id: rotated.store_id,
-              epoch_id: rotated.epoch_id,
-              current: rotated.v2_current,
-              frontier: rotated.next_sequence - 1,
-              exclude_segment_id: rotated.segment.id,
-              rotation_target_bytes: rotated.options.rotation_target_bytes,
-              candidate_limits: rotated.candidate_limits,
-              value_limits: rotated.value_limits,
-              terminal_retention: retention,
-              captured_at: captured_at,
-              jobs_table: snapshot.table,
-              next_availability_order: snapshot.next_availability_order,
-              snapshot_loaded: fn ->
-                send(notify, {:compact_online_snapshot_loaded, owner, token})
-                :ok
-              end,
-              live_snapshot: true,
-              online_catch_up: fn action ->
-                GenServer.call(owner, {:compact_online_catch_up, ref, action}, :infinity)
-              end
-            }
-            |> with_compaction_hook(rotated)
-
-          {pid, monitor} =
-            spawn_monitor(fn ->
-              Tay.Storage.V2.CompactionControl.install(cancel_flag)
-
-              result =
-                try do
-                  Publisher.publish(compaction_native, source)
-                after
-                  Tay.Storage.V2.CompactionControl.clear()
-                end
-
-              send(owner, {:compact_online_result, ref, self(), result})
-            end)
-
-          online = %{
-            ref: ref,
-            pid: pid,
-            monitor: monitor,
-            deadline: deadline,
-            cancel_flag: cancel_flag,
-            delta: [],
-            delta_events: 0,
-            delta_bytes: 0,
-            freezing: false,
-            frozen: false,
-            freeze_from: nil,
-            pending: [],
-            notify: notify,
-            token: token,
-            source: rotated
-          }
-
-          rotation = %{
-            previous: Map.take(state.segment, [:id, :state, :bytes, :count]),
-            segment: Map.take(rotated.segment, [:id, :state, :bytes, :count]),
-            next_sequence: rotated.next_sequence
-          }
-
-          {:reply, {:ok, rotation}, Map.put(rotated, :online_compaction, online)}
-
-        error ->
-          {:reply, error, state}
-      end
-    else
-      {:reply, {:error, :compaction_not_admitted}, state}
-    end
+    OnlineCompactionLifecycle.start(
+      state,
+      caller,
+      reference,
+      deadline,
+      retention,
+      captured_at,
+      cancel_flag,
+      notify,
+      token,
+      snapshot
+    )
   end
 
   def handle_call({:compact_online, _, _, _, _, _, _, _, _, _}, _, state),
@@ -466,13 +286,7 @@ defmodule Tay.Storage.Writer do
         %{online_compaction: %{ref: ref, pid: pid, freezing: false, frozen: false} = online} =
           state
       ) do
-    records = Enum.reverse(online.delta)
-
-    {:reply, {:ok, records},
-     %{
-       state
-       | online_compaction: %{online | delta: [], delta_events: 0, delta_bytes: 0}
-     }}
+    OnlineCompactionLifecycle.poll(state, online)
   end
 
   def handle_call(
@@ -481,24 +295,7 @@ defmodule Tay.Storage.Writer do
         %{online_compaction: %{ref: ref, pid: pid, freezing: false, frozen: false} = online} =
           state
       ) do
-    if online.delta_events > @online_catch_up_target_events or
-         online.delta_bytes > @online_catch_up_target_bytes do
-      records = Enum.reverse(online.delta)
-
-      {:reply, {:catch_up, records},
-       %{
-         state
-         | online_compaction: %{online | delta: [], delta_events: 0, delta_bytes: 0}
-       }}
-    else
-      send(online.notify, {:compact_online_switch_requested, self(), online.token})
-
-      {:noreply,
-       %{
-         state
-         | online_compaction: %{online | freezing: true, freeze_from: from}
-       }}
-    end
+    OnlineCompactionLifecycle.freeze(state, online, from)
   end
 
   def handle_call(
@@ -515,27 +312,7 @@ defmodule Tay.Storage.Writer do
             } = online
         } = state
       ) do
-    with :ok <- Native.sync(state.native), :ok <- Native.close_write(state.native) do
-      GenServer.reply(freeze_from, {:ok, Enum.reverse(online.delta)})
-
-      {:reply, :ok,
-       %{
-         state
-         | online_compaction: %{
-             online
-             | freezing: false,
-               frozen: true,
-               freeze_from: nil,
-               delta: [],
-               delta_events: 0,
-               delta_bytes: 0
-           }
-       }}
-    else
-      error ->
-        GenServer.reply(freeze_from, error)
-        {:reply, error, poison(state, error)}
-    end
+    OnlineCompactionLifecycle.finish_freeze(state, online, freeze_from)
   end
 
   def handle_call(
@@ -544,8 +321,7 @@ defmodule Tay.Storage.Writer do
         %{recovery: recovery, online_compaction: %{frozen: true} = online} = state
       ) do
     if recovery.status == :ready and reference == recovery.admission_ref do
-      {:noreply,
-       %{state | online_compaction: %{online | pending: [{from, request} | online.pending]}}}
+      {:noreply, %{state | online_compaction: OnlineCompaction.queue(online, from, request)}}
     else
       {:reply, {:error, :mutation_not_admitted}, state}
     end
@@ -580,22 +356,10 @@ defmodule Tay.Storage.Writer do
 
   def handle_call({:activate_recovered, reference}, {caller, _}, %{recovery: recovery} = state)
       when is_map(recovery) do
-    cond do
-      recovery.status != :awaiting_activation ->
-        {:reply, {:error, Error.new(:ownership_unavailable, :already_activated, :activation)},
-         state}
-
-      reference != recovery.session_ref ->
-        {:reply, {:error, Error.new(:ownership_unavailable, :stale_session, :activation)}, state}
-
-      System.monotonic_time(:millisecond) >= recovery.expires_at ->
-        recovery_failure(
-          state,
-          Error.new(:resource_limit, :activation_window_expired, :revalidation)
-        )
-
-      true ->
-        activate(state, caller)
+    case RecoveryLifecycle.activation_error(recovery, reference) do
+      nil -> perform_recovery_activation(state, caller)
+      %{reason: :activation_window_expired} = error -> recovery_failure(state, error)
+      error -> {:reply, {:error, error}, state}
     end
   end
 
@@ -614,53 +378,13 @@ defmodule Tay.Storage.Writer do
 
   def handle_call({:begin_group_commit, reference}, {caller, _}, %{recovery: recovery} = state)
       when is_map(recovery) do
-    cond do
-      recovery.status != :ready or reference != recovery.admission_ref or
-          caller != recovery.caller ->
-        {:reply, {:error, :mutation_not_admitted}, state}
-
-      state.options.durability != :sync ->
-        {:reply, {:error, :group_commit_requires_sync}, state}
-
-      Map.get(state, :group_commit) != nil ->
-        {:reply, {:error, :group_commit_active}, state}
-
-      true ->
-        {:reply, :ok,
-         Map.put(state, :group_commit, %{owner: caller, reference: reference, count: 0})}
-    end
+    GroupCommit.begin(state, caller, reference)
   end
 
   def handle_call({:finish_group_commit, reference}, {caller, _}, state) do
-    case Map.get(state, :group_commit) do
-      %{owner: ^caller, reference: ^reference, count: count} ->
-        started = System.monotonic_time()
-
-        result =
-          if count == 0,
-            do: :ok,
-            else: step(state, :append_synced, fn -> Native.sync(state.native) end)
-
-        duration = System.monotonic_time() - started
-
-        case result do
-          :ok ->
-            case Native.check(state.native) do
-              :ok ->
-                {:reply, {:ok, %{size: count, fsync_duration: duration}},
-                 Map.delete(state, :group_commit)}
-
-              {:error, reason} ->
-                {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
-            end
-
-          {:error, reason} ->
-            {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
-        end
-
-      _ ->
-        {:reply, {:error, :group_commit_not_active}, state}
-    end
+    GroupCommit.finish(state, caller, reference, fn ->
+      step(state, :append_synced, fn -> Native.sync(state.native) end)
+    end)
   end
 
   def handle_call(
@@ -673,19 +397,12 @@ defmodule Tay.Storage.Writer do
          reference == recovery.admission_ref and is_integer(deadline) and
          deadline > System.monotonic_time(:millisecond) and
          Tay.Storage.V2.Retention.validate(retention) == :ok do
-      state =
-        state
-        |> Map.put(:native, %{state.native | deadline: deadline})
+      case Compaction.run(state, deadline, retention, captured_at, cancel_flag) do
+        {:ok, next, stats} ->
+          {:reply, {:ok, stats}, next}
 
-      Tay.Storage.V2.CompactionControl.install(cancel_flag)
-
-      try do
-        case compact_source(state, retention, captured_at) do
-          {:ok, next, stats} -> {:reply, {:ok, stats}, %{next | compacted: true}}
-          {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
-        end
-      after
-        Tay.Storage.V2.CompactionControl.clear()
+        {:error, failed_state, reason} ->
+          {:reply, {:error, {:uncertain, reason}}, poison(failed_state, reason)}
       end
     else
       {:reply, {:error, :compaction_not_admitted}, state}
@@ -728,9 +445,9 @@ defmodule Tay.Storage.Writer do
   end
 
   defp mutate({:append, type, schema, payload}, _from, state) do
-    case encode_candidate(state, type, schema, payload) do
+    case SegmentOps.encode_candidate(state, type, schema, payload) do
       {:ok, bytes} ->
-        case append_with_capacity(state, bytes, type, schema, payload) do
+        case SegmentOps.append_with_capacity(state, bytes, type, schema, payload) do
           {:ok, next, receipt} ->
             {:reply, {:ok, receipt}, journal_compaction(next, {type, schema, payload})}
 
@@ -755,7 +472,7 @@ defmodule Tay.Storage.Writer do
         {:reply, {:error, :empty_segment}, state}
 
       true ->
-        case seal_segment(state) do
+        case SegmentOps.seal(state) do
           {:ok, next} -> {:reply, {:ok, next.segment}, next}
           {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
         end
@@ -763,7 +480,7 @@ defmodule Tay.Storage.Writer do
   end
 
   defp mutate(:rotate, _from, state) do
-    case rotate_segment(state) do
+    case SegmentOps.rotate(state) do
       {:ok, next} -> {:reply, {:ok, next.segment}, next}
       {:reject, reason} -> {:reply, {:error, reason}, state}
       {:error, reason} -> {:reply, {:error, {:uncertain, reason}}, poison(state, reason)}
@@ -772,49 +489,23 @@ defmodule Tay.Storage.Writer do
 
   defp journal_compaction(
          %{online_compaction: %{frozen: false} = online} = state,
-         {_, _, payload} = record
+         {_, _, _} = record
        ) do
-    next = %{
-      online
-      | delta: [record | online.delta],
-        delta_events: online.delta_events + 1,
-        delta_bytes: online.delta_bytes + byte_size(payload) + 28
-    }
-
-    %{state | online_compaction: next}
+    %{state | online_compaction: OnlineCompaction.journal(online, record)}
   end
 
   defp journal_compaction(state, _record), do: state
-
-  defp resume_pending(state, pending, stats) do
-    Enum.reduce(pending, {state, false}, fn {from, request}, {acc, delivered} ->
-      case mutate(request, from, acc) do
-        {:reply, reply, next} ->
-          reply =
-            case {delivered, reply} do
-              {false, {:ok, value}} when is_map(stats) ->
-                {:ok, value, {:online_compaction, stats}}
-
-              _ ->
-                reply
-            end
-
-          GenServer.reply(from, reply)
-          {next, delivered or match?({:ok, _, {:online_compaction, _}}, reply)}
-      end
-    end)
-  end
 
   @impl true
   def handle_info(
         {:recovery_expired, reference},
         %{recovery: %{session_ref: reference, status: :awaiting_activation} = recovery} = state
       ) do
-    if System.monotonic_time(:millisecond) >= recovery.expires_at do
+    if RecoveryLifecycle.expired?(recovery) do
       {:stop, :normal,
        poison(state, Error.new(:resource_limit, :activation_window_expired, :revalidation))}
     else
-      schedule_expiry(recovery)
+      RecoveryLifecycle.schedule_expiry(recovery)
       {:noreply, state}
     end
   end
@@ -825,75 +516,21 @@ defmodule Tay.Storage.Writer do
         {:compact_online_result, ref, pid, {:ok, %{recovered: recovered} = stats}},
         %{online_compaction: %{ref: ref, pid: pid} = online} = state
       ) do
-    Process.demonitor(online.monitor, [:flush])
-    native = %{state.native | deadline: nil}
-
-    reclaimed =
-      case Reclaimer.predecessor(native, recovered) do
-        {:ok, details} -> details
-        _ -> %{reclamation: :deferred, reclaimed_bytes: 0}
-      end
-
-    stats = Map.merge(stats, reclaimed)
-
-    case Native.open_active(native, canonical(recovered.highest.id), recovered.highest.identity) do
-      {:ok, _} ->
-        next = %{
-          state
-          | native: native,
-            epoch_id: recovered.epoch_id,
-            v2_current: recovered.current,
-            segment: recovered.highest,
-            next_sequence: recovered.next_sequence,
-            online_compaction: nil
-        }
-
-        {next, delivered} = resume_pending(next, Enum.reverse(online.pending), stats)
-
-        send(
-          online.notify,
-          {:compact_online_result, self(), online.token, {:ok, stats, delivered}}
-        )
-
-        {:noreply, next, {:continue, :release_transient_heap}}
-
-      error ->
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, poison(state, error)}
-    end
+    OnlineCompactionLifecycle.complete(state, online, recovered, stats, &mutate/3)
   end
 
   def handle_info(
         {:compact_online_result, ref, pid, {:error, reason}},
         %{online_compaction: %{ref: ref, pid: pid} = online} = state
       ) do
-    Process.demonitor(online.monitor, [:flush])
-
-    cond do
-      not online.freezing and not online.frozen ->
-        abort_online_preparation(state, online, reason)
-
-      safe_to_resume_source?(reason) ->
-        resume_source_after_compaction_failure(state, online, reason)
-
-      true ->
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-        {:noreply, poison(state, reason)}
-    end
+    OnlineCompactionLifecycle.fail(state, online, reason, &mutate/3)
   end
 
   def handle_info(
         {:DOWN, monitor, :process, pid, reason},
         %{online_compaction: %{monitor: monitor, pid: pid} = online} = state
       ) do
-    error = {:builder_exit, reason}
-
-    if not online.freezing and not online.frozen do
-      abort_online_preparation(state, online, error)
-    else
-      send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-      {:noreply, poison(state, {:compaction_builder_exit, reason})}
-    end
+    OnlineCompactionLifecycle.builder_down(state, online, reason)
   end
 
   def handle_info(
@@ -939,47 +576,9 @@ defmodule Tay.Storage.Writer do
 
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
 
-  defp abort_online_preparation(state, online, reason) do
-    native = %{state.native | deadline: nil}
-
-    case Native.v2_abort(native) do
-      :ok ->
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-
-        {:noreply, %{state | native: native, online_compaction: nil},
-         {:continue, :release_transient_heap}}
-
-      {:error, abort_reason} ->
-        error = {:compaction_abort_failed, reason, abort_reason}
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, poison(state, error)}
-    end
-  end
-
-  defp safe_to_resume_source?({:unknown_publication_outcome, _}), do: false
-  defp safe_to_resume_source?(_), do: true
-
-  defp resume_source_after_compaction_failure(state, online, reason) do
-    native = %{state.native | deadline: nil}
-
-    with :ok <- Native.v2_abort(native),
-         {:ok, _} <-
-           Native.open_active(native, canonical(state.segment.id), state.segment.identity) do
-      next = %{state | native: native, online_compaction: nil}
-      {next, _} = resume_pending(next, Enum.reverse(online.pending), nil)
-      send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-      {:noreply, next, {:continue, :release_transient_heap}}
-    else
-      rollback_error ->
-        error = {:compaction_source_resume_failed, reason, rollback_error}
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, poison(state, error)}
-    end
-  end
-
   @impl true
   def terminate(_reason, state) do
-    notify_lifecycle(state, :closed)
+    State.notify_lifecycle(state, :closed)
     Native.shutdown(state.native)
   end
 
@@ -991,352 +590,13 @@ defmodule Tay.Storage.Writer do
       |> Map.put(:message, :redacted)
       |> Map.put(:reason, :storage_session_failed)
 
-  defp schedule_expiry(recovery) do
-    delay = max(recovery.expires_at - System.monotonic_time(:millisecond), 0)
+  defp perform_recovery_activation(state, caller) do
+    case RecoveryLifecycle.activate(state, caller) do
+      {:ok, summary, candidate, next} ->
+        {:reply, {:ok, summary, candidate}, next, {:continue, :release_transient_heap}}
 
-    Process.send_after(
-      self(),
-      {:recovery_expired, recovery.session_ref},
-      min(delay, 4_294_967_295)
-    )
-  end
-
-  defp prepare_recovered(native, spec) do
-    with {:ok, root} <- Native.list(native, :root) do
-      if Enum.any?(root, &(&1.name in ["CURRENT", "STORE-V2"])) do
-        initial = spec.initial_acc
-
-        with {:ok, view} <-
-               V2Reader.recover(
-                 native,
-                 V2Reducer.candidate(initial.limits, initial.value_limits)
-               ) do
-          store = view.store
-          count = Enum.reduce(store.segments, 0, &(&1.count + &2))
-
-          summary = %{
-            scope: :candidate,
-            store_id: store.store_id,
-            epoch_id: view.epoch_id,
-            compaction_captured_at: view.manifest.captured_at,
-            compaction_terminal_retention: view.manifest.terminal_retention,
-            checkpoint_tail_events: view.next_sequence - view.manifest.tail_first_sequence,
-            segments: store.segments,
-            highest: store.highest,
-            exhausted: store.exhausted,
-            record_count: count,
-            segment_count: length(store.segments),
-            total_segment_bytes: view.total_segment_bytes,
-            physical_last_sequence: if(count == 0, do: nil, else: store.next_sequence - 1),
-            next_sequence: if(store.exhausted, do: :exhausted, else: store.next_sequence),
-            arithmetic_next_sequence: store.next_sequence,
-            staging_count: view.staging_count,
-            ignored_count: view.ignored_count
-          }
-
-          {:ok, summary, view.candidate, view, :store_v2}
-        end
-      else
-        Recovery.prepare(native, spec.codec, spec.initial_acc, spec.reducer, spec.options)
-      end
-    end
-  end
-
-  defp revalidate_recovered(native, %{provider: :store_v2, view: view}) do
-    with {:ok, actual} <-
-           V2Reader.recover(
-             native,
-             V2Reducer.candidate(view.candidate.limits, view.candidate.value_limits),
-             selected: true
-           ),
-         true <- actual == view || {:error, :v2_frozen_view_changed},
-         do: :ok
-  end
-
-  defp revalidate_recovered(native, recovery),
-    do: Recovery.revalidate(native, recovery.view, recovery.provider, recovery.options)
-
-  defp compact_source(state, retention, captured_at) do
-    with {:ok, state} <- seal_compaction_frontier(state),
-         {:ok, jobs, current} <- replay_compaction_source(state) do
-      source = %{
-        store_id: state.store_id,
-        epoch_id: state.epoch_id,
-        current: current,
-        jobs: jobs,
-        frontier: state.next_sequence - 1,
-        rotation_target_bytes: state.options.rotation_target_bytes,
-        candidate_limits: state.candidate_limits,
-        value_limits: state.value_limits,
-        terminal_retention: retention,
-        captured_at:
-          if(is_nil(captured_at), do: System.system_time(:millisecond), else: captured_at)
-      }
-
-      source = with_compaction_hook(source, state)
-
-      result =
-        case Publisher.publish(state.native, source) do
-          {:error, {:unknown_publication_outcome, publication}} ->
-            reconcile_publication(state, jobs, publication)
-
-          other ->
-            other
-        end
-
-      case result do
-        {:ok, %{recovered: recovered} = stats} ->
-          native = Map.get(stats, :native, state.native)
-
-          reclaimed =
-            if Map.has_key?(stats, :native) or Tay.Storage.V2.CompactionControl.requested?() do
-              %{reclamation: :deferred, reclaimed_bytes: 0}
-            else
-              case Reclaimer.predecessor(native, recovered) do
-                {:ok, details} -> details
-                _ -> %{reclamation: :deferred, reclaimed_bytes: 0}
-              end
-            end
-
-          stats = stats |> Map.delete(:native) |> Map.merge(reclaimed)
-
-          {:ok,
-           %{
-             state
-             | epoch_id: recovered.epoch_id,
-               v2_current: recovered.current,
-               segment: recovered.highest,
-               next_sequence: recovered.next_sequence,
-               native: native,
-               retired_ports:
-                 if(native.port != state.native.port,
-                   do: MapSet.put(state.retired_ports, state.native.port),
-                   else: state.retired_ports
-                 )
-           }, stats}
-
-        error ->
-          error
-      end
-    end
-  end
-
-  defp reconcile_publication(state, jobs, publication) do
-    # The first Port may have completed the rename and lost only its reply.
-    # Close it, reacquire for inspection, and accept only an independently
-    # verified CURRENT naming this exact epoch and these exact durable jobs.
-    Native.close(state.native)
-
-    options = [
-      durability: state.options.durability,
-      validated_filesystem: state.options.validated_filesystem,
-      test_helper: state.options.test_helper,
-      timeout: state.options.timeout
-    ]
-
-    with {:ok, native} <- reacquire_after_close(state.options.data_dir, options) do
-      result =
-        with {:ok, recovered} <-
-               V2Reader.recover(
-                 native,
-                 V2Reducer.candidate(state.candidate_limits, state.value_limits)
-               ),
-             true <- recovered.epoch_id == publication.epoch_id || {:error, :old_current},
-             true <- recovered.current == publication.current || {:error, :current_changed},
-             {:ok, retained, _, _} <-
-               Snapshot.prepare(
-                 jobs,
-                 publication.terminal_retention,
-                 publication.captured_at
-               ),
-             true <-
-               Snapshot.equivalent?(retained, recovered.candidate.jobs) ||
-                 {:error, :reconciled_candidate_mismatch} do
-          {:ok,
-           publication
-           |> Map.drop([:current, :started, :reason])
-           |> Map.merge(%{
-             native: native,
-             recovered: recovered,
-             pause_ms: System.monotonic_time(:millisecond) - publication.started,
-             reclamation: :deferred,
-             reclaimed_bytes: 0,
-             publication_reconciled: true
-           })}
-        end
-
-      if match?({:ok, _}, result),
-        do: result,
-        else:
-          (
-            Native.shutdown(native)
-            {:error, result}
-          )
-    end
-  end
-
-  defp reacquire_after_close(path, options) do
-    deadline = System.monotonic_time(:millisecond) + 5_000
-    do_reacquire_after_close(path, options, deadline)
-  end
-
-  defp do_reacquire_after_close(path, options, deadline) do
-    case Native.open_existing(path, options) do
-      {:error, %{reason: "store_busy"}} = busy ->
-        if System.monotonic_time(:millisecond) < deadline do
-          Process.sleep(10)
-          do_reacquire_after_close(path, options, deadline)
-        else
-          busy
-        end
-
-      result ->
-        result
-    end
-  end
-
-  defp seal_compaction_frontier(%{segment: %{state: :active, count: count}} = state)
-       when count > 0 do
-    with {:ok, rotated} <- rotate_segment(state),
-         :ok <- Native.sync(rotated.native),
-         :ok <- Native.close_write(rotated.native),
-         :ok <- Native.sync_dir(rotated.native, :segments),
-         do: {:ok, rotated}
-  end
-
-  defp seal_compaction_frontier(%{segment: %{state: :active}} = state) do
-    with :ok <- Native.sync(state.native),
-         :ok <- Native.close_write(state.native),
-         :ok <- Native.sync_dir(state.native, :segments),
-         do: {:ok, state}
-  end
-
-  defp seal_compaction_frontier(state), do: {:ok, state}
-
-  defp replay_compaction_source(%{epoch_id: nil} = state) do
-    options = Map.to_list(state.recovery.options)
-
-    with {:ok, view} <- Reader.preflight(state.native, options),
-         true <-
-           (view.store.store_id == state.store_id and
-              view.store.next_sequence == state.next_sequence) ||
-             {:error, :compaction_source_changed},
-         {:ok, migrated} <-
-           Reader.reduce_while(
-             state.native,
-             view,
-             V1Migration.candidate(state.candidate_limits, state.value_limits),
-             fn record, position, acc ->
-               with {:ok, event, _} <-
-                      Tay.Event.decode_payload(
-                        record.record_type,
-                        record.payload_schema_version,
-                        record.payload,
-                        state.value_limits
-                      ),
-                    {:ok, next} <- V1Migration.reduce(acc, event, position),
-                    do: {:cont, next}
-             end,
-             options
-           ) do
-      {:ok, migrated.v2.jobs, nil}
-    end
-  end
-
-  defp replay_compaction_source(state) do
-    with {:ok, recovered} <-
-           V2Reader.recover(
-             state.native,
-             V2Reducer.candidate(state.candidate_limits, state.value_limits),
-             selected: true
-           ),
-         true <- recovered.epoch_id == state.epoch_id || {:error, :source_epoch_changed},
-         true <- recovered.current == state.v2_current || {:error, :source_current_changed},
-         true <-
-           recovered.next_sequence == state.next_sequence || {:error, :source_frontier_changed} do
-      {:ok, recovered.candidate.jobs, recovered.current}
-    end
-  end
-
-  defp activate(state, caller) do
-    recovery = state.recovery
-
-    native = %{
-      state.native
-      | deadline: System.monotonic_time(:millisecond) + recovery.options.activation_deadline_ms
-    }
-
-    state = %{state | native: native}
-
-    with :ok <- hook(state, :recovery_revalidating),
-         :ok <- revalidate_recovered(native, recovery),
-         true <-
-           (Process.alive?(caller) and Process.alive?(recovery.caller)) ||
-             {:error, Error.new(:ownership_unavailable, :caller_lost, :revalidation)} do
-      activate_validated(state, caller)
-    else
-      {:error, reason} -> recovery_failure(state, Error.wrap(reason, :revalidation))
-    end
-  end
-
-  defp activate_validated(state, caller) do
-    recovery = state.recovery
-
-    with :ok <- Native.enable_mutations(state.native),
-         :ok <- hook(state, :recovery_promoted),
-         :ok <- maybe_reclaim_on_activation(state),
-         {:ok, next} <- open_recovered(state, recovery.view.store),
-         :ok <- Recovery.check_deadline(state.native),
-         true <-
-           (Process.alive?(caller) and Process.alive?(recovery.caller)) || {:error, :caller_lost} do
-      terminal = recovery.view.store.exhausted
-      reference = if terminal, do: nil, else: make_ref()
-
-      segment_catalog =
-        recovery.result
-        |> Map.get(:segments, [])
-        |> Enum.map(&segment_catalog_entry/1)
-        |> include_active_segment(next.segment)
-
-      summary =
-        recovery.result
-        |> Map.drop([:segments])
-        |> Map.merge(%{
-          scope: :activated,
-          state: if(terminal, do: :terminal, else: :ready),
-          highest: next.segment,
-          segment_catalog: segment_catalog,
-          admission_ref: reference
-        })
-
-      candidate = recovery.candidate
-      Process.demonitor(recovery.monitor, [:flush])
-
-      updated = %{
-        recovery
-        | status: summary.state,
-          candidate: nil,
-          view: nil,
-          session_ref: nil,
-          admission_ref: reference,
-          result: Map.drop(summary, [:admission_ref, :segment_catalog])
-      }
-
-      native = %{next.native | deadline: nil, timeout: next.options.timeout}
-      if terminal, do: Native.shutdown(native)
-
-      {:reply, {:ok, summary, candidate}, %{next | native: native, recovery: updated},
-       {:continue, :release_transient_heap}}
-    else
-      {:error, reason} ->
-        error = Error.wrap(reason, :activation)
-
-        recovery_failure(state, %{
-          error
-          | stage: :activation,
-            kind: :uncertain_activation,
-            mutation: :activation_uncertain
-        })
+      {:error, error, failed_state} ->
+        recovery_failure(failed_state, error)
     end
   end
 
@@ -1346,406 +606,7 @@ defmodule Tay.Storage.Writer do
     {:noreply, state}
   end
 
-  defp open_recovered(state, %{exhausted: true}) do
-    with :ok <- sync_existing(state, :root, "STORE"),
-         :ok <- sync_v2_authority(state),
-         :ok <- Native.sync_dir(state.native, :root),
-         :ok <- Native.sync_dir(state.native, :segments),
-         :ok <- sync_existing(state, :segments, canonical(state.segment.id)),
-         :ok <- Native.check(state.native),
-         do: {:ok, state}
-  end
-
-  defp open_recovered(state, store), do: open_ready(state, store)
-
   defp recovery_failure(state, error), do: {:reply, {:error, error}, poison(state, error)}
-
-  defp maybe_reclaim_on_activation(%{epoch_id: nil}), do: :ok
-
-  defp maybe_reclaim_on_activation(state) do
-    case Reclaimer.predecessor(state.native, state.recovery.view) do
-      {:ok, _} -> Native.check(state.native)
-      {:error, _} -> Native.check(state.native)
-    end
-  end
-
-  defp options(options) do
-    allowed =
-      [
-        :name,
-        :data_dir,
-        :durability,
-        :validated_filesystem,
-        :rotation_target_bytes,
-        :bootstrap,
-        :lifecycle_observer,
-        :timeout
-      ] ++ test_option_keys()
-
-    with true <- Keyword.keyword?(options) || {:error, :invalid_writer_options},
-         true <-
-           length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) ||
-             {:error, :duplicate_writer_options},
-         true <-
-           Enum.all?(Keyword.keys(options), &(&1 in allowed)) || {:error, :unknown_writer_option},
-         {:ok, config} <- Tay.Config.new(data_dir: Keyword.get(options, :data_dir)),
-         true <- config.data_dir != nil || {:error, :data_dir_required} do
-      opts =
-        Enum.into(options, %{
-          data_dir: config.data_dir,
-          durability: :sync,
-          validated_filesystem: false,
-          rotation_target_bytes: 67_108_864,
-          bootstrap: false,
-          timeout: 10_000,
-          test_helper: false,
-          lifecycle_observer: nil,
-          on_transition: nil
-        })
-        |> Map.put(:data_dir, config.data_dir)
-
-      cond do
-        opts.lifecycle_observer != nil and not is_pid(opts.lifecycle_observer) ->
-          {:error, :invalid_lifecycle_observer}
-
-        opts.durability not in [:write, :sync] ->
-          {:error, :invalid_durability}
-
-        not is_boolean(opts.validated_filesystem) ->
-          {:error, :invalid_filesystem_validation}
-
-        not is_boolean(opts.bootstrap) ->
-          {:error, :invalid_bootstrap_intent}
-
-        not is_integer(opts.timeout) or opts.timeout <= 0 ->
-          {:error, :invalid_timeout}
-
-        not is_integer(opts.rotation_target_bytes) or
-          opts.rotation_target_bytes < Segment.min_rotation_bytes() or
-            opts.rotation_target_bytes > Segment.max_bytes() ->
-          {:error, :invalid_rotation_target}
-
-        true ->
-          {:ok, opts}
-      end
-    end
-  end
-
-  defp prepare(state) do
-    with {:ok, store} <- Reader.inspect_store(state.native) do
-      case store.state do
-        :uninitialized ->
-          bootstrap(state, store)
-
-        :genesis ->
-          complete_genesis(%{state | store_id: store.store_id})
-
-        :ready ->
-          if Map.get(state, :initialize_only, false),
-            do: {:error, :already_initialized},
-            else: open_ready(state, store)
-      end
-    end
-  end
-
-  defp encode_candidate(state, type, schema, payload) do
-    if state.next_sequence > Segment.max_id() do
-      {:error, :sequence_exhausted}
-    else
-      record = %Record{
-        sequence: state.next_sequence,
-        record_type: type,
-        payload_schema_version: schema,
-        payload: payload
-      }
-
-      Record.encode(record)
-    end
-  end
-
-  defp append_with_capacity(state, bytes, type, schema, payload) do
-    rotate =
-      state.segment.state == :sealed or
-        state.segment.bytes + byte_size(bytes) + 64 > state.options.rotation_target_bytes
-
-    if rotate do
-      with {:ok, next} <- rotate_segment(state),
-           # Recompute the final frame only after the successor is published.
-           {:ok, final} <- encode_candidate(next, type, schema, payload),
-           do: append_bytes(next, final)
-    else
-      append_bytes(state, bytes)
-    end
-  end
-
-  defp rotate_segment(%{segment: %{state: :active, count: 0}} = state), do: {:ok, state}
-
-  defp rotate_segment(state) do
-    cond do
-      state.segment.id == Segment.max_id() ->
-        {:reject, :segment_id_exhausted}
-
-      state.next_sequence > Segment.max_id() ->
-        {:reject, :sequence_exhausted}
-
-      state.segment.state == :sealed ->
-        create_successor(state)
-
-      true ->
-        with {:ok, sealed} <- seal_segment(state), do: create_successor(sealed)
-    end
-  end
-
-  defp create_successor(state) do
-    id = state.segment.id + 1
-    source = stage_name(id)
-    native = state.native
-
-    with :ok <- sync_existing(state, :segments, canonical(state.segment.id)),
-         {:ok, bytes} <-
-           Segment.encode_header(%{
-             id: id,
-             first_sequence: state.next_sequence,
-             store_id: state.store_id
-           }),
-         {:ok, staged_identity} <-
-           step(state, {:r3, :created}, fn -> Native.create_stage(native, :segments, source) end),
-         {:ok, %{identity: identity}} <-
-           step(state, :r3, fn -> Native.write(native, 0, bytes) end),
-         :ok <- step(state, {:r4, :synced}, fn -> Native.sync(native) end),
-         :ok <- step(state, :r4, fn -> Native.close_write(native) end),
-         :ok <-
-           step(state, :r5, fn ->
-             Native.publish(native, :segments, source, canonical(id), staged_identity)
-           end),
-         :ok <- Native.sync_dir(native, :segments),
-         {:ok, successor} <- successor(bytes, identity, id, state.next_sequence, state.store_id),
-         :ok <- step(state, :r6, fn -> Native.check(native) end),
-         {:ok, _} <-
-           step(state, :r7, fn ->
-             Native.open_active(native, canonical(id), successor.identity)
-           end),
-         :ok <- Native.check(native) do
-      {:ok, %{state | segment: successor}}
-    end
-  end
-
-  # Rotation already owns the store lock and every acknowledged append was
-  # written, read back, and incorporated into the in-memory CRC frontier.  A
-  # successor is therefore proved by the header we just encoded plus the
-  # identity returned by that exact write.  Replaying the complete epoch here
-  # made rollover latency proportional to all retained history.
-  defp successor(bytes, identity, id, first_sequence, store_id) do
-    with {:ok, segment} <-
-           Segment.decode_header(bytes, %{id: id, store_id: store_id}),
-         true <- segment.first_sequence == first_sequence || {:error, :successor_mismatch},
-         true <- identity.size == byte_size(bytes) || {:error, :successor_mismatch} do
-      {:ok,
-       %{
-         segment
-         | state: :active,
-           identity: identity,
-           crc_state: CRC32C.update(CRC32C.initial(), bytes)
-       }}
-    end
-  end
-
-  defp append_bytes(state, bytes) do
-    offset = state.segment.bytes
-
-    with {:ok, %{identity: identity}} <-
-           step(state, :append_written, fn -> Native.write(state.native, offset, bytes) end),
-         :ok <- sync_append(state),
-         :ok <- check_append(state) do
-      segment = %{
-        state.segment
-        | last_sequence: state.next_sequence,
-          count: state.segment.count + 1,
-          bytes: offset + byte_size(bytes),
-          identity: identity,
-          crc_state: CRC32C.update(state.segment.crc_state, bytes)
-      }
-
-      receipt = %{
-        segment_id: segment.id,
-        offset: offset,
-        sequence: state.next_sequence,
-        durability: state.options.durability
-      }
-
-      next = %{state | segment: segment, next_sequence: state.next_sequence + 1}
-
-      next =
-        case Map.get(next, :group_commit) do
-          nil -> next
-          group -> Map.put(next, :group_commit, %{group | count: group.count + 1})
-        end
-
-      {:ok, next, receipt}
-    end
-  end
-
-  defp sync_append(%{options: %{durability: :write}}), do: :ok
-  defp sync_append(state) when is_map_key(state, :group_commit), do: :ok
-  defp sync_append(state), do: step(state, :append_synced, fn -> Native.sync(state.native) end)
-
-  defp check_append(state) when is_map_key(state, :group_commit), do: :ok
-  defp check_append(state), do: Native.check(state.native)
-
-  defp seal_segment(state) do
-    # Native.check is O(1): it revalidates the pinned directory/file identity
-    # and exact size.  The Writer's serialized state supplies count, sequence,
-    # and CRC; full semantic replay belongs to startup recovery, not rollover.
-    with :ok <- step(state, :r0, fn -> Native.check(state.native) end) do
-      footer = %{
-        id: state.segment.id,
-        first_sequence: state.segment.first_sequence,
-        last_sequence: state.segment.last_sequence,
-        count: state.segment.count,
-        store_id: state.store_id,
-        segment_crc: CRC32C.finalize(state.segment.crc_state)
-      }
-
-      with {:ok, bytes} <- Segment.encode_footer(footer),
-           {:ok, %{identity: identity}} <-
-             step(state, :r1, fn -> Native.write(state.native, state.segment.bytes, bytes) end),
-           :ok <- step(state, {:r2, :synced}, fn -> Native.sync(state.native) end),
-           :ok <- step(state, :r2, fn -> Native.close_write(state.native) end),
-           :ok <- Native.check(state.native) do
-        {:ok,
-         %{
-           state
-           | segment: %{
-               state.segment
-               | state: :sealed,
-                 footer: footer,
-                 bytes: state.segment.bytes + 64,
-                 identity: identity
-             }
-         }}
-      end
-    end
-  end
-
-  defp bootstrap(state, store) do
-    if state.native.facts.created or state.options.bootstrap do
-      state = %{state | store_id: new_store_id()}
-
-      with :ok <- ensure_segments(state, store.segments_directory),
-           {:ok, header} <-
-             Segment.encode_header(%{id: 1, first_sequence: 1, store_id: state.store_id}),
-           :ok <-
-             publish_file(
-               state,
-               :segments,
-               stage_name(1),
-               canonical(1),
-               header,
-               :bootstrap_header
-             ) do
-        complete_genesis(state)
-      end
-    else
-      {:error, :explicit_bootstrap_required}
-    end
-  end
-
-  defp ensure_segments(_state, true), do: :ok
-
-  defp ensure_segments(state, false) do
-    with :ok <- step(state, {:bootstrap, :mkdir}, fn -> Native.mkdir_segments(state.native) end),
-         :ok <-
-           step(state, {:bootstrap, :sync_root}, fn -> Native.sync_dir(state.native, :root) end),
-         do: :ok
-  end
-
-  defp complete_genesis(state) do
-    with {:ok, marker} <- Segment.encode_store(state.store_id),
-         :ok <- sync_existing(state, :segments, canonical(1)),
-         :ok <- Native.sync_dir(state.native, :segments),
-         :ok <-
-           publish_file(
-             state,
-             :root,
-             ".tay-store-" <> nonce() <> ".tmp",
-             "STORE",
-             marker,
-             :bootstrap_store
-           ),
-         {:ok, store} <- Reader.inspect_store(state.native) do
-      open_ready(state, store)
-    end
-  end
-
-  defp open_ready(state, store) do
-    state = %{
-      state
-      | segment: store.highest,
-        store_id: store.store_id,
-        next_sequence: store.next_sequence
-    }
-
-    with :ok <- sync_existing(state, :root, "STORE"),
-         :ok <- sync_v2_authority(state),
-         :ok <- Native.sync_dir(state.native, :root),
-         :ok <- Native.sync_dir(state.native, :segments) do
-      case store.highest.state do
-        :active ->
-          with :ok <- sync_existing(state, :segments, canonical(store.highest.id)),
-               {:ok, _} <-
-                 step(state, :open_active, fn ->
-                   Native.open_active(
-                     state.native,
-                     canonical(store.highest.id),
-                     store.highest.identity
-                   )
-                 end),
-               :ok <- Native.check(state.native) do
-            {:ok, state}
-          end
-
-        :sealed ->
-          if store.exhausted, do: {:ok, state}, else: create_successor(state)
-      end
-    end
-  end
-
-  defp publish_file(state, scope, source, target, bytes, context) do
-    with {:ok, identity} <-
-           step(state, {context, :create}, fn ->
-             Native.create_stage(state.native, scope, source)
-           end),
-         {:ok, _} <-
-           step(state, {context, :write}, fn -> Native.write(state.native, 0, bytes) end),
-         :ok <- step(state, {context, :sync}, fn -> Native.sync(state.native) end),
-         :ok <- step(state, {context, :close}, fn -> Native.close_write(state.native) end),
-         :ok <-
-           step(state, {context, :publish}, fn ->
-             Native.publish(state.native, scope, source, target, identity)
-           end),
-         :ok <- step(state, {context, :sync_dir}, fn -> Native.sync_dir(state.native, scope) end),
-         :ok <- Native.check(state.native),
-         do: :ok
-  end
-
-  defp sync_existing(state, scope, name) do
-    with {:ok, _} <- Native.open_read(state.native, scope, name) do
-      result = Native.sync_read(state.native)
-      close = Native.close_read(state.native)
-      if result == :ok, do: close, else: result
-    end
-  end
-
-  defp sync_v2_authority(%{epoch_id: nil}), do: :ok
-
-  defp sync_v2_authority(state) do
-    with :ok <- sync_existing(state, :root, "STORE-V2"),
-         :ok <- sync_existing(state, :root, "CURRENT"),
-         :ok <- sync_existing(state, :epoch, "MANIFEST"),
-         :ok <- Native.sync_dir(state.native, :epoch),
-         :ok <- Native.sync_dir(state.native, :epochs),
-         do: :ok
-  end
 
   if @test do
     defp step(state, tag, operation) do
@@ -1765,109 +626,11 @@ defmodule Tay.Storage.Writer do
   end
 
   if @test do
-    defp with_compaction_hook(source, state),
-      do: Map.put(source, :on_boundary, fn tag -> hook(state, {:compaction, tag}) end)
-
-    defp test_option_keys, do: [:test_helper, :on_transition]
-
     defp hook(%{options: %{on_transition: fun}, native: native}, tag) when is_function(fun, 2),
       do: fun.(tag, native)
-  else
-    defp with_compaction_hook(source, _state), do: source
-    defp test_option_keys, do: []
+
+    defp hook(_, _), do: :ok
   end
 
-  defp hook(_, _), do: :ok
-
-  defp new_store_id do
-    case :crypto.strong_rand_bytes(16) do
-      <<0::128>> -> new_store_id()
-      id -> id
-    end
-  end
-
-  defp nonce, do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
-  defp canonical(id), do: elem(Segment.filename(id), 1)
-
-  defp segment_catalog_entry(segment),
-    do: Map.take(segment, [:id, :state, :bytes, :count, :first_sequence, :last_sequence])
-
-  defp include_active_segment([], segment), do: [segment_catalog_entry(segment)]
-
-  defp include_active_segment(catalog, segment) do
-    entry = segment_catalog_entry(segment)
-
-    if List.last(catalog).id == entry.id,
-      do: List.replace_at(catalog, -1, entry),
-      else: catalog ++ [entry]
-  end
-
-  defp stage_name(id),
-    do:
-      ".tay-new-" <> String.replace_suffix(canonical(id), ".tay", "") <> "-" <> nonce() <> ".tmp"
-
-  defp public_status(%{recovery: recovery} = state) when is_map(recovery) do
-    %{
-      state: if(state.poisoned, do: :poisoned, else: recovery.status),
-      reason: state.poisoned,
-      session_ref: recovery.session_ref,
-      summary: Map.drop(recovery.result, [:segments]),
-      next_sequence:
-        if(recovery.status == :terminal or state.next_sequence > Segment.max_id(),
-          do: :exhausted,
-          else: state.next_sequence
-        ),
-      durability: state.options.durability,
-      epoch_id: state.epoch_id,
-      os_pid: state.native.facts.os_pid
-    }
-  end
-
-  defp public_status(state),
-    do: %{
-      state: if(state.poisoned, do: :poisoned, else: :ready),
-      reason: state.poisoned,
-      segment: state.segment,
-      next_sequence: state.next_sequence,
-      durability: state.options.durability,
-      epoch_id: state.epoch_id,
-      os_pid: state.native.facts.os_pid
-    }
-
-  defp poison(%{poisoned: nil} = state, reason) do
-    # Revoke the embedding generation before potentially slow native cleanup.
-    # Never forward payloads, the Port or the recovered admission capability.
-    notify_lifecycle(state, :poisoned)
-    Native.shutdown(state.native)
-    _ = hook(state, {:poisoned, reason})
-
-    state =
-      case Map.get(state, :recovery) do
-        recovery when is_map(recovery) ->
-          %{
-            state
-            | recovery: %{
-                recovery
-                | candidate: nil,
-                  view: nil,
-                  session_ref: nil,
-                  admission_ref: nil
-              }
-          }
-
-        _ ->
-          state
-      end
-
-    %{state | poisoned: reason}
-  end
-
-  defp poison(state, _), do: state
-
-  defp notify_lifecycle(state, event) do
-    if pid = state.options.lifecycle_observer,
-      do: send(pid, {__MODULE__, self(), event})
-
-    :ok
-  end
+  defp poison(state, reason), do: State.poison(state, reason)
 end

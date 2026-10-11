@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## 1.3.5 — 2026-10-11
+
+### Fixed
+
+- Preserved the `:ets.table()` type across online-checkpoint snapshot creation,
+  ingestion, and cleanup so named tables and opaque table identifiers both
+  satisfy the ETS contract without ElixirLS/Dialyzer warnings.
+
+### Changed
+
+- Reduced the Writer GenServer to API and callback routing by extracting its
+  configuration, state/fail-closed handling, recovery/activation lifecycle,
+  group-commit state, offline and online compaction orchestration, and physical
+  segment operations while retaining a single serialized native-port owner and
+  the existing durability/fault boundaries.
+- Decomposed the Engine command owner into focused command, group-commit,
+  persistence, projection/accounting, and online-checkpoint modules. The Engine
+  remains the sole GenServer and ETS/runtime-state owner, preserving command
+  ordering, durability acknowledgements, and fail-closed generation fencing.
+
+## 1.3.4 — 2026-10-11
 
 ### Changed
 

@@ -154,8 +154,7 @@ defmodule Tay.Storage.V2.Publisher do
        when is_map(jobs),
        do: {:ok, source}
 
-  defp load_source_jobs(_native, %{jobs_table: table} = source, _limits, _value_limits)
-       when is_reference(table) do
+  defp load_source_jobs(_native, %{jobs_table: _table} = source, _limits, _value_limits) do
     {:ok, source}
   end
 

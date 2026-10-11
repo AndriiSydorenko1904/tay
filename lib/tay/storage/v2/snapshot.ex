@@ -114,7 +114,8 @@ defmodule Tay.Storage.V2.Snapshot do
   def prepare_online(_, _, _), do: {:error, :invalid_jobs}
 
   @doc false
-  def prepare_online_table(table, retention, captured_at) when is_reference(table) do
+  @spec prepare_online_table(:ets.table(), term(), term()) :: term()
+  def prepare_online_table(table, retention, captured_at) do
     with :ok <- Retention.validate(retention),
          true <-
            Tay.Event.V2.time?(captured_at) || {:error, :retention_timestamp_unavailable} do
@@ -164,8 +165,6 @@ defmodule Tay.Storage.V2.Snapshot do
       end
     end
   end
-
-  def prepare_online_table(_, _, _), do: {:error, :invalid_jobs}
 
   defp plan_validated(jobs, retention, now) do
     jobs

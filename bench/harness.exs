@@ -62,7 +62,10 @@ defmodule Tay.Bench.Observer do
   def handle_cast({:holding, id, task}, s),
     do: {:noreply, job(s, id, %{task: task})}
 
-  def handle_info({:trace_ts, engine, :call, {Tay.Engine, :commit, 4}, {type, raw}, _time}, s) do
+  def handle_info(
+        {:trace_ts, engine, :call, {Tay.Engine.Persistence, :commit, 4}, {type, raw}, _time},
+        s
+      ) do
     context = %{type: type, id: Tay.JobID.encode(raw)}
     {:noreply, %{s | current: Map.put(s.current, engine, context)}}
   end
@@ -911,12 +914,14 @@ defmodule Tay.Bench.Harness do
   defp trace(engine) do
     # Arity-only tracing with a bounded {type, 16-byte-ID} message: no args,
     # payload bytes, private Engine return state or native handles are traced.
+    Code.ensure_loaded!(Tay.Engine.Persistence)
+
     pattern = [
       {[:_, :_, %{record_type: :"$1", data: %{"job_id" => :"$2"}}, :_], [],
        [{:message, {{:"$1", :"$2"}}}]}
     ]
 
-    :erlang.trace_pattern({Tay.Engine, :commit, 4}, pattern, [:local])
+    :erlang.trace_pattern({Tay.Engine.Persistence, :commit, 4}, pattern, [:local])
     :erlang.trace_pattern({Writer, :append, 5}, [{:_, [], [{:return_trace}]}], [:local])
 
     for module <- [
@@ -952,6 +957,7 @@ defmodule Tay.Bench.Harness do
 
     for module <- [
           Tay.Engine,
+          Tay.Engine.Persistence,
           Writer,
           Tay.State.JobIndex,
           Tay.State.QueueIndex,
