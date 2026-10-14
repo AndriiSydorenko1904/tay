@@ -47,8 +47,9 @@ Event v2 additionally assigns schema-2 pairs `(7,2)` through `(10,2)` to
 schedule registration, schedule advancement, schedule cancellation, and
 successful-result recording. Schema 2 keeps logical Event types 7 and 8
 unambiguous from Store-v2's schema-1 snapshot and mutation record types.
-These pairs are currently codec contracts only; the engine does not yet emit or
-project them during recovery.
+The engine emits and projects these pairs during live operation, recovery, and
+Store-v2 compaction. Store-v2 canonical bases retain schedules and the results
+whose completed jobs survive terminal-retention filtering.
 Physical readability of a different pair does not imply support. Worker and
 queue identities are inert UTF-8 keys; persisted bytes never select Elixir
 modules or create atoms. A future event field needs a new explicit schema and

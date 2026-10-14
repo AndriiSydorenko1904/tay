@@ -13,6 +13,7 @@ defmodule Tay.Telemetry do
 
   @job_event [:tay, :job, :transition]
   @queue_event [:tay, :queue, :control]
+  @schedule_event [:tay, :schedule, :transition]
   @group_commit_event [:tay, :storage, :group_commit]
 
   @doc false
@@ -37,6 +38,15 @@ defmodule Tay.Telemetry do
       engine: engine,
       operation: operation,
       queue: queue
+    })
+  end
+
+  @doc false
+  def schedule_transition(engine, operation, schedule_id) do
+    :telemetry.execute(@schedule_event, %{count: 1}, %{
+      engine: engine,
+      operation: operation,
+      schedule_id: schedule_id
     })
   end
 

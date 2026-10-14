@@ -31,7 +31,10 @@ defmodule Tay.Dashboard.OverviewLive do
        retention_hours: 24,
        storage_segments_open: false,
        storage_segments: [],
-       storage_segments_truncated: false
+       storage_segments_truncated: false,
+       expanded_segment: nil,
+       segment_records: [],
+       segment_records_truncated: false
      )
      |> refresh()}
   end
@@ -47,6 +50,34 @@ defmodule Tay.Dashboard.OverviewLive do
 
   def handle_event("toggle-storage-segments", _params, socket) do
     {:noreply, update(socket, :storage_segments_open, &(!&1))}
+  end
+
+  def handle_event("toggle-segment-records", %{"id" => value}, socket) do
+    with {id, ""} <- Integer.parse(value),
+         false <- socket.assigns.expanded_segment == id,
+         {:ok, page} <- Tay.storage_records(id, name: socket.assigns.engine) do
+      {:noreply,
+       assign(socket,
+         expanded_segment: id,
+         segment_records: page.records,
+         segment_records_truncated: page.truncated,
+         flash_error: nil
+       )}
+    else
+      true ->
+        {:noreply,
+         assign(socket,
+           expanded_segment: nil,
+           segment_records: [],
+           segment_records_truncated: false
+         )}
+
+      {:error, error} ->
+        {:noreply, assign(socket, flash_error: Live.error_message(error))}
+
+      _ ->
+        {:noreply, assign(socket, flash_error: "Invalid storage segment.")}
+    end
   end
 
   def handle_event("compact", %{"terminal_retention_hours" => value}, socket) do
@@ -288,13 +319,51 @@ defmodule Tay.Dashboard.OverviewLive do
               </tr>
             </thead>
             <tbody>
-              <tr :for={segment <- @storage_segments}>
-                <td><code>{segment_filename(segment.id)}</code></td>
-                <td><span class={["state", "state-#{segment.state}"]}>{segment.state}</span></td>
-                <td>{format_bytes(segment.bytes)}</td>
-                <td>{segment.count}</td>
-                <td>{sequence_range(segment)}</td>
-              </tr>
+              <%= for segment <- @storage_segments do %>
+                <tr>
+                  <td>
+                    <button
+                      class="secondary"
+                      phx-click="toggle-segment-records"
+                      phx-value-id={segment.id}
+                      aria-expanded={@expanded_segment == segment.id}
+                    >
+                      <code>{segment_filename(segment.id)}</code>
+                    </button>
+                  </td>
+                  <td><span class={["state", "state-#{segment.state}"]}>{segment.state}</span></td>
+                  <td>{format_bytes(segment.bytes)}</td>
+                  <td>{segment.count}</td>
+                  <td>{sequence_range(segment)}</td>
+                </tr>
+                <tr :if={@expanded_segment == segment.id} id={"segment-records-#{segment.id}"}>
+                  <td colspan="5">
+                    <p :if={@segment_records_truncated} class="notice">
+                      Showing the first {length(@segment_records)} records.
+                    </p>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>SEQUENCE</th>
+                          <th>OFFSET</th>
+                          <th>TYPE</th>
+                          <th>SCHEMA</th>
+                          <th>PAYLOAD</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr :for={record <- @segment_records}>
+                          <td>{record.sequence}</td>
+                          <td>{record.offset}</td>
+                          <td>{record_label(record)}</td>
+                          <td>{record.payload_schema_version}</td>
+                          <td>{format_bytes(record.payload_bytes)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              <% end %>
             </tbody>
           </table>
         </details>
@@ -486,4 +555,20 @@ defmodule Tay.Dashboard.OverviewLive do
 
   defp sequence_range(segment),
     do: "#{segment.first_sequence}–#{segment.last_sequence}"
+
+  defp record_label(%{payload_schema_version: 2, record_type: type}) do
+    case Tay.Event.V2.type_name(type) do
+      nil -> "event #{type}"
+      name -> name |> Atom.to_string() |> String.replace("_", " ")
+    end
+  end
+
+  defp record_label(%{payload_schema_version: 1, record_type: 7}), do: "job snapshot"
+  defp record_label(%{payload_schema_version: 1, record_type: 8}), do: "job mutation"
+
+  defp record_label(%{payload_schema_version: 1, record_type: type}) when type in 1..6 do
+    type |> Tay.Event.V2.type_name() |> Atom.to_string() |> String.replace("_", " ")
+  end
+
+  defp record_label(%{record_type: type}), do: "record #{type}"
 end

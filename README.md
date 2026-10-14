@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
 ```
 
 For a ready-made Tay deployment example:
@@ -86,7 +86,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
 ```
 
 ## Why Tay?
@@ -410,13 +410,13 @@ await tay.every(
 Use `start_at=<UTC milliseconds>` for an absolute first run instead of
 `delay`; those options cannot be combined.
 
-The listener schedule registry belongs to the live execution generation. A
-connected Python client retains successful declarations and recreates them as
-part of every reconnect, including after compaction. A client-process restart
-still requires application startup to declare schedules again. Missed-time
-catch-up and enforced overlap policies are not yet implemented. Once a timer is
-due, temporary admission pressure delays that occurrence instead of dropping
-it; its deterministic job ID makes retries idempotent.
+Schedule declarations, advancement, and cancellation are durable. They survive
+listener, Engine, and client-process restarts as well as compaction; reconnecting
+clients may safely redeclare the same stable declaration ID. Missed-time
+catch-up follows the selected `latest` or `all` policy. Enforced overlap policies
+are not yet implemented. Once a timer is due, temporary admission pressure
+delays that occurrence instead of dropping it; its deterministic job ID makes
+retries idempotent.
 
 The optional Bandit HTTP/JSON API exposes producer and worker operations over TCP. It is
 disabled by default; plaintext binds only to loopback and remote access
@@ -424,7 +424,7 @@ requires mTLS. Tay's storage remains single-node; remote workers do not turn
 the engine into a distributed Store.
 
 See the [protocol contract](docs/protocol.md) for discovery, security, request
-types, and result retention.
+types, and durable result retention.
 
 ## Standalone container
 
@@ -432,7 +432,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.3.6
+ghcr.io/andriisydorenko1904/tay:1.4.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -442,7 +442,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.3.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:

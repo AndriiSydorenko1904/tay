@@ -5,6 +5,7 @@ defmodule Tay.Engine.Persistence do
   alias Tay.Engine.{CompactionEstimate, OnlineCheckpoint, ProjectionState}
   alias Tay.Execution.LocalFence
   alias Tay.State.Transition
+  alias Tay.State.Auxiliary
   alias Tay.Storage.{Segment, Writer}
   alias Tay.Storage.V2.{Codec, V1Migration}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
@@ -62,6 +63,76 @@ defmodule Tay.Engine.Persistence do
   end
 
   def encoded_event(_state, event, payload), do: {:ok, {event.record_type, 1, payload}}
+
+  def commit_auxiliary(state, event, job \\ nil) do
+    ensure_generation_live!(state)
+
+    seed = %{
+      Transition.candidate(state.config.candidate_limits, state.config.value_limits)
+      | jobs: if(job, do: %{job.id => job}, else: %{}),
+        schedules: state.schedules,
+        results: state.results
+    }
+
+    with {:ok, {type, 2, payload}} <-
+           Event.encode(
+             event,
+             state.config.value_limits,
+             Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
+           ),
+         {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: state.next_sequence}, seed),
+         :ok <- headroom(state, byte_size(payload), state.settlement_reserve) do
+      {writer_result, state} = append_auxiliary(state, type, payload)
+
+      case writer_result do
+        {:ok, receipt} ->
+          validate_receipt!(state, receipt, byte_size(payload))
+
+          next = %{
+            state
+            | schedules: candidate.schedules,
+              results: Map.merge(state.results, candidate.results),
+              next_sequence: state.next_sequence + 1,
+              events_since_checkpoint: state.events_since_checkpoint + 1,
+              history_bytes: state.history_bytes + history_delta(state, byte_size(payload)),
+              segment_count: state.segment_count + receipt.segment_id - state.segment.id,
+              segment: %{
+                id: receipt.segment_id,
+                state: :active,
+                bytes: receipt.offset + byte_size(payload) + 28,
+                count:
+                  if(receipt.segment_id == state.segment.id, do: state.segment.count + 1, else: 1)
+              },
+              segment_catalog: update_segment_catalog(state, receipt, byte_size(payload))
+          }
+
+          {:ok, next}
+
+        {:error, reason} ->
+          {:error, reason}
+
+        _ ->
+          exit(:writer_commit_unknown)
+      end
+    end
+  end
+
+  defp append_auxiliary(%{epoch_id: epoch} = state, type, payload) when is_binary(epoch),
+    do: append_v2_record(state, type, 2, payload)
+
+  defp append_auxiliary(state, type, payload),
+    do: {Writer.append(state.writer, state.admission, type, 2, payload), state}
+
+  defp append_v2_record(state, type, schema, payload) do
+    case Writer.append(state.writer, state.admission, type, schema, payload) do
+      {:ok, receipt, {:online_compaction, stats}} ->
+        adopted = OnlineCheckpoint.adopt(state, stats)
+        {{:ok, receipt}, %{adopted | online_compaction: {:switched, state.online_compaction}}}
+
+      result ->
+        {result, state}
+    end
+  end
 
   defp commit_v2(state, previous, event) do
     ensure_generation_live!(state)

@@ -41,7 +41,9 @@ defmodule Tay.Engine.OnlineCheckpoint do
        %{
          table: table,
          frontier: state.next_sequence - 1,
-         next_availability_order: state.next_availability_order
+         next_availability_order: state.next_availability_order,
+         schedules: state.schedules,
+         results: state.results
        }}
     catch
       kind, reason ->
@@ -110,6 +112,8 @@ defmodule Tay.Engine.OnlineCheckpoint do
         epoch_id: recovered.epoch_id,
         next_sequence: recovered.next_sequence,
         next_availability_order: recovered.candidate.next_availability_order,
+        schedules: recovered.candidate.schedules,
+        results: recovered.candidate.results,
         segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
         segment_catalog: segment_catalog,
         history_bytes: recovered.total_segment_bytes,

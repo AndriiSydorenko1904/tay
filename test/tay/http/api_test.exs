@@ -94,6 +94,9 @@ defmodule Tay.HTTP.APITest do
     assert {200, %{"result" => %{"answer" => 6}}} =
              request(:get, base <> "/jobs/" <> id <> "/result")
 
+    assert {:ok, _} = Tay.compact(name: __MODULE__, timeout: 60_000)
+    assert Tay.result(id, name: __MODULE__) == {:ok, %{"answer" => 6}}
+
     python = System.find_executable("python3.12") || System.find_executable("python3.11")
 
     script = """
@@ -186,6 +189,24 @@ defmodule Tay.HTTP.APITest do
 
     assert {200, %{"type" => "cancel_execution"}} =
              request(:post, base <> "/queues/default/claim", nil, cancel_auth)
+
+    EngineHelpers.stop(root)
+
+    assert {:ok, restarted} =
+             ExecutionHelpers.start(path, __MODULE__,
+               workers: %{},
+               executor_socket: nil,
+               http_port: port,
+               execution_wake_ms: 5
+             )
+
+    assert ExecutionHelpers.eventually(fn -> Tay.status(name: __MODULE__).state == :ready end)
+    assert Tay.result(id, name: __MODULE__) == {:ok, %{"answer" => 6}}
+
+    assert request(:get, base <> "/jobs/" <> id <> "/result") ==
+             {200, %{"type" => "result", "result" => %{"answer" => 6}}}
+
+    EngineHelpers.stop(restarted)
   end
 
   test "enqueue preserves an admission refusal's machine-readable reason" do

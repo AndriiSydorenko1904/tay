@@ -29,7 +29,16 @@ defmodule Tay.State.Transition do
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
     limits = Map.merge(%{max_bytes: 268_435_456}, Map.take(limits, [:max_bytes]))
-    %{jobs: %{}, count: 0, bytes: 0, limits: limits, value_limits: value_limits}
+
+    %{
+      jobs: %{},
+      schedules: %{},
+      results: %{},
+      count: 0,
+      bytes: 0,
+      limits: limits,
+      value_limits: value_limits
+    }
   end
 
   def reduce(%Event{} = event, position, candidate) do

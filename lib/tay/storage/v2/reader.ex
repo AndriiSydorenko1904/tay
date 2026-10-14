@@ -4,6 +4,7 @@ defmodule Tay.Storage.V2.Reader do
   through File; every read is pinned, positional, bounded and revalidated.
   """
 
+  alias Tay.Event
   alias Tay.Storage.{Native, Reader, Segment}
   alias Tay.Storage.V2.{Authority, Codec, Reducer}
 
@@ -328,7 +329,6 @@ defmodule Tay.Storage.V2.Reader do
 
   defp consume(record, base?, state) do
     with true <- record.sequence == state.next_sequence || {:error, :physical_sequence},
-         true <- record.payload_schema_version == 1 || {:error, :payload_schema},
          {:ok, candidate, id} <- consume_kind(record, base?, state) do
       {:cont,
        %{
@@ -356,7 +356,11 @@ defmodule Tay.Storage.V2.Reader do
 
   defp seed_availability_frontier(state, _manifest, _ordinal, _base_count), do: {:ok, state}
 
-  defp consume_kind(%{record_type: 7, payload: payload}, true, state) do
+  defp consume_kind(
+         %{record_type: 7, payload_schema_version: 1, payload: payload},
+         true,
+         state
+       ) do
     with {:ok, job} <- Codec.decode_snapshot(payload, state.candidate.value_limits),
          true <-
            (is_nil(state.last_snapshot_id) or job.id > state.last_snapshot_id) ||
@@ -366,9 +370,25 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
-  defp consume_kind(%{record_type: 8, payload: payload}, false, state) do
+  defp consume_kind(
+         %{record_type: 8, payload_schema_version: 1, payload: payload},
+         false,
+         state
+       ) do
     with {:ok, mutation} <- Codec.decode_mutation(payload, state.candidate.value_limits),
          {:ok, next} <- Reducer.apply(state.candidate, mutation) do
+      {:ok, next, state.last_snapshot_id}
+    end
+  end
+
+  defp consume_kind(
+         %{record_type: type, payload_schema_version: 2, payload: payload} = record,
+         _base?,
+         state
+       )
+       when type in 7..10 do
+    with {:ok, event, _} <- Event.decode_payload(type, 2, payload, state.candidate.value_limits),
+         {:ok, next} <- Reducer.apply_event(state.candidate, event, %{sequence: record.sequence}) do
       {:ok, next, state.last_snapshot_id}
     end
   end

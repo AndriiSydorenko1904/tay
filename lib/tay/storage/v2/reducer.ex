@@ -81,6 +81,9 @@ defmodule Tay.Storage.V2.Reducer do
     Map.new(candidate.jobs, fn {id, job} -> {id, Map.drop(job, [:charge])} end)
   end
 
+  def apply_event(candidate, event, position),
+    do: Tay.State.Auxiliary.reduce(event, position, candidate)
+
   defp revision_gate(nil, %{kind: :inserted, expected_revision: 0, new_revision: 1}), do: :ok
   defp revision_gate(nil, %{kind: :inserted}), do: {:error, :invalid_insert_revision}
   defp revision_gate(nil, _), do: {:error, :missing_job}

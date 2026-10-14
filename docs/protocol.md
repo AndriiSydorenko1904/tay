@@ -81,18 +81,15 @@ one-time delay/run-at, retries, timeout, queue, and Event-v1 exponential backoff
 lost after enqueue, the result is unknown: retry only with the same ID and
 definition, never with a fresh submission ID.
 
-Completion state is durable; a successful return value is retained only in the
-bounded current listener generation (`executor_result_bytes` and
-`executor_max_results`). After restart, `result` may be JSON `null` for a
-completed job. Protocol v1 is not a durable result backend. Cron and interval
-schedules can be created and cancelled through `schedule` and
-`cancel_schedule`; their registry belongs to the live listener generation.
-The Python client retains successful declarations and replays them on listener
-reconnect. Due occurrences retry temporary admission failure with a stable job
-ID. A client-process restart still requires declaration at application startup;
-missed-time catch-up and overlap enforcement are not yet available. Custom
-retry curves, multi-host leases, and exactly-once external effects are
-unsupported.
+Completion state and a size-bounded successful JSON return value are durable.
+The value survives restart and is retained with its completed job; compaction
+removes it when that job expires under terminal retention. Cron and interval
+schedules created through `schedule` are also durable and can be cancelled
+through `cancel_schedule`. Due occurrences retry temporary admission failure
+with a stable job ID, and schedule advancement is recorded only after durable
+job admission. Client redeclaration with the same stable declaration ID remains
+idempotent. Overlap enforcement, custom retry curves, multi-host leases, and
+exactly-once external effects are unsupported.
 
 ## HTTP/JSON producer API
 

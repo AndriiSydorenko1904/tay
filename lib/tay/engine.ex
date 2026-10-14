@@ -108,6 +108,8 @@ defmodule Tay.Engine do
           admission: summary.admission_ref,
           projection: projection,
           terminal_store: terminal_store,
+          schedules: candidate.schedules,
+          results: candidate.results,
           terminal_stats: ProjectionState.terminal_statistics(candidate.jobs),
           budget: budget,
           active_budget: active_budget,
@@ -749,6 +751,8 @@ defmodule Tay.Engine do
                result_bytes: s.config.executor_result_bytes,
                error_bytes: s.config.executor_error_bytes,
                max_results: s.config.executor_max_results,
+               schedules: s.schedules,
+               results: s.results,
                engine_name: s.config.name
              }}
           )
@@ -1204,7 +1208,7 @@ defmodule Tay.Engine do
           case Outcome.event(job, outcome, Clock.wall(s.config.clock)) do
             {:ok, finished} ->
               case Persistence.commit(s, job, finished) do
-                {:ok, _, next} -> next
+                {:ok, completed, next} -> persist_external_result(next, completed, result)
                 _ -> exit(:external_execution_settlement_failed)
               end
 
@@ -1233,6 +1237,26 @@ defmodule Tay.Engine do
   defp external_outcome(:lost), do: :interrupted
   defp external_outcome({:failure, _}), do: {:failure, 1}
   defp external_outcome(_), do: {:failure, 1}
+
+  defp persist_external_result(state, completed, {:success, result}) do
+    event = %Event{
+      record_type: 10,
+      payload_schema_version: 2,
+      data: %{
+        "at" => completed.completed_at,
+        "expected_revision" => completed.revision,
+        "job_id" => completed.id,
+        "result" => result
+      }
+    }
+
+    case Persistence.commit_auxiliary(state, event, completed) do
+      {:ok, next} -> next
+      _ -> exit(:external_result_commit_failed)
+    end
+  end
+
+  defp persist_external_result(state, _completed, _result), do: state
 
   defp safe_external_dispatch(server, reservation, job) do
     Server.dispatch(server, reservation, job)

@@ -184,6 +184,8 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
             terminal_retention: retention,
             captured_at: captured_at,
             jobs_table: snapshot.table,
+            schedules: snapshot.schedules,
+            results: snapshot.results,
             next_availability_order: snapshot.next_availability_order,
             snapshot_loaded: fn ->
               send(notify, {:compact_online_snapshot_loaded, owner, token})

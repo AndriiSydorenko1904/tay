@@ -43,6 +43,7 @@ defmodule Tay.Dashboard.Router do
           live "/jobs", Tay.Dashboard.JobsLive, :index
           live "/jobs/:id", Tay.Dashboard.JobLive, :show
           live "/queues", Tay.Dashboard.QueuesLive, :index
+          live "/schedules", Tay.Dashboard.SchedulesLive, :index
         end
       end
     end

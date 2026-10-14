@@ -49,10 +49,10 @@ async def capture_payment(
 ```
 
 The payment provider, not the Python return value, is authoritative for the
-charge. Tay durably retains the terminal job state, but Protocol v1 retains a
-successful result value only in the bounded current listener generation. Store
-the business outcome in the authoritative external system or a transactional
-business ledger.
+charge. Tay durably retains the terminal job state and its bounded successful
+result until terminal-history compaction expires that job. Store the business
+outcome in the authoritative external system or a transactional business
+ledger; Tay's retained result is not a substitute for that ledger.
 
 ## Crash cases
 

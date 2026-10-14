@@ -11,6 +11,7 @@ defmodule Tay.Storage.V2.Publisher do
   """
 
   alias Tay.Event.V2
+  alias Tay.State.Auxiliary
   alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
   alias Tay.Storage.V2.{Authority, Codec, Reducer, Retention, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
@@ -39,10 +40,18 @@ defmodule Tay.Storage.V2.Publisher do
              {:error, :source_epoch},
          {:ok, source} <- load_source_jobs(native, source, limits, value_limits),
          {:ok, normalized, ids, retention_stats} <- prepare_snapshot(source),
+         auxiliary <- auxiliary_candidate(source, normalized),
+         {auxiliary_events, _} <- Auxiliary.canonical_events(auxiliary, length(ids) + 1),
          {:ok, inventory} <- source_inventory(native, source.store_id, source),
          true <- inventory.frontier == source.frontier || {:error, :source_frontier_changed},
          {:ok, estimate} <-
-           estimate(normalized, ids, source.rotation_target_bytes, native.deadline),
+           estimate(
+             normalized,
+             ids,
+             auxiliary_events,
+             source.rotation_target_bytes,
+             native.deadline
+           ),
          {:ok, admitted_candidate_bytes} <-
            admit_space(native, estimate, length(inventory.sealed), source),
          :ok <- deadline_ok(native.deadline),
@@ -55,12 +64,13 @@ defmodule Tay.Storage.V2.Publisher do
              native,
              normalized,
              ids,
+             auxiliary_events,
              source.store_id,
              source.rotation_target_bytes,
              source
            ),
          tail_id <- length(base) + 1,
-         tail_first <- length(ids) + 1,
+         tail_first <- length(ids) + length(auxiliary_events) + 1,
          manifest <- manifest(source, inventory, epoch_id, base, tail_id, tail_first),
          {:ok, manifest_bytes} <- Authority.encode_manifest(manifest),
          :ok <- write_manifest(native, manifest_bytes),
@@ -69,7 +79,7 @@ defmodule Tay.Storage.V2.Publisher do
          {:ok, candidate} <-
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
-           equivalent?(source, normalized, candidate.candidate.jobs) ||
+           candidate_equivalent?(source, auxiliary, candidate.candidate) ||
              {:error, :candidate_mismatch},
          {:ok, caught_up, caught_up_tail, delta_bytes, switch_started, catch_up_stats} <-
            catch_up(native, source, candidate, tail, started),
@@ -89,7 +99,7 @@ defmodule Tay.Storage.V2.Publisher do
              value_limits
            ),
          true <-
-           equivalent?(source, caught_up.jobs, renamed.candidate.jobs) ||
+           candidate_equivalent?(source, caught_up, renamed.candidate) ||
              {:error, :renamed_candidate_mismatch},
          :ok <- before_current(native, source, epoch_id),
          {:ok, current_bytes} <-
@@ -131,7 +141,7 @@ defmodule Tay.Storage.V2.Publisher do
           case verify_published(
                  native,
                  source,
-                 caught_up.jobs,
+                 caught_up,
                  renamed,
                  limits,
                  value_limits,
@@ -152,10 +162,10 @@ defmodule Tay.Storage.V2.Publisher do
 
   defp load_source_jobs(_native, %{jobs: jobs} = source, _limits, _value_limits)
        when is_map(jobs),
-       do: {:ok, source}
+       do: {:ok, source |> Map.put_new(:schedules, %{}) |> Map.put_new(:results, %{})}
 
   defp load_source_jobs(_native, %{jobs_table: _table} = source, _limits, _value_limits) do
-    {:ok, source}
+    {:ok, source |> Map.put_new(:schedules, %{}) |> Map.put_new(:results, %{})}
   end
 
   defp load_source_jobs(
@@ -176,6 +186,8 @@ defmodule Tay.Storage.V2.Publisher do
       {:ok,
        source
        |> Map.put(:jobs, recovered.candidate.jobs)
+       |> Map.put(:schedules, recovered.candidate.schedules)
+       |> Map.put(:results, recovered.candidate.results)
        |> Map.put(:next_availability_order, recovered.candidate.next_availability_order)}
     end
   end
@@ -383,10 +395,13 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp estimate(jobs, ids, target, deadline) do
-    Enum.reduce_while(ids, {:ok, %{current: 44, count: 0, total: 0, segments: 0}}, fn id,
-                                                                                      {:ok, acc} ->
-      case with :ok <- deadline_ok(deadline), do: Codec.encode_snapshot(jobs[id]) do
+  defp estimate(jobs, ids, auxiliary_events, target, deadline) do
+    sources = Enum.map(ids, &{:job, &1}) ++ Enum.map(auxiliary_events, &{:event, &1})
+
+    Enum.reduce_while(sources, {:ok, %{current: 44, count: 0, total: 0, segments: 0}}, fn source,
+                                                                                          {:ok,
+                                                                                           acc} ->
+      case with :ok <- deadline_ok(deadline), do: encode_base_payload(source, jobs) do
         {:ok, payload} ->
           size = byte_size(payload) + 28
 
@@ -440,17 +455,19 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp write_base(native, jobs, ids, store_id, target, source) do
-    Enum.with_index(ids, 1)
-    |> Enum.reduce_while({:ok, nil, [], 0, process_memory()}, fn {id, sequence},
+  defp write_base(native, jobs, ids, auxiliary_events, store_id, target, source) do
+    sources = Enum.map(ids, &{:job, &1}) ++ Enum.map(auxiliary_events, &{:event, &1})
+
+    Enum.with_index(sources, 1)
+    |> Enum.reduce_while({:ok, nil, [], 0, process_memory()}, fn {base_source, sequence},
                                                                  {:ok, current, sealed, bytes,
                                                                   peak} ->
-      with {:ok, payload} <- Codec.encode_snapshot(jobs[id]),
+      with {:ok, {type, schema, payload}} <- encode_base_record(base_source, jobs),
            :ok <- deadline_ok(native.deadline),
            {:ok, record} <-
              Record.encode(%Record{
-               record_type: 7,
-               payload_schema_version: 1,
+               record_type: type,
+               payload_schema_version: schema,
                sequence: sequence,
                payload: payload
              }),
@@ -476,6 +493,16 @@ defmodule Tay.Storage.V2.Publisher do
         error
     end
   end
+
+  defp encode_base_payload(source, jobs) do
+    with {:ok, {_type, _schema, payload}} <- encode_base_record(source, jobs), do: {:ok, payload}
+  end
+
+  defp encode_base_record({:job, id}, jobs) do
+    with {:ok, payload} <- Codec.encode_snapshot(jobs[id]), do: {:ok, {7, 1, payload}}
+  end
+
+  defp encode_base_record({:event, event}, _jobs), do: Tay.Event.encode(event)
 
   defp room(native, nil, sealed, bytes, _size, sequence, store_id, _target) do
     with {:ok, fresh} <- begin_segment(native, 1, sequence, store_id),
@@ -597,6 +624,20 @@ defmodule Tay.Storage.V2.Publisher do
     if Map.has_key?(source, :online_catch_up),
       do: Snapshot.online_equivalent?(before, after_state),
       else: Snapshot.equivalent?(before, after_state)
+  end
+
+  defp auxiliary_candidate(source, retained_jobs) do
+    %{
+      Reducer.candidate(Map.fetch!(source, :candidate_limits), Map.fetch!(source, :value_limits))
+      | jobs: retained_jobs,
+        schedules: Map.get(source, :schedules, %{}),
+        results: Map.take(Map.get(source, :results, %{}), Map.keys(retained_jobs))
+    }
+  end
+
+  defp candidate_equivalent?(source, before, after_candidate) do
+    equivalent?(source, before.jobs, after_candidate.jobs) and
+      before.schedules == after_candidate.schedules and before.results == after_candidate.results
   end
 
   defp catch_up(_native, source, candidate, tail, started)
@@ -725,6 +766,36 @@ defmodule Tay.Storage.V2.Publisher do
             current
             | count: current.count + 1,
               last_sequence: current.first_sequence + current.count,
+              bytes: current.bytes + byte_size(frame),
+              identity: identity,
+              crc_state: CRC32C.update(current.crc_state, frame)
+          }
+
+          {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
+        else
+          error -> {:halt, error}
+        end
+
+      {type, 2, payload}, {:ok, logical, current, bytes} when type in 7..10 ->
+        sequence = current.first_sequence + current.count
+
+        with {:ok, event, _} <- Tay.Event.decode_payload(type, 2, payload, source.value_limits),
+             {:ok, next_logical} <- Reducer.apply_event(logical, event, %{sequence: sequence}),
+             {:ok, frame} <-
+               Record.encode(%Record{
+                 record_type: type,
+                 payload_schema_version: 2,
+                 sequence: sequence,
+                 payload: payload
+               }),
+             true <-
+               current.bytes + byte_size(frame) + 64 <= Segment.max_bytes() ||
+                 {:error, :online_delta_too_large},
+             {:ok, %{identity: identity}} <- Native.write(native, current.bytes, frame) do
+          next = %{
+            current
+            | count: current.count + 1,
+              last_sequence: sequence,
               bytes: current.bytes + byte_size(frame),
               identity: identity,
               crc_state: CRC32C.update(current.crc_state, frame)
@@ -916,7 +987,7 @@ defmodule Tay.Storage.V2.Publisher do
                publication
              ),
            true <-
-             equivalent?(source, normalized, recovered.candidate.jobs) ||
+             candidate_equivalent?(source, normalized, recovered.candidate) ||
                {:error, :published_candidate_mismatch} do
         {:ok,
          %{

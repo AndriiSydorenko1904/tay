@@ -30,6 +30,17 @@ defmodule Tay.Storage.V2.V1Migration do
 
   def reduce(
         %{next_physical_sequence: expected} = candidate,
+        %Event{record_type: type} = event,
+        %{sequence: expected} = position
+      )
+      when type in 7..10 do
+    with {:ok, v2} <- Reducer.apply_event(candidate.v2, event, position) do
+      {:ok, %{candidate | v2: v2, next_physical_sequence: expected + 1}}
+    end
+  end
+
+  def reduce(
+        %{next_physical_sequence: expected} = candidate,
         %Event{} = event,
         %{sequence: expected} = position
       ) do

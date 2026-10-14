@@ -19,7 +19,11 @@ defmodule Tay.Schedule do
     :catch_up,
     :next_at,
     :last_at,
-    :cancelled_at
+    :cancelled_at,
+    :definition,
+    :revision,
+    :registered_at,
+    :options
   ]
 
   # This is the canonical, serializable schedule definition used by both the
@@ -33,7 +37,20 @@ defmodule Tay.Schedule do
          true <- Protocol.json_value?(args) || {:error, :invalid_args},
          {:ok, overlap} <- option(fields, "overlap", "skip", @overlap),
          {:ok, catch_up} <- option(fields, "catch_up", "latest", @catch_up),
-         {:ok, kind, expression, timezone, next_at} <- timing(fields, now) do
+         {:ok, kind, expression, durable_expression, timezone, next_at} <- timing(fields, now) do
+      options = Map.get(fields, "options", %{})
+
+      definition = %{
+        "args" => args,
+        "catch_up" => catch_up,
+        "expression" => durable_expression,
+        "kind" => Atom.to_string(kind),
+        "options" => options,
+        "overlap" => overlap,
+        "task" => task,
+        "timezone" => timezone
+      }
+
       {:ok,
        %__MODULE__{
          id: id,
@@ -46,7 +63,11 @@ defmodule Tay.Schedule do
          catch_up: catch_up,
          next_at: next_at,
          last_at: nil,
-         cancelled_at: nil
+         cancelled_at: nil,
+         definition: definition,
+         revision: 0,
+         registered_at: now,
+         options: options
        }}
     else
       _ -> {:error, :invalid_schedule}
@@ -93,9 +114,57 @@ defmodule Tay.Schedule do
   def cancel(%__MODULE__{} = schedule, at) when is_integer(at) and at >= 0,
     do: %{schedule | cancelled_at: at}
 
+  def from_durable(%{definition: definition} = stored) do
+    expression = definition["expression"]
+    timezone = definition["timezone"]
+
+    with {:ok, runtime_expression} <- runtime_expression(definition["kind"], expression, timezone) do
+      {:ok,
+       %__MODULE__{
+         id: stored.id,
+         task: definition["task"],
+         args: definition["args"],
+         kind: String.to_existing_atom(definition["kind"]),
+         expression: runtime_expression,
+         timezone: timezone,
+         overlap: definition["overlap"],
+         catch_up: definition["catch_up"],
+         next_at: stored.next_at,
+         last_at: stored.last_at,
+         cancelled_at: stored.cancelled_at,
+         definition: definition,
+         revision: stored.revision,
+         registered_at: stored.registered_at,
+         options: definition["options"]
+       }}
+    end
+  end
+
   def equivalent?(%__MODULE__{} = left, %__MODULE__{} = right) do
     Map.take(left, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up]) ==
       Map.take(right, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up])
+  end
+
+  def view(%__MODULE__{} = schedule), do: view(Map.from_struct(schedule))
+
+  def view(schedule) when is_map(schedule) do
+    definition = schedule.definition
+
+    %{
+      id: schedule.id,
+      task: definition["task"],
+      args: definition["args"],
+      kind: definition["kind"],
+      expression: definition["expression"],
+      timezone: definition["timezone"],
+      overlap: definition["overlap"],
+      catch_up: definition["catch_up"],
+      options: definition["options"],
+      next_at: schedule.next_at,
+      last_at: schedule.last_at,
+      cancelled_at: schedule.cancelled_at,
+      revision: schedule.revision
+    }
   end
 
   defp timing(fields, now) do
@@ -106,18 +175,26 @@ defmodule Tay.Schedule do
         with {:ok, parsed} <- Cron.parse(cron, timezone),
              {:ok, first} <- first_at(fields, now),
              {:ok, next_at} <- Cron.next(parsed, first - 60_000) do
-          {:ok, :cron, parsed, timezone, next_at}
+          {:ok, :cron, parsed, cron, timezone, next_at}
         end
 
       {nil, every} when is_map(every) ->
         with {:ok, interval} <- interval(every), {:ok, first} <- first_at(fields, now) do
-          {:ok, :every, interval, nil, first}
+          {:ok, :every, interval, interval, nil, first}
         end
 
       _ ->
         {:error, :invalid_timing}
     end
   end
+
+  defp runtime_expression("cron", expression, timezone), do: Cron.parse(expression, timezone)
+
+  defp runtime_expression("every", expression, nil)
+       when is_integer(expression) and expression > 0,
+       do: {:ok, expression}
+
+  defp runtime_expression(_, _, _), do: {:error, :invalid_schedule}
 
   defp first_at(fields, now) do
     case {Map.get(fields, "delay"), Map.get(fields, "start_at")} do

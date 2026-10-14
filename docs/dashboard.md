@@ -94,6 +94,11 @@ model.
   actions when valid.
 - **Queues** shows configured concurrency, current execution use, retained job
   counts, and volatile Pause/Resume controls.
+- **Schedules** shows durable cron/interval declarations, their next and last
+  run, active/cancelled state, and a revision-safe cancellation control.
+- **Overview → Storage files** can expand a segment into a bounded physical
+  record table with sequence, byte offset, semantic type, schema, and payload
+  size. Payload contents are deliberately not exposed.
 
 The dashboard follows the operating-system light/dark preference by default.
 The Theme control stores an explicit override in the browser's local storage.

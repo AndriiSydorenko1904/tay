@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0 — 2026-10-15
+
+### Added
+
+- Enabled Event-v2 schema-2 schedule registration, advancement, cancellation,
+  and successful-result records across live persistence, Store-v1 recovery,
+  Store-v2 checkpoints, compaction, and restart recovery.
+- Added durable schedule inspection/cancellation APIs and a Dashboard Schedules
+  page showing expression, next/last run, and lifecycle state.
+- Added bounded physical record inspection for Dashboard storage segments,
+  including sequence, offset, semantic type, schema, and payload size.
+
+### Changed
+
+- Successful remote-worker results now remain available after restart and are
+  removed when compaction removes their completed job.
+- Schedule declarations no longer depend on a connected client replaying them
+  after an Engine or listener restart.
+
 ## 1.3.6 — 2026-10-14
 
 ### Fixed

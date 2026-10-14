@@ -25,7 +25,7 @@ defmodule Tay do
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
   is a development mode and is never described as durable.
   """
-  alias Tay.{Error, Inspection, Job, JobID}
+  alias Tay.{Error, Inspection, Job, JobID, Schedule}
   alias Tay.Engine.{Admission, Config}
   alias Tay.Event.{Value, V2}
 
@@ -141,6 +141,90 @@ defmodule Tay do
 
   @doc "Returns configured queues and their current volatile runtime state."
   def queues(options \\ []), do: inspect_request(:inspect_queues, :queues, options)
+
+  @doc "Returns all durable recurring schedules."
+  def schedules(options \\ []), do: inspect_request(:inspect_schedules, :schedules, options)
+
+  @doc false
+  def register_schedule(%Schedule{} = schedule, options \\ []) do
+    with {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      Admission.request(
+        name,
+        meta,
+        {:register_schedule, schedule},
+        512,
+        :register_schedule,
+        schedule.id,
+        timeout || meta.timeout
+      )
+    else
+      {:error, reason} -> public_error(reason, :register_schedule, schedule.id)
+    end
+  end
+
+  @doc false
+  def advance_schedule(id, revision, due_at, next_at, at, options \\ []) do
+    schedule_request(
+      {:advance_schedule, id, revision, due_at, next_at, at},
+      :advance_schedule,
+      id,
+      options
+    )
+  end
+
+  @doc "Durably cancels a recurring schedule."
+  def cancel_schedule(id, options \\ [])
+
+  def cancel_schedule(id, options) when is_binary(id) do
+    with {:ok, schedules} <- schedules(options),
+         %{revision: revision} <- Enum.find(schedules, &(&1.id == id)) || {:error, :not_found} do
+      schedule_request(
+        {:cancel_schedule, id, revision, System.system_time(:millisecond)},
+        :cancel_schedule,
+        id,
+        options
+      )
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> public_error(reason, :cancel_schedule, id)
+    end
+  end
+
+  def cancel_schedule(_, _), do: {:error, Error.new(:invalid, :invalid_schedule_id)}
+
+  @doc false
+  def result(id, options \\ []) do
+    with {:ok, raw} <- JobID.decode(id),
+         {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      Admission.request(name, meta, {:get_result, raw}, 256, :result, id, timeout || meta.timeout)
+    else
+      {:error, reason} -> public_error(reason, :result, safe_id(id))
+    end
+  end
+
+  @doc "Returns bounded physical record metadata for one storage segment."
+  def storage_records(segment_id, options \\ []) do
+    with true <- (is_integer(segment_id) and segment_id > 0) || {:error, :invalid_segment},
+         true <- Keyword.keyword?(options) || {:error, :invalid_options},
+         limit = Keyword.get(options, :limit, 200),
+         true <- (is_integer(limit) and limit in 1..1_000) || {:error, :invalid_limit},
+         {:ok, name, timeout} <- request_options(Keyword.drop(options, [:limit])),
+         {:ok, meta} <- ready(name) do
+      Admission.request(
+        name,
+        meta,
+        {:inspect_segment_records, segment_id, limit},
+        256,
+        :storage_records,
+        nil,
+        timeout || meta.timeout
+      )
+    else
+      {:error, reason} -> public_error(reason, :storage_records, nil)
+    end
+  end
 
   @doc """
   Durably cancels an eligible job. Options are `:name`, `:timeout`, and
@@ -265,6 +349,15 @@ defmodule Tay do
       Admission.request(name, meta, intent, 256, operation, nil, timeout || meta.timeout)
     else
       {:error, reason} -> public_error(reason, operation, nil)
+    end
+  end
+
+  defp schedule_request(intent, operation, id, options) do
+    with {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name) do
+      Admission.request(name, meta, intent, 512, operation, id, timeout || meta.timeout)
+    else
+      {:error, reason} -> public_error(reason, operation, id)
     end
   end
 

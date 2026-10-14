@@ -56,8 +56,9 @@ restart-durable, while job completion remains durable.
   record order and acknowledge a batch only after its fsync; they do not change
   the on-disk format or recovery compatibility.
 - External effects are at-least-once, not exactly-once. There is no live
-  backup, automatic torn-tail repair, durable successful-result backend, or
-  multi-host executor protocol. Store-v2 compaction is online during candidate
+  backup, automatic torn-tail repair, or multi-host executor protocol. Durable
+  successful results are bounded JSON values retained with completed jobs, not
+  an authoritative business ledger. Store-v2 compaction is online during candidate
   preparation and uses a fenced publication switch; initial Store-v1 adoption
   still drains. The local Unix socket is a same-host trust boundary.
 

@@ -13,7 +13,7 @@ defmodule Tay.Storage.Writer do
   Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{Native, Reader, Recovery}
+  alias Tay.Storage.{Native, Reader, Recovery, Segment}
   alias Tay.Storage.Recovery.Error
 
   alias Tay.Storage.Writer.{
@@ -158,6 +158,10 @@ defmodule Tay.Storage.Writer do
 
   def reduce(writer, accumulator, reducer),
     do: GenServer.call(writer, {:reduce, accumulator, reducer}, :infinity)
+
+  @doc false
+  def segment_records(writer, segment_id, limit \\ 200),
+    do: GenServer.call(writer, {:segment_records, segment_id, limit}, :infinity)
 
   def seal(writer), do: GenServer.call(writer, :seal, :infinity)
   def rotate(writer), do: GenServer.call(writer, :rotate, :infinity)
@@ -437,10 +441,79 @@ defmodule Tay.Storage.Writer do
     end
   end
 
+  def handle_call({:segment_records, segment_id, limit}, _from, state)
+      when is_integer(segment_id) and segment_id > 0 and is_integer(limit) and limit in 1..1_000 do
+    result = inspect_segment(state.native, state.store_id, state.segment.id, segment_id, limit)
+    {:reply, result, state}
+  end
+
+  def handle_call({:segment_records, _, _}, _from, state),
+    do: {:reply, {:error, :invalid_segment}, state}
+
   if @test do
     def handle_call({:fault, operation, occurrence, action, errno, count}, _from, state) do
       result = Native.fault(state.native, operation, occurrence, action, errno, count)
       {:reply, result, state}
+    end
+  end
+
+  defp inspect_segment(native, store_id, highest_id, segment_id, limit) do
+    with {:ok, name} <- Segment.filename(segment_id),
+         {:ok, entries} <- Native.list(native, :segments),
+         {:ok, %{size: size}} <- fetch_entry(entries, name),
+         {:ok, _identity} <- Native.open_read(native, :segments, name) do
+      result =
+        Segment.reduce(
+          &Native.read(native, &1, &2),
+          size,
+          [],
+          fn record, offset, acc ->
+            if length(acc) < limit do
+              [
+                %{
+                  sequence: record.sequence,
+                  offset: offset,
+                  record_type: record.record_type,
+                  payload_schema_version: record.payload_schema_version,
+                  payload_bytes: byte_size(record.payload)
+                }
+                | acc
+              ]
+            else
+              acc
+            end
+          end,
+          id: segment_id,
+          store_id: store_id,
+          highest: segment_id == highest_id
+        )
+
+      close = Native.close_read(native)
+
+      case {result, close} do
+        {{:ok, summary, records}, :ok} ->
+          {:ok,
+           %{
+             records: Enum.reverse(records),
+             total_count: summary.count,
+             truncated: summary.count > limit
+           }}
+
+        {{:error, reason}, _} ->
+          {:error, reason}
+
+        {_, error} ->
+          error
+      end
+    else
+      error -> error
+    end
+  end
+
+  defp fetch_entry(entries, name) do
+    case Enum.find(entries, &(&1.name == name)) do
+      nil -> {:error, :not_found}
+      entry -> {:ok, entry}
     end
   end
 

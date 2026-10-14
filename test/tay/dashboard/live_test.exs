@@ -133,6 +133,43 @@ defmodule Tay.Dashboard.LiveTest do
     EngineHelpers.stop(root)
   end
 
+  test "expands physical records inside a storage segment", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @engine)
+    {:ok, _job} = EngineWorker.new(%{"record" => true}) |> Tay.insert(name: @engine)
+    {:ok, view, _html} = live(build_conn(), "/tay/")
+
+    view |> element("#storage-segments summary") |> render_click()
+
+    view
+    |> element("button[phx-click='toggle-segment-records'][phx-value-id='1']")
+    |> render_click()
+
+    assert has_element?(view, "#segment-records-1")
+    assert render(view) =~ "job inserted"
+    EngineHelpers.stop(root)
+  end
+
+  test "lists and cancels durable schedules", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @engine)
+
+    {:ok, schedule} =
+      Tay.Schedule.new(
+        "dashboard-hourly",
+        %{"task" => "reports.v1", "every" => %{"hours" => 1}},
+        1_000
+      )
+
+    assert {:ok, _} = Tay.register_schedule(schedule, name: @engine)
+    {:ok, view, html} = live(build_conn(), "/tay/schedules")
+    assert html =~ "dashboard-hourly"
+    assert html =~ "every 1 h"
+    assert has_element?(view, "#schedule-dashboard-hourly button", "Cancel")
+
+    view |> element("#schedule-dashboard-hourly button") |> render_click()
+    assert render(view) =~ "cancelled"
+    EngineHelpers.stop(root)
+  end
+
   test "unavailable overview shows unknown values and recovers without a reload", %{path: path} do
     {:ok, view, html} = live(build_conn(), "/tay/")
     assert html =~ "Tay is temporarily unavailable for lifecycle maintenance or recovery"

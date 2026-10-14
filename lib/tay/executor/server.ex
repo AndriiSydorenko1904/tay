@@ -102,6 +102,24 @@ defmodule Tay.Executor.Server do
   def init(options) do
     with {:ok, config} <- config(options),
          {:ok, listener, acceptor, acceptor_monitor} <- start_socket(config) do
+      schedules =
+        Map.get(config, :schedules, %{})
+        |> Map.values()
+        |> Enum.reject(& &1.cancelled_at)
+        |> Enum.reduce(%{}, fn stored, acc ->
+          case Schedule.from_durable(stored) do
+            {:ok, schedule} ->
+              Map.put(
+                acc,
+                schedule.id,
+                arm_schedule(schedule, schedule.options, System.system_time(:millisecond))
+              )
+
+            _ ->
+              acc
+          end
+        end)
+
       state =
         Map.merge(config, %{
           listener: listener,
@@ -111,8 +129,8 @@ defmodule Tay.Executor.Server do
           connections: %{},
           monitors: %{},
           reservations: %{},
-          schedules: %{},
-          results: %{},
+          schedules: schedules,
+          results: Map.get(config, :results, %{}),
           result_order: :queue.new()
         })
 
@@ -211,8 +229,28 @@ defmodule Tay.Executor.Server do
           :ok ->
             case Schedule.advance_after_delivery(schedule, due, System.system_time(:millisecond)) do
               {:ok, advanced} ->
-                entry = arm_schedule(advanced, options, System.system_time(:millisecond))
-                {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
+                now = System.system_time(:millisecond)
+
+                case Tay.advance_schedule(
+                       id,
+                       schedule.revision,
+                       due,
+                       advanced.next_at,
+                       now,
+                       name: s.engine_name
+                     ) do
+                  {:ok, durable} ->
+                    advanced = %{advanced | revision: durable.revision}
+                    entry = arm_schedule(advanced, options, now)
+                    {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
+
+                  _ ->
+                    timer =
+                      Process.send_after(self(), {:schedule_due, id, due}, @schedule_retry_ms)
+
+                    entry = %{schedule: schedule, options: options, timer: timer}
+                    {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
+                end
 
               {:error, _} ->
                 {:noreply, drop_schedule(s, id)}
@@ -343,10 +381,20 @@ defmodule Tay.Executor.Server do
       if equivalent_schedule_entry?(existing_entry, schedule, options) do
         {:reply, {:ok, public_schedule(existing_entry.schedule)}, s}
       else
-        state = drop_schedule(s, id)
-        entry = arm_schedule(schedule, options, now)
-        next = %{state | schedules: Map.put(state.schedules, id, entry)}
-        {:reply, {:ok, public_schedule(schedule)}, next}
+        case Tay.register_schedule(schedule, name: s.engine_name) do
+          {:ok, durable} ->
+            schedule = %{schedule | revision: durable.revision}
+            state = drop_schedule(s, id)
+            entry = arm_schedule(schedule, options, now)
+            next = %{state | schedules: Map.put(state.schedules, id, entry)}
+            {:reply, {:ok, public_schedule(schedule)}, next}
+
+          _ ->
+            state = drop_schedule(s, id)
+            entry = arm_schedule(schedule, options, now)
+            next = %{state | schedules: Map.put(state.schedules, id, entry)}
+            {:reply, {:ok, public_schedule(schedule)}, next}
+        end
       end
     else
       _ -> {:reply, {:error, "invalid_schedule"}, s}
@@ -356,8 +404,19 @@ defmodule Tay.Executor.Server do
   def handle_call({:cancel_schedule, id}, _from, s) do
     case Map.fetch(s.schedules, id) do
       {:ok, %{schedule: schedule}} ->
-        cancelled = Schedule.cancel(schedule, System.system_time(:millisecond))
-        {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
+        case Tay.cancel_schedule(id, name: s.engine_name) do
+          {:ok, durable} ->
+            cancelled = %{
+              Schedule.cancel(schedule, durable.cancelled_at)
+              | revision: durable.revision
+            }
+
+            {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
+
+          _ ->
+            cancelled = Schedule.cancel(schedule, System.system_time(:millisecond))
+            {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
+        end
 
       :error ->
         {:reply, {:error, "schedule_not_found"}, s}
@@ -538,9 +597,16 @@ defmodule Tay.Executor.Server do
          true <-
            valid_positive?(options.error_bytes, options.max_frame_bytes) ||
              {:error, :invalid_error_limit},
-         true <- valid_positive?(options.max_results, 100_000) || {:error, :invalid_result_count} do
+         true <- valid_positive?(options.max_results, 100_000) || {:error, :invalid_result_count},
+         true <-
+           (is_map(Map.get(options, :schedules, %{})) and
+              is_map(Map.get(options, :results, %{}))) ||
+             {:error, :invalid_durable_state} do
       {:ok,
-       Map.take(options, [
+       options
+       |> Map.put_new(:schedules, %{})
+       |> Map.put_new(:results, %{})
+       |> Map.take([
          :engine,
          :engine_name,
          :socket_path,
@@ -551,7 +617,9 @@ defmodule Tay.Executor.Server do
          :max_tasks_per_connection,
          :result_bytes,
          :error_bytes,
-         :max_results
+         :max_results,
+         :schedules,
+         :results
        ])}
     else
       {:error, _} = error -> error
@@ -889,12 +957,13 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  defp result(server, engine_name, %{"job_id" => id}) do
+  defp result(_server, engine_name, %{"job_id" => id}) do
     case Tay.get_job(id, name: engine_name) do
       {:ok, %{state: :completed}} ->
-        case GenServer.call(server, {:result, id}, @call_timeout) do
+        case Tay.result(id, name: engine_name) do
           {:ok, value} -> {:ok, "result", %{"result" => value}}
           :missing -> {:ok, "result", %{"result" => nil}}
+          _ -> {:ok, "result", %{"result" => nil}}
         end
 
       {:ok, %{state: :discarded}} ->
@@ -993,7 +1062,8 @@ defmodule Tay.Executor.Server do
       "catch_up" => schedule.catch_up,
       "next_at" => schedule.next_at,
       "last_at" => schedule.last_at,
-      "cancelled_at" => schedule.cancelled_at
+      "cancelled_at" => schedule.cancelled_at,
+      "revision" => schedule.revision
     }
   end
 

@@ -21,7 +21,11 @@ defmodule Tay.Dashboard.Live do
       :ok =
         :telemetry.attach_many(
           handler,
-          [[:tay, :job, :transition], [:tay, :queue, :control]],
+          [
+            [:tay, :job, :transition],
+            [:tay, :queue, :control],
+            [:tay, :schedule, :transition]
+          ],
           &__MODULE__.handle_telemetry/4,
           %{pid: self(), engine: engine, refresh_signal: refresh_signal}
         )
@@ -215,6 +219,7 @@ defmodule Tay.Dashboard.Live do
         <a class={if @current == :overview, do: "active"} href={@path <> "/"}>Overview</a>
         <a class={if @current in [:jobs, :job], do: "active"} href={@path <> "/jobs"}>Jobs</a>
         <a class={if @current == :queues, do: "active"} href={@path <> "/queues"}>Queues</a>
+        <a class={if @current == :schedules, do: "active"} href={@path <> "/schedules"}>Schedules</a>
       </nav>
       {render_slot(@inner_block)}
       <script>

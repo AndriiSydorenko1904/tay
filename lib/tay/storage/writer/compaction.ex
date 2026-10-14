@@ -27,13 +27,15 @@ defmodule Tay.Storage.Writer.Compaction do
 
   defp compact_source(state, retention, captured_at) do
     with {:ok, state} <- seal_frontier(state),
-         {:ok, jobs, current} <- replay_source(state) do
+         {:ok, candidate, current} <- replay_source(state) do
       source =
         %{
           store_id: state.store_id,
           epoch_id: state.epoch_id,
           current: current,
-          jobs: jobs,
+          jobs: candidate.jobs,
+          schedules: candidate.schedules,
+          results: candidate.results,
           frontier: state.next_sequence - 1,
           rotation_target_bytes: state.options.rotation_target_bytes,
           candidate_limits: state.candidate_limits,
@@ -47,7 +49,7 @@ defmodule Tay.Storage.Writer.Compaction do
       result =
         case Publisher.publish(state.native, source) do
           {:error, {:unknown_publication_outcome, publication}} ->
-            reconcile_publication(state, jobs, publication)
+            reconcile_publication(state, candidate, publication)
 
           other ->
             other
@@ -90,7 +92,7 @@ defmodule Tay.Storage.Writer.Compaction do
 
   defp adopt_result(_state, error), do: error
 
-  defp reconcile_publication(state, jobs, publication) do
+  defp reconcile_publication(state, candidate, publication) do
     # The first Port may have completed the rename and lost only its reply.
     Native.close(state.native)
 
@@ -102,7 +104,7 @@ defmodule Tay.Storage.Writer.Compaction do
     ]
 
     with {:ok, native} <- reacquire(state.options.data_dir, options) do
-      result = verify_reconciled(state, native, jobs, publication)
+      result = verify_reconciled(state, native, candidate, publication)
 
       if match?({:ok, _}, result) do
         result
@@ -113,7 +115,7 @@ defmodule Tay.Storage.Writer.Compaction do
     end
   end
 
-  defp verify_reconciled(state, native, jobs, publication) do
+  defp verify_reconciled(state, native, candidate, publication) do
     with {:ok, recovered} <-
            V2Reader.recover(
              native,
@@ -122,10 +124,19 @@ defmodule Tay.Storage.Writer.Compaction do
          true <- recovered.epoch_id == publication.epoch_id || {:error, :old_current},
          true <- recovered.current == publication.current || {:error, :current_changed},
          {:ok, retained, _, _} <-
-           Snapshot.prepare(jobs, publication.terminal_retention, publication.captured_at),
+           Snapshot.prepare(
+             candidate.jobs,
+             publication.terminal_retention,
+             publication.captured_at
+           ),
          true <-
            Snapshot.equivalent?(retained, recovered.candidate.jobs) ||
-             {:error, :reconciled_candidate_mismatch} do
+             {:error, :reconciled_candidate_mismatch},
+         true <-
+           candidate.schedules == recovered.candidate.schedules || {:error, :schedule_mismatch},
+         true <-
+           Map.take(candidate.results, Map.keys(retained)) == recovered.candidate.results ||
+             {:error, :result_mismatch} do
       {:ok,
        publication
        |> Map.drop([:current, :started, :reason])
@@ -203,7 +214,7 @@ defmodule Tay.Storage.Writer.Compaction do
              end,
              options
            ) do
-      {:ok, migrated.v2.jobs, nil}
+      {:ok, migrated.v2, nil}
     end
   end
 
@@ -218,7 +229,7 @@ defmodule Tay.Storage.Writer.Compaction do
          true <- recovered.current == state.v2_current || {:error, :source_current_changed},
          true <-
            recovered.next_sequence == state.next_sequence || {:error, :source_frontier_changed} do
-      {:ok, recovered.candidate.jobs, recovered.current}
+      {:ok, recovered.candidate, recovered.current}
     end
   end
 
