@@ -1,12 +1,19 @@
 # Changelog
 
-## 1.4.1 — 2026-10-15
+## 1.4.2 — 2026-10-15
 
 ### Security
 
 - Disabled Bandit's HTTP/2 listener while a Hex release containing the fix for
   GHSA-69m6-wcv4-rwcf is pending. The acknowledged advisory is not reachable
   by Tay; HTTP/1.1 remains available.
+
+### Fixed
+
+- Added the missing `telemetry_metrics` production dependency to the standalone
+  release lockfile.
+
+## 1.4.1 — 2026-10-15
 
 ### Added
 
