@@ -155,24 +155,19 @@ defmodule Tay.Engine do
           group_commit: nil,
           deferred_transitions: nil,
           memory_reclaim: nil,
+          memory_reclaimed: false,
           history_bytes:
             summary.total_segment_bytes +
               44 * (summary.highest.id - inspection.summary.highest.id),
           segment_count:
             summary.segment_count + summary.highest.id - inspection.summary.highest.id,
-          definition_bytes:
-            Enum.reduce(candidate.jobs, 0, fn {_id, job}, n ->
-              n + byte_size(job.definition_bytes)
-            end),
           blocked:
             JobIndex.fold(
               projection.jobs,
               fn job, n ->
-                if (not Map.has_key?(dispatch_registry, job.definition["worker_key"]) and
-                      not external_enabled?(config)) or
-                     not Map.has_key?(config.queues, job.definition["queue_key"]),
-                   do: n + 1,
-                   else: n
+                if ProjectionState.blocked?(projection, config, job),
+                  do: n + 1,
+                  else: n
               end,
               0
             )
@@ -273,19 +268,21 @@ defmodule Tay.Engine do
         %{memory_reclaim: {_, token}, active_budget: %{count: 0}, running: running} = s
       )
       when map_size(running) == 0 do
-    if Process.alive?(s.writer), do: :erlang.garbage_collect(s.writer)
+    if Process.alive?(s.writer) do
+      :erlang.garbage_collect(s.writer)
+    end
+
     :erlang.garbage_collect()
     hook(s.config, :memory_reclaimed)
-    {:noreply, %{s | memory_reclaim: nil}}
+    {:noreply, %{s | memory_reclaim: nil, memory_reclaimed: true}}
   end
 
-  def handle_info({:reclaim_memory, token}, %{memory_reclaim: {_, token}} = s),
-    do:
-      {:noreply,
-       if(s.active_budget.count == 0,
-         do: schedule_memory_reclaim(%{s | memory_reclaim: nil}),
-         else: %{s | memory_reclaim: nil}
-       )}
+  def handle_info(
+        {:reclaim_memory, token},
+        %{memory_reclaim: {_, token}} = s
+      ) do
+    {:noreply, %{s | memory_reclaim: nil, memory_reclaimed: false}}
+  end
 
   def handle_info({:reclaim_memory, _}, s), do: {:noreply, s}
 
@@ -445,7 +442,7 @@ defmodule Tay.Engine do
     # Check estimates before drain, then allow legitimate settlement mutations.
     # Writer pins and replays the final frontier under its existing owner lock.
     result =
-      if is_nil(expected_source) or elem(expected_source, 0) == s.epoch_id,
+      if same_source_epoch?(expected_source, s.epoch_id),
         do:
           Writer.compact(
             s.writer,
@@ -785,11 +782,7 @@ defmodule Tay.Engine do
   end
 
   defp control_member?(s, kind, pid) do
-    valid_kind =
-      kind == :scheduler or
-        (match?({:queue, _}, kind) and Map.has_key?(s.config.queue_limits, elem(kind, 1)))
-
-    valid_kind and
+    valid_control_kind?(s, kind) and
       (Map.get(s.controls, kind) == pid or
          Enum.any?(
            DynamicSupervisor.which_children(
@@ -798,6 +791,13 @@ defmodule Tay.Engine do
            fn {_, child, _, _} -> child == pid end
          ))
   end
+
+  defp valid_control_kind?(_s, :scheduler), do: true
+
+  defp valid_control_kind?(s, {:queue, queue}),
+    do: Map.has_key?(s.config.queue_limits, queue)
+
+  defp valid_control_kind?(_s, _kind), do: false
 
   defp control(_kind, %{mode: mode} = s) when mode != :ready,
     do: {s, s.config.execution_wake_ms}
@@ -1273,12 +1273,44 @@ defmodule Tay.Engine do
   end
 
   defp publish(%{snapshot_pending: nil} = s) do
+    s = maybe_schedule_memory_reclaim(s)
     token = make_ref()
     send(s.guardian, {:execution_snapshot, self(), token, ProjectionState.snapshot(s)})
     %{s | snapshot_pending: token, snapshot_dirty: false}
   end
 
-  defp publish(s), do: %{s | snapshot_dirty: true}
+  defp publish(s) do
+    s = maybe_schedule_memory_reclaim(s)
+    %{s | snapshot_dirty: true}
+  end
+
+  defp maybe_schedule_memory_reclaim(
+         %{
+           active_budget: %{count: 0},
+           running: running,
+           memory_reclaim: nil,
+           memory_reclaimed: false
+         } = s
+       )
+       when map_size(running) == 0 do
+    schedule_memory_reclaim(s)
+  end
+
+  defp maybe_schedule_memory_reclaim(s) do
+    if s.active_budget.count > 0 or map_size(s.running) > 0 do
+      case s.memory_reclaim do
+        {timer, _token} ->
+          Process.cancel_timer(timer)
+
+        nil ->
+          :ok
+      end
+
+      %{s | memory_reclaim: nil, memory_reclaimed: false}
+    else
+      s
+    end
+  end
 
   defp insert_new(s, raw, worker, bytes) do
     c = s.config
@@ -1307,7 +1339,6 @@ defmodule Tay.Engine do
          {:ok, {1, 1, payload}} <- Event.encode(event, limits, c.max_insert_payload_bytes),
          {:ok, _} <- Value.measure(definition["args"], limits, c.max_insert_args_bytes),
          {:ok, job, next} <- Persistence.commit(s, nil, event, payload) do
-      next = %{next | blocked: s.blocked + if(blocked?(s, job), do: 1, else: 0)}
       {{:ok, ProjectionState.view(next, job)}, next}
     else
       {:error, {:resource_limit, key}} ->
@@ -1321,12 +1352,6 @@ defmodule Tay.Engine do
     end
   end
 
-  defp blocked?(s, job),
-    do:
-      (not Map.has_key?(s.projection.registry, job.definition["worker_key"]) and
-         not external_enabled?(s.config)) or
-        not Map.has_key?(s.config.queues, job.definition["queue_key"])
-
   defp valid_worker_mapping?(config, key, worker) do
     (Map.get(config.workers, key) == worker and not is_nil(worker)) or
       (external_enabled?(config) and worker == Tay.Executor.RemoteWorker and
@@ -1339,12 +1364,22 @@ defmodule Tay.Engine do
   defp failure(s, kind, reason, raw),
     do: {{:error, Error.new(kind, reason, JobID.encode(raw), :insert)}, s}
 
-  defp schedule_memory_reclaim(s) do
-    if s.memory_reclaim, do: Process.cancel_timer(elem(s.memory_reclaim, 0))
+  defp schedule_memory_reclaim(%{memory_reclaim: nil} = s) do
     token = make_ref()
-    timer = Process.send_after(self(), {:reclaim_memory, token}, @memory_reclaim_idle_ms)
+
+    timer =
+      Process.send_after(
+        self(),
+        {:reclaim_memory, token},
+        @memory_reclaim_idle_ms
+      )
+
     %{s | memory_reclaim: {timer, token}}
   end
+
+  defp same_source_epoch?(nil, _epoch_id), do: true
+  defp same_source_epoch?({epoch_id, _sequence}, epoch_id), do: true
+  defp same_source_epoch?(_expected_source, _epoch_id), do: false
 
   defp startup_error(%Tay.Storage.Recovery.Error{} = error),
     do: Error.new(:unavailable, {:recovery, error})

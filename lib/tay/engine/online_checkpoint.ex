@@ -45,16 +45,18 @@ defmodule Tay.Engine.OnlineCheckpoint do
        }}
     catch
       kind, reason ->
-        delete(table)
+        delete_table(table)
         {:error, {:snapshot_capture_failed, {kind, reason}}}
     end
   end
 
-  @spec delete(nil | :ets.table() | %{table: :ets.table()}) :: :ok
-  def delete(nil), do: :ok
-  def delete(%{table: table}), do: delete(table)
+  @type snapshot_ref :: %{required(:table) => term(), optional(term()) => term()}
 
-  def delete(table) do
+  @spec delete(nil | snapshot_ref()) :: :ok
+  def delete(nil), do: :ok
+  def delete(%{table: table}), do: delete_table(table)
+
+  defp delete_table(table) do
     try do
       :ets.delete(table)
       :ok
@@ -116,10 +118,6 @@ defmodule Tay.Engine.OnlineCheckpoint do
         terminal_budget: terminal_budget,
         budget: state.budget,
         terminal_stats: terminal_statistics(jobs),
-        definition_bytes:
-          Enum.reduce(jobs, 0, fn {_id, job}, total ->
-            total + byte_size(job.definition_bytes)
-          end),
         compaction_estimate:
           Enum.reduce(jobs, CompactionEstimate.new(), fn {_id, job}, estimate ->
             CompactionEstimate.replace(estimate, nil, job)

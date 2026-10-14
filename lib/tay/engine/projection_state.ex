@@ -84,7 +84,7 @@ defmodule Tay.Engine.ProjectionState do
       storage_segments: state.segment_catalog,
       storage_segments_truncated: state.segment_count > length(state.segment_catalog),
       compaction_terminal_retention: state.config.compaction.terminal_retention,
-      retained_definition_bytes: state.definition_bytes,
+      retained_definition_bytes: state.compaction_estimate.definition_bytes,
       reserved_outcome_bytes: outcome_reserve(state.settlement_reserve),
       remaining_sequence_coordinates: max(Storage.Segment.max_id() - state.next_sequence + 1, 0),
       remaining_segment_coordinates: Storage.Segment.max_id() - state.segment.id,
@@ -117,6 +117,15 @@ defmodule Tay.Engine.ProjectionState do
   def terminal?(nil), do: false
   def terminal?(%{state: state}), do: state in @terminal_states
 
+  def blocked?(_projection, _config, nil), do: false
+
+  def blocked?(projection, config, job) do
+    not terminal?(job) and
+      ((not Map.has_key?(projection.registry, job.definition["worker_key"]) and
+          not external_enabled?(config)) or
+         not Map.has_key?(config.queues, job.definition["queue_key"]))
+  end
+
   def ensure_active_accounting!(state) do
     active = state.active_budget
     budget = state.budget
@@ -147,6 +156,9 @@ defmodule Tay.Engine.ProjectionState do
   defp empty_terminal_stats, do: %{states: zero_states(), queues: %{}}
   defp partition(job), do: if(terminal?(job), do: :terminal, else: :active)
   defp empty_budget, do: %{count: 0, bytes: 0}
+
+  defp external_enabled?(config),
+    do: is_binary(config.executor_socket) or is_integer(config.http_port)
 
   defp add_charge(budget, job, sign) do
     Map.merge(budget, %{

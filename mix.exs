@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.3.5"
+  @version "1.3.6"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -70,6 +70,11 @@ defmodule Tay.MixProject do
       compilers: [:tay_native] ++ Mix.compilers(),
       elixirc_paths: elixirc_paths(Mix.env()),
       test_ignore_filters: [&String.starts_with?(&1, "test/fixtures/")],
+
+      # Dialyzer
+      dialyzer: [
+        plt_add_apps: [:mix]
+      ],
       deps: [
         {:telemetry, "~> 1.3"},
         {:bandit, "~> 1.12"},
@@ -80,7 +85,8 @@ defmodule Tay.MixProject do
         {:floki, ">= 0.38.0", only: :test},
         {:lazy_html, ">= 0.1.0", only: :test},
         {:stream_data, "~> 1.2", only: :test},
-        {:ex_doc, "~> 0.40.4", only: :dev, runtime: false}
+        {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
+        {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
       ]
     ]
   end

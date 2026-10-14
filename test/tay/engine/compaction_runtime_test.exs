@@ -154,6 +154,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       )
 
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
+    source_epoch = :sys.get_state(:sys.get_state(@name).engine).epoch_id
     active = insert(%{"active_checkpoint" => true}, scheduled_at: 100_000)
     assert Tay.status(name: @name).active_jobs == 1
 
@@ -171,6 +172,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert Tay.status(name: @name).active_jobs == 1
 
     checkpoint_epoch = :sys.get_state(engine).epoch_id
+    refute checkpoint_epoch == source_epoch
 
     manifest_path =
       Path.join([
@@ -209,6 +211,64 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, _} = Tay.cancel(job.id, name: @name, expected_revision: job.revision)
     assert_receive :memory_reclaimed, 2_000
     assert Tay.status(name: @name).active_state_bytes_charged == 0
+  end
+
+  test "new active work cancels a pending idle reclaim and rearms it after draining", %{
+    path: path
+  } do
+    owner = self()
+
+    hook = fn
+      :memory_reclaimed -> send(owner, :memory_reclaimed)
+      _ -> :ok
+    end
+
+    start(path, compaction: false, test_hook: hook)
+    first = insert(%{"gc" => "first"}, scheduled_at: 100_000)
+    assert {:ok, _} = Tay.cancel(first.id, name: @name, expected_revision: first.revision)
+
+    engine = :sys.get_state(@name).engine
+    assert match?({_, _}, :sys.get_state(engine).memory_reclaim)
+    Process.sleep(250)
+
+    second = insert(%{"gc" => "second"}, scheduled_at: 100_000)
+    assert :sys.get_state(engine).memory_reclaim == nil
+    refute_receive :memory_reclaimed, 900
+
+    assert {:ok, _} = Tay.cancel(second.id, name: @name, expected_revision: second.revision)
+    assert_receive :memory_reclaimed, 2_000
+    assert :sys.get_state(engine).memory_reclaimed
+  end
+
+  test "idle reclaim waits for a running job to finish", %{path: path} do
+    owner = self()
+
+    hook = fn
+      :memory_reclaimed -> send(owner, :memory_reclaimed)
+      _ -> :ok
+    end
+
+    start(path,
+      compaction: false,
+      test_hook: hook,
+      test_execution: true,
+      workers: %{"execution.test.v1" => Tay.Test.ExecutionWorker},
+      queues: [default: 1],
+      execution_wake_ms: 10
+    )
+
+    {intent, token} = ExecutionHelpers.job()
+    assert {:ok, job} = Tay.insert(intent, name: @name)
+    {task, _} = ExecutionHelpers.await_entry(token)
+    engine = :sys.get_state(@name).engine
+    assert map_size(:sys.get_state(engine).running) == 1
+
+    refute_receive :memory_reclaimed, 1_100
+    send(task, {:return, :ok})
+    ExecutionHelpers.await_job(@name, job.id, :completed)
+    assert_receive :memory_reclaimed, 2_000
+    assert :sys.get_state(engine).active_budget.count == 0
+    assert map_size(:sys.get_state(engine).running) == 0
   end
 
   test "enqueue waits through the fenced online checkpoint switch", %{path: path} do

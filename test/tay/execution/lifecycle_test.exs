@@ -281,6 +281,33 @@ defmodule Tay.Execution.LifecycleTest do
     assert Enum.uniq(Enum.map(starts, & &1.sequence)) == Enum.map(starts, & &1.sequence)
   end
 
+  test "blocked count follows retry and cancellation transitions", %{path: path} do
+    {:ok, root} = H.start(path, @name)
+    {job, token} = H.job(max_attempts: 1)
+    assert {:ok, _} = Tay.insert(job, name: @name)
+    {task, _} = H.await_entry(token)
+    send(task, {:return, {:error, :failed}})
+    H.await_job(@name, job.id, :discarded)
+    assert Tay.status(name: @name).blocked_jobs == 0
+    H.stop(root)
+
+    {:ok, recovered} = H.start(path, @name, workers: %{})
+    assert Tay.status(name: @name).blocked_jobs == 0
+    assert {:ok, recovered_discarded} = Tay.get_job(job.id, name: @name)
+
+    assert {:ok, available} =
+             Tay.retry(job.id, name: @name, expected_revision: recovered_discarded.revision)
+
+    assert available.state == :available
+    assert Tay.status(name: @name).blocked_jobs == 1
+
+    assert {:ok, %{state: :cancelled}} =
+             Tay.cancel(job.id, name: @name, expected_revision: available.revision)
+
+    assert Tay.status(name: @name).blocked_jobs == 0
+    H.stop(recovered)
+  end
+
   test "repeated infrastructure interruption reuses the ordinal even at max_attempts", %{
     path: path
   } do

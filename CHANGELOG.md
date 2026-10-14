@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.6 — 2026-10-14
+
+### Fixed
+
+- Deferred the Engine and Writer full-GC pass until both active and running work
+  have drained, cancelled a pending idle reclaim when new work arrives, and
+  avoided repeatedly collecting an unchanged idle engine.
+- Allowed a fenced offline checkpoint to finish after legitimate mutations
+  advance its source sequence while retaining the source-epoch fence, so an
+  actual epoch replacement is still rejected.
+- Kept online-checkpoint ETS snapshot cleanup within its map-shaped reference
+  contract, eliminating an opaque table-identifier Dialyzer warning.
+- Kept the live blocked-job count exact across retry and cancellation
+  transitions instead of repairing it only on restart.
+
+### Changed
+
+- Added Dialyzer to continuous integration and the release qualification
+  checklist.
+- Removed duplicate retained-definition byte accounting from Engine state; the
+  status metric now uses the compaction estimate's equivalent counter.
+
 ## 1.3.5 — 2026-10-11
 
 ### Fixed

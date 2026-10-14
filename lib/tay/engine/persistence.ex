@@ -145,15 +145,13 @@ defmodule Tay.Engine.Persistence do
         terminal_stats:
           ProjectionState.replace_terminal_stats(state.terminal_stats, previous, job),
         compaction_estimate: CompactionEstimate.replace(state.compaction_estimate, previous, job),
+        blocked: state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
         next_sequence: state.next_sequence + 1,
         events_since_checkpoint: state.events_since_checkpoint + 1,
         next_availability_order: next_order || state.next_availability_order,
         settlement_reserve: reserve,
         history_bytes: state.history_bytes + history_delta(state, byte_size(payload)),
         segment_count: state.segment_count + receipt.segment_id - state.segment.id,
-        definition_bytes:
-          state.definition_bytes +
-            if(is_nil(previous), do: byte_size(job.definition_bytes), else: 0),
         segment: %{
           id: receipt.segment_id,
           state: :active,
@@ -267,17 +265,29 @@ defmodule Tay.Engine.Persistence do
       if(rotates, do: 44 + if(state.segment.state == :sealed, do: 0, else: 64), else: 0)
   end
 
-  defp maybe_schedule_memory_reclaim(state, previous, job) do
-    if not ProjectionState.terminal?(previous) and ProjectionState.terminal?(job) and
-         state.active_budget.count == 0 do
-      schedule_memory_reclaim(state)
-    else
-      state
-    end
+  defp blocked_charge(state, job) do
+    if ProjectionState.blocked?(state.projection, state.config, job), do: 1, else: 0
   end
 
-  defp schedule_memory_reclaim(state) do
+  defp maybe_schedule_memory_reclaim(state, _previous, _job)
+       when state.active_budget.count > 0 or map_size(state.running) > 0 do
     if state.memory_reclaim, do: Process.cancel_timer(elem(state.memory_reclaim, 0))
+    %{state | memory_reclaim: nil, memory_reclaimed: false}
+  end
+
+  defp maybe_schedule_memory_reclaim(
+         %{memory_reclaim: nil, memory_reclaimed: false} = state,
+         previous,
+         job
+       ) do
+    if not ProjectionState.terminal?(previous) and ProjectionState.terminal?(job),
+      do: schedule_memory_reclaim(state),
+      else: state
+  end
+
+  defp maybe_schedule_memory_reclaim(state, _previous, _job), do: state
+
+  defp schedule_memory_reclaim(state) do
     token = make_ref()
     timer = Process.send_after(self(), {:reclaim_memory, token}, @memory_reclaim_idle_ms)
     %{state | memory_reclaim: {timer, token}}

@@ -35,6 +35,7 @@ jobs:
         run: |
           mix format --check-formatted
           mix compile --warnings-as-errors
+          mix dialyzer
           mix test --warnings-as-errors
           MIX_ENV=prod mix compile --warnings-as-errors
 

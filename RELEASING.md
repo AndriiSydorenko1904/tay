@@ -28,6 +28,7 @@ public.
 ```sh
 mix format --check-formatted
 mix compile --warnings-as-errors
+mix dialyzer
 mix test --warnings-as-errors
 TAY_PACKAGE_TEST=1 mix test test/tay/system/package_test.exs --warnings-as-errors
 mix hex.build
