@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.4.0"
+  @version "1.4.1"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -77,6 +77,7 @@ defmodule Tay.MixProject do
       ],
       deps: [
         {:telemetry, "~> 1.3"},
+        {:telemetry_metrics, "~> 1.1"},
         {:bandit, "~> 1.12"},
         {:phoenix, "~> 1.8.14"},
         {:phoenix_live_view, "~> 1.2.11"},
@@ -85,6 +86,7 @@ defmodule Tay.MixProject do
         {:floki, ">= 0.38.0", only: :test},
         {:lazy_html, ">= 0.1.0", only: :test},
         {:stream_data, "~> 1.2", only: :test},
+        {:telemetry_metrics_prometheus_core, "~> 1.2", only: :test},
         {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
         {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
       ]
@@ -123,7 +125,8 @@ defmodule Tay.MixProject do
         "docs/idempotency.md",
         "docs/standalone.md",
         "docs/dashboard.md",
-        "docs/dashboard-container.md"
+        "docs/dashboard-container.md",
+        "docs/observability.md"
       ],
       build_tools: ["mix"],
       links: %{
@@ -149,7 +152,8 @@ defmodule Tay.MixProject do
         "docs/idempotency.md",
         "docs/standalone.md",
         "docs/dashboard.md",
-        "docs/dashboard-container.md"
+        "docs/dashboard-container.md",
+        "docs/observability.md"
       ]
     ]
   end

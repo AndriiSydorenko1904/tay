@@ -47,17 +47,29 @@ defmodule Tay.Engine.Admission do
   def request(name, meta, payload, bytes, operation, id, timeout, expected_revision \\ nil) do
     deadline = System.monotonic_time(:millisecond) + timeout
 
-    request_until(
-      name,
-      meta,
-      payload,
-      bytes,
-      operation,
-      id,
-      deadline,
-      expected_revision
-    )
+    metadata = %{engine: name, operation: operation}
+
+    :telemetry.span([:tay, :command], metadata, fn ->
+      result =
+        request_until(
+          name,
+          meta,
+          payload,
+          bytes,
+          operation,
+          id,
+          deadline,
+          expected_revision
+        )
+
+      {result, Map.put(metadata, :outcome, outcome(result))}
+    end)
   end
+
+  defp outcome(:ok), do: :ok
+  defp outcome({:ok, _}), do: :ok
+  defp outcome({:error, %Error{kind: kind}}), do: kind
+  defp outcome(_), do: :error
 
   defp request_until(name, meta, payload, bytes, operation, id, deadline, expected_revision) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 1)

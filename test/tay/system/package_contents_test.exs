@@ -9,9 +9,11 @@ defmodule Tay.System.PackageContentsTest do
     assert :bandit in dependencies
     refute :plug_cowboy in dependencies
     assert :telemetry in dependencies
+    assert :telemetry_metrics in dependencies
 
     mix = File.read!(Path.expand("../../../mix.exs", __DIR__))
     refute mix =~ ~s("dashboard/lib")
     assert mix =~ "docs/dashboard.md"
+    assert mix =~ "docs/observability.md"
   end
 end

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.1 — 2026-10-15
+
+### Added
+
+- Added low-cardinality `Telemetry.Metrics` definitions for command latency,
+  durable transitions, group commits, engine resources, schedules, and queues.
+- Added a supervised bounded poller for engine/queue gauge snapshots and an
+  optional `opentelemetry_telemetry` bridge for public-command spans.
+
+### Changed
+
+- Public Tay commands now emit standard Telemetry `start`, `stop`, and
+  `exception` span events with bounded operation/outcome metadata.
+- Updated transitive dependencies, including `phoenix_pubsub` to 2.4.1 and
+  `makeup` to 1.2.3. Bandit remains at the latest available 1.12.5 release.
+
 ## 1.4.0 — 2026-10-15
 
 ### Added

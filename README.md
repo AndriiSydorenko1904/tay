@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.1
 ```
 
 For a ready-made Tay deployment example:
@@ -86,7 +86,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.1
 ```
 
 ## Why Tay?
@@ -281,6 +281,9 @@ List and summarize jobs through the bounded public inspection API:
 The `tay` package includes a Phoenix LiveView dashboard for these APIs.
 Its modules live under `lib/tay/dashboard/`; see the
 [dashboard guide](docs/dashboard.md) for router mounting and access control.
+For Prometheus metrics, OpenTelemetry command spans, gauge polling, event names,
+and label-cardinality guarantees, see the
+[observability guide](docs/observability.md).
 
 Keep the original intent until an insertion outcome is known. A lost reply may
 follow a durable write; reconcile by job ID or resubmit the *same* intent,
@@ -432,7 +435,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.4.0
+ghcr.io/andriisydorenko1904/tay:1.4.1
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -442,7 +445,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.1
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
