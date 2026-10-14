@@ -55,7 +55,10 @@ defmodule Tay.HTTP.Listener do
       plug: {Tay.HTTP.Router, options},
       port: options.port,
       ip: ip,
-      startup_log: false
+      startup_log: false,
+      # GHSA-69m6-wcv4-rwcf affects Bandit's HTTP/2 blocked-send path. Keep
+      # it off until the fixed Bandit release is available on Hex.
+      http_2_options: [enabled: false]
     ]
 
     if options.tls_certfile do

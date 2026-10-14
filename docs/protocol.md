@@ -100,6 +100,8 @@ The Bandit listener offers `POST /jobs` (enqueue), `GET /jobs/:id` (status),
 the equivalent Protocol v1 fields and `type`; enqueue returns HTTP 201.
 Failures return `{"error":{"code":"..."}}` and an appropriate HTTP status.
 The request and response body limit defaults to 1 MiB.
+The listener currently serves HTTP/1.1 only; HTTP/2 is disabled pending an
+upstream Bandit security release.
 Plaintext loopback does not use socket file permissions: other processes on the
 same host that can reach the port may use the producer API. Use mTLS or host
 isolation when that trust boundary is too broad.

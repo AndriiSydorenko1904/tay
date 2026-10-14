@@ -65,6 +65,10 @@ defmodule Tay.MixProject do
       source_url: @source_url,
       package: package(),
       docs: docs(),
+      # Bandit has not released a Hex version containing the HTTP/2 fix for
+      # GHSA-69m6-wcv4-rwcf. HTTP/2 is disabled below until that release is
+      # available, so the acknowledged advisory is not reachable by Tay.
+      hex: [ignore_advisories: ["GHSA-69m6-wcv4-rwcf"]],
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       compilers: [:tay_native] ++ Mix.compilers(),

@@ -19,17 +19,8 @@ defmodule Tay.HTTP.Router do
 
   defp dispatch(%Plug.Conn{method: "POST", path_info: ["jobs"]} = conn, options) do
     with :ok <- content_type(conn),
-         {:ok, body, conn} <- read_body(conn, options.max_body_bytes),
-         {:ok, request} <- decode_object(body),
-         :ok <- enqueue_request(request),
-         result <-
-           Server.protocol_request(options.executor_server, options.engine_name, %{
-             "type" => "enqueue",
-             "task" => request["task"],
-             "args" => request["args"],
-             "options" => Map.get(request, "options", %{})
-           }) do
-      respond(conn, result, 201, options.max_body_bytes)
+         {:ok, body, current_conn} <- read_body(conn, options.max_body_bytes) do
+      enqueue(current_conn, body, options)
     else
       {:error, reason, conn} -> error(conn, reason)
       {:error, reason} -> error(conn, reason)
@@ -38,17 +29,8 @@ defmodule Tay.HTTP.Router do
 
   defp dispatch(%Plug.Conn{method: "POST", path_info: ["workers"]} = conn, options) do
     with :ok <- content_type(conn),
-         {:ok, body, conn} <- read_body(conn, options.max_body_bytes),
-         {:ok, request} <- decode_object(body),
-         {:ok, token} <-
-           Server.register_http_worker(
-             options.executor_server,
-             request["runtime_id"],
-             request["tasks"],
-             request["capacity"],
-             Map.get(request, "queue", "default")
-           ) do
-      json(conn, 201, %{"worker_token" => token})
+         {:ok, body, current_conn} <- read_body(conn, options.max_body_bytes) do
+      register_worker(current_conn, body, options)
     else
       {:error, reason, conn} -> error(conn, reason)
       {:error, reason} -> error(conn, reason)
@@ -73,11 +55,8 @@ defmodule Tay.HTTP.Router do
        when action in ["started", "complete"] do
     with {:ok, worker, _queue} <- authenticated_worker(conn, options),
          :ok <- content_type(conn),
-         {:ok, body, conn} <- read_body(conn, options.max_body_bytes),
-         {:ok, request} <- decode_object(body),
-         :ok <- execution_context(request),
-         :ok <- worker_event(action, options, worker, request) do
-      json(conn, 200, %{"type" => "accepted"})
+         {:ok, body, current_conn} <- read_body(conn, options.max_body_bytes) do
+      record_worker_event(current_conn, body, action, options, worker)
     else
       {:error, code, conn} -> error(conn, code)
       {:error, code} -> error(conn, code)
@@ -120,6 +99,48 @@ defmodule Tay.HTTP.Router do
   end
 
   defp dispatch(conn, _options), do: error(conn, "not_found")
+
+  defp enqueue(conn, body, options) do
+    with {:ok, request} <- decode_object(body),
+         :ok <- enqueue_request(request),
+         result <-
+           Server.protocol_request(options.executor_server, options.engine_name, %{
+             "type" => "enqueue",
+             "task" => request["task"],
+             "args" => request["args"],
+             "options" => Map.get(request, "options", %{})
+           }) do
+      respond(conn, result, 201, options.max_body_bytes)
+    else
+      {:error, reason} -> error(conn, reason)
+    end
+  end
+
+  defp register_worker(conn, body, options) do
+    with {:ok, request} <- decode_object(body),
+         {:ok, token} <-
+           Server.register_http_worker(
+             options.executor_server,
+             request["runtime_id"],
+             request["tasks"],
+             request["capacity"],
+             Map.get(request, "queue", "default")
+           ) do
+      json(conn, 201, %{"worker_token" => token})
+    else
+      {:error, reason} -> error(conn, reason)
+    end
+  end
+
+  defp record_worker_event(conn, body, action, options, worker) do
+    with {:ok, request} <- decode_object(body),
+         :ok <- execution_context(request),
+         :ok <- worker_event(action, options, worker, request) do
+      json(conn, 200, %{"type" => "accepted"})
+    else
+      {:error, reason} -> error(conn, reason)
+    end
+  end
 
   defp authenticated_worker(conn, options) do
     case Plug.Conn.get_req_header(conn, "authorization") do

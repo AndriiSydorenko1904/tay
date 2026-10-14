@@ -2,6 +2,12 @@
 
 ## 1.4.1 — 2026-10-15
 
+### Security
+
+- Disabled Bandit's HTTP/2 listener while a Hex release containing the fix for
+  GHSA-69m6-wcv4-rwcf is pending. The acknowledged advisory is not reachable
+  by Tay; HTTP/1.1 remains available.
+
 ### Added
 
 - Added low-cardinality `Telemetry.Metrics` definitions for command latency,
@@ -14,7 +20,7 @@
 - Public Tay commands now emit standard Telemetry `start`, `stop`, and
   `exception` span events with bounded operation/outcome metadata.
 - Updated transitive dependencies, including `phoenix_pubsub` to 2.4.1 and
-  `makeup` to 1.2.3. Bandit remains at the latest available 1.12.5 release.
+  `makeup` to 1.2.3.
 
 ## 1.4.0 — 2026-10-15
 
