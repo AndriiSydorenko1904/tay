@@ -1726,7 +1726,10 @@ int main(void) {
       _exit(HELPER_EXIT_CRASH_BEFORE_CALL);
     else if (fault_now && fault_action==FAULT_OWNER_VM_CRASH_BEFORE_CALL) kill_owner_vm();
     else if (fault_now && fault_action==FAULT_LOSE_LOCK) {
-      if (lock_fd>=0) close(lock_fd); lock_fd=-1;
+      if (lock_fd>=0) {
+        close(lock_fd);
+      }
+      lock_fd=-1;
     }
 #endif
     if (!e) e=version==PROTOCOL_VERSION?validate_request(op):EPROTO;

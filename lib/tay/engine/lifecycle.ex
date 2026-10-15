@@ -147,6 +147,17 @@ defmodule Tay.Engine.Lifecycle do
     {:reply, :ok, %{s | writer: writer, monitors: Map.put(s.monitors, monitor, :writer)}}
   end
 
+  def handle_call({:inspection_writer, generation}, _from, s) do
+    available =
+      s.meta.generation == generation and
+        (s.meta.status.state in [:ready, :draining, :drained] or
+           (s.meta.status.state == :compacting and
+              Map.get(s.meta.status, :phase) == :preparing)) and
+        is_pid(s.writer) and Process.alive?(s.writer)
+
+    {:reply, if(available, do: {:ok, s.writer}, else: {:error, :revoked}), s}
+  end
+
   def handle_call({:ready, snapshot}, {engine, _}, %{engine: engine} = s) do
     fence_live = if is_nil(s.fence), do: is_nil(s.runtime), else: LocalFence.live?(s.fence)
 

@@ -154,6 +154,15 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
           else: Tay.Event.Value.defaults()
         ),
       compacted: false,
+      online_compaction: nil,
+      inspection: nil,
+      inspection_cache:
+        :ets.new(:tay_storage_preview_cache, [
+          :set,
+          :public,
+          read_concurrency: true,
+          write_concurrency: true
+        ]),
       retired_ports: MapSet.new(),
       next_sequence: 1,
       poisoned: nil,

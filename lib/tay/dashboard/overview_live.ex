@@ -34,8 +34,13 @@ defmodule Tay.Dashboard.OverviewLive do
        storage_segments_truncated: false,
        expanded_segment: nil,
        expanded_record: nil,
+       expanded_record_details: nil,
        segment_records: [],
-       segment_records_truncated: false
+       segment_records_total: 0,
+       segment_records_page: 1,
+       segment_record_cursor: nil,
+       segment_record_next_cursor: nil,
+       segment_record_cursor_history: []
      )
      |> refresh()}
   end
@@ -56,13 +61,18 @@ defmodule Tay.Dashboard.OverviewLive do
   def handle_event("toggle-segment-records", %{"id" => value}, socket) do
     with {id, ""} <- Integer.parse(value),
          false <- socket.assigns.expanded_segment == id,
-         {:ok, page} <- Tay.storage_records(id, name: socket.assigns.engine) do
+         {:ok, page} <- Tay.storage_records(id, limit: 50, name: socket.assigns.engine) do
       {:noreply,
        assign(socket,
          expanded_segment: id,
          expanded_record: nil,
+         expanded_record_details: nil,
          segment_records: page.records,
-         segment_records_truncated: page.truncated,
+         segment_records_total: page.total_count,
+         segment_records_page: 1,
+         segment_record_cursor: page.cursor,
+         segment_record_next_cursor: page.next_cursor,
+         segment_record_cursor_history: [],
          flash_error: nil
        )}
     else
@@ -71,8 +81,13 @@ defmodule Tay.Dashboard.OverviewLive do
          assign(socket,
            expanded_segment: nil,
            expanded_record: nil,
+           expanded_record_details: nil,
            segment_records: [],
-           segment_records_truncated: false
+           segment_records_total: 0,
+           segment_records_page: 1,
+           segment_record_cursor: nil,
+           segment_record_next_cursor: nil,
+           segment_record_cursor_history: []
          )}
 
       {:error, error} ->
@@ -85,11 +100,59 @@ defmodule Tay.Dashboard.OverviewLive do
 
   def handle_event("toggle-record-details", %{"sequence" => value}, socket) do
     case Integer.parse(value) do
+      {sequence, ""} when socket.assigns.expanded_record == sequence ->
+        {:noreply, assign(socket, expanded_record: nil, expanded_record_details: nil)}
+
       {sequence, ""} ->
-        expanded = if socket.assigns.expanded_record == sequence, do: nil, else: sequence
-        {:noreply, assign(socket, expanded_record: expanded)}
+        with %{offset: offset} <-
+               Enum.find(socket.assigns.segment_records, &(&1.sequence == sequence)),
+             segment_id when is_integer(segment_id) <- socket.assigns.expanded_segment,
+             {:ok, details} <-
+               Tay.storage_record(segment_id, offset, sequence, name: socket.assigns.engine) do
+          {:noreply,
+           assign(socket,
+             expanded_record: sequence,
+             expanded_record_details: details,
+             flash_error: nil
+           )}
+        else
+          {:error, error} ->
+            {:noreply, assign(socket, flash_error: Live.error_message(error))}
+
+          _ ->
+            {:noreply, assign(socket, flash_error: "Storage record is no longer available.")}
+        end
 
       _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("next-segment-records", _params, socket) do
+    case socket.assigns.segment_record_next_cursor do
+      cursor when is_integer(cursor) ->
+        history = [
+          socket.assigns.segment_record_cursor | socket.assigns.segment_record_cursor_history
+        ]
+
+        load_segment_page(socket, cursor, socket.assigns.segment_records_page + 1, history)
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("previous-segment-records", _params, socket) do
+    case socket.assigns.segment_record_cursor_history do
+      [cursor | history] ->
+        load_segment_page(
+          socket,
+          cursor,
+          max(socket.assigns.segment_records_page - 1, 1),
+          history
+        )
+
+      [] ->
         {:noreply, socket}
     end
   end
@@ -107,6 +170,31 @@ defmodule Tay.Dashboard.OverviewLive do
 
   def handle_event("compact", _params, socket) do
     compact(socket, socket.assigns.retention_hours)
+  end
+
+  defp load_segment_page(socket, cursor, page_number, history) do
+    case Tay.storage_records(socket.assigns.expanded_segment,
+           cursor: cursor,
+           limit: 50,
+           name: socket.assigns.engine
+         ) do
+      {:ok, page} ->
+        {:noreply,
+         assign(socket,
+           expanded_record: nil,
+           expanded_record_details: nil,
+           segment_records: page.records,
+           segment_records_total: page.total_count,
+           segment_records_page: page_number,
+           segment_record_cursor: page.cursor,
+           segment_record_next_cursor: page.next_cursor,
+           segment_record_cursor_history: history,
+           flash_error: nil
+         )}
+
+      {:error, error} ->
+        {:noreply, assign(socket, flash_error: Live.error_message(error))}
+    end
   end
 
   defp compact(socket, retention_hours) do
@@ -352,8 +440,8 @@ defmodule Tay.Dashboard.OverviewLive do
                 </tr>
                 <tr :if={@expanded_segment == segment.id} id={"segment-records-#{segment.id}"}>
                   <td colspan="5">
-                    <p :if={@segment_records_truncated} class="notice">
-                      Showing the first {length(@segment_records)} records.
+                    <p class="section-help">
+                      Page {@segment_records_page} · {length(@segment_records)} records shown · {@segment_records_total} total
                     </p>
                     <div class="record-table-scroll">
                       <table>
@@ -418,14 +506,48 @@ defmodule Tay.Dashboard.OverviewLive do
                             >
                               <td colspan="7">
                                 <div class="record-detail-heading">
-                                  Decoded payload · sequence {record.sequence} · offset {record.offset}
+                                  Record details · sequence {record.sequence} · offset {record.offset}
                                 </div>
-                                <pre>{record.inspection.details}</pre>
+                                <dl class="record-detail-list">
+                                  <div
+                                    :for={field <- @expanded_record_details.fields}
+                                    class="record-detail-field"
+                                  >
+                                    <dt>{field.label}</dt>
+                                    <dd>
+                                      <div class="record-detail-value">{field.value}</div>
+                                      <div :if={field.help} class="record-detail-help">
+                                        {field.help}
+                                      </div>
+                                    </dd>
+                                  </div>
+                                </dl>
+                                <details class="technical-details record-raw-payload">
+                                  <summary>Raw decoded payload</summary>
+                                  <pre>{@expanded_record_details.details}</pre>
+                                </details>
                               </td>
                             </tr>
                           <% end %>
                         </tbody>
                       </table>
+                    </div>
+                    <div class="actions pagination">
+                      <button
+                        :if={@segment_record_cursor_history != []}
+                        class="secondary"
+                        phx-click="previous-segment-records"
+                      >
+                        Previous
+                      </button>
+                      <span>Page {@segment_records_page}</span>
+                      <button
+                        :if={@segment_record_next_cursor}
+                        class="secondary"
+                        phx-click="next-segment-records"
+                      >
+                        Next
+                      </button>
                     </div>
                   </td>
                 </tr>

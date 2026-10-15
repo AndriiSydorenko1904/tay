@@ -156,9 +156,40 @@ defmodule Tay.Dashboard.LiveTest do
       |> element("#segment-records-1 button[phx-click='toggle-record-details']")
       |> render_click()
 
-    assert first_sequence =~ "Decoded payload"
+    assert first_sequence =~ "Record details"
+    assert first_sequence =~ "Raw decoded payload"
+    assert first_sequence =~ "Stable identifier used to find this job"
     assert first_sequence =~ "worker_key"
     assert has_element?(view, ".record-detail-row")
+    EngineHelpers.stop(root)
+  end
+
+  test "paginates physical records by offset", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @engine)
+
+    for number <- 1..55 do
+      assert {:ok, _job} =
+               EngineWorker.new(%{"page" => number})
+               |> Tay.insert(name: @engine)
+    end
+
+    {:ok, view, _html} = live(build_conn(), "/tay/")
+    view |> element("#storage-segments summary") |> render_click()
+
+    view
+    |> element("button[phx-click='toggle-segment-records'][phx-value-id='1']")
+    |> render_click()
+
+    assert has_element?(view, "#segment-records-1", "55 total")
+    assert has_element?(view, "button[phx-click='next-segment-records']", "Next")
+    refute has_element?(view, "button[phx-click='previous-segment-records']")
+
+    view |> element("button[phx-click='next-segment-records']") |> render_click()
+    assert has_element?(view, "#segment-records-1", "Page 2")
+    assert has_element?(view, "button[phx-click='previous-segment-records']", "Previous")
+
+    view |> element("button[phx-click='previous-segment-records']") |> render_click()
+    assert has_element?(view, "#segment-records-1", "Page 1")
     EngineHelpers.stop(root)
   end
 

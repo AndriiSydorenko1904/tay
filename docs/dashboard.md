@@ -98,7 +98,9 @@ model.
   run, active/cancelled state, and a revision-safe cancellation control.
 - **Overview → Storage files** can expand a segment into a bounded physical
   record table with sequence, byte offset, semantic type, schema, and payload
-  size. Payload contents are deliberately not exposed.
+  size. Records use 50-item offset-cursor pages. Expanding one record loads its
+  decoded details on demand, explains wire codes and tracking tokens, and keeps
+  the bounded raw representation under a separate disclosure control.
 
 The dashboard follows the operating-system light/dark preference by default.
 The Theme control stores an explicit override in the browser's local storage.
@@ -107,6 +109,8 @@ Successful Tay transitions emit bounded telemetry. Connected dashboard
 LiveViews receive refresh hints and re-run only bounded public queries; the
 dashboard does not poll or scan all history. Live pages handle stale revisions,
 missing jobs, invalid URLs, and unavailable engines as ordinary visible errors.
+Storage inspection decoding runs outside the Engine command loop, uses bounded
+display values and a bounded preview cache, and does not cache complete payloads.
 
 ## Operational boundary
 

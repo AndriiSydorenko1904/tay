@@ -13,7 +13,7 @@ defmodule Tay.Storage.Writer do
   Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{Native, Reader, RecordInspection, Recovery, Segment}
+  alias Tay.Storage.{Native, Reader, Recovery, SegmentInspection}
   alias Tay.Storage.Recovery.Error
 
   alias Tay.Storage.Writer.{
@@ -160,8 +160,11 @@ defmodule Tay.Storage.Writer do
     do: GenServer.call(writer, {:reduce, accumulator, reducer}, :infinity)
 
   @doc false
-  def segment_records(writer, segment_id, limit \\ 200),
-    do: GenServer.call(writer, {:segment_records, segment_id, limit}, :infinity)
+  def segment_records(writer, segment_id, cursor, limit, timeout \\ 10_000),
+    do: GenServer.call(writer, {:segment_records, segment_id, cursor, limit}, timeout)
+
+  def segment_record(writer, segment_id, offset, sequence, timeout \\ 10_000),
+    do: GenServer.call(writer, {:segment_record, segment_id, offset, sequence}, timeout)
 
   def seal(writer), do: GenServer.call(writer, :seal, :infinity)
   def rotate(writer), do: GenServer.call(writer, :rotate, :infinity)
@@ -257,6 +260,18 @@ defmodule Tay.Storage.Writer do
     )
   end
 
+  def handle_call(
+        {:tay_native_request, generation, delegate, operation, body},
+        {pid, _},
+        %{
+          native: %{generation: generation} = native,
+          inspection: %{ref: delegate, pid: pid}
+        } = state
+      )
+      when operation in [:list, :open_read, :read, :close_read] do
+    {:reply, Native.request_owned(native, operation, body), state}
+  end
+
   def handle_call({:tay_native_request, _, _, _, _}, _from, state),
     do: {:reply, {:error, %{kind: :native_owner, reason: :invalid_delegate}}, state}
 
@@ -264,7 +279,7 @@ defmodule Tay.Storage.Writer do
         {:compact_online, reference, deadline, retention, captured_at, cancel_flag, notify, token,
          snapshot},
         {caller, _},
-        %{recovery: _recovery, epoch_id: epoch_id} = state
+        %{recovery: _recovery, epoch_id: epoch_id, inspection: nil} = state
       )
       when is_binary(epoch_id) and is_pid(notify) do
     OnlineCompactionLifecycle.start(
@@ -394,7 +409,7 @@ defmodule Tay.Storage.Writer do
   def handle_call(
         {:compact, reference, deadline, retention, captured_at, cancel_flag},
         {caller, _},
-        %{recovery: recovery} = state
+        %{recovery: recovery, inspection: nil} = state
       )
       when is_map(recovery) do
     if recovery.status == :ready and caller == recovery.caller and
@@ -413,7 +428,7 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:compact, _, _, _, _, _, _}, _, state),
+  def handle_call({:compact, _, _, _, _, _}, _, state),
     do: {:reply, {:error, :compaction_not_admitted}, state}
 
   def handle_call({:admitted, _, _}, _, state),
@@ -441,108 +456,29 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  def handle_call({:segment_records, segment_id, limit}, _from, state)
-      when is_integer(segment_id) and segment_id > 0 and is_integer(limit) and limit in 1..1_000 do
-    result = inspect_segment(state.native, state.store_id, state.segment, segment_id, limit)
-    {:reply, result, state}
+  def handle_call({:segment_records, segment_id, cursor, limit}, from, state)
+      when is_integer(segment_id) and segment_id > 0 and
+             (is_nil(cursor) or (is_integer(cursor) and cursor >= 44)) and
+             is_integer(limit) and limit in 1..1_000 do
+    start_inspection(state, from, {:page, segment_id, cursor, limit})
   end
 
-  def handle_call({:segment_records, _, _}, _from, state),
+  def handle_call({:segment_records, _, _, _}, _from, state),
     do: {:reply, {:error, :invalid_segment}, state}
+
+  def handle_call({:segment_record, segment_id, offset, sequence}, from, state)
+      when is_integer(segment_id) and segment_id > 0 and is_integer(offset) and offset >= 44 and
+             is_integer(sequence) and sequence > 0 do
+    start_inspection(state, from, {:detail, segment_id, offset, sequence})
+  end
+
+  def handle_call({:segment_record, _, _, _}, _from, state),
+    do: {:reply, {:error, :invalid_record}, state}
 
   if @test do
     def handle_call({:fault, operation, occurrence, action, errno, count}, _from, state) do
       result = Native.fault(state.native, operation, occurrence, action, errno, count)
       {:reply, result, state}
-    end
-  end
-
-  defp inspect_segment(native, store_id, active_segment, segment_id, limit) do
-    with {:ok, name} <- Segment.filename(segment_id),
-         {:ok, entries} <- Native.list(native, :segments),
-         {:ok, %{size: size}} <- fetch_entry(entries, name),
-         {:ok, _identity} <- Native.open_read(native, :segments, name) do
-      result =
-        with {:ok, total_count} <-
-               inspection_count(native, size, store_id, active_segment, segment_id) do
-          visitor = fn record, offset, {records, count} ->
-            entry = %{
-              sequence: record.sequence,
-              offset: offset,
-              record_type: record.record_type,
-              payload_schema_version: record.payload_schema_version,
-              payload_bytes: byte_size(record.payload),
-              inspection: RecordInspection.describe(record)
-            }
-
-            next = {[entry | records], count + 1}
-
-            if count + 1 == limit and total_count > limit,
-              do: {:halt, next},
-              else: {:cont, next}
-          end
-
-          traversal =
-            Segment.reduce_while(
-              &Native.read(native, &1, &2),
-              size,
-              {[], 0},
-              visitor,
-              id: segment_id,
-              store_id: store_id,
-              highest: segment_id == active_segment.id
-            )
-
-          {traversal, total_count}
-        end
-
-      close = Native.close_read(native)
-
-      case {result, close} do
-        {{{status, _summary, {records, _count}}, total_count}, :ok}
-        when status in [:ok, :halted] ->
-          {:ok,
-           %{
-             records: Enum.reverse(records),
-             total_count: total_count,
-             truncated: total_count > limit
-           }}
-
-        {{:error, reason}, _} ->
-          {:error, reason}
-
-        {{{:error, reason}, _total_count}, _} ->
-          {:error, reason}
-
-        {_, error} ->
-          error
-      end
-    else
-      error -> error
-    end
-  end
-
-  defp inspection_count(_native, _size, _store_id, %{id: id, count: count}, id),
-    do: {:ok, count}
-
-  defp inspection_count(native, size, store_id, _active_segment, segment_id)
-       when size >= 64 do
-    with {:ok, bytes} when byte_size(bytes) == 64 <- Native.read(native, size - 64, 64),
-         {:ok, footer} <- Segment.decode_footer(bytes, %{id: segment_id, store_id: store_id}) do
-      {:ok, footer.count}
-    else
-      {:ok, _} -> {:error, :short_footer_read}
-      error -> error
-    end
-  end
-
-  defp inspection_count(_native, _size, _store_id, _active_segment, _segment_id),
-    do: {:error, :incomplete_footer}
-
-  defp fetch_entry(entries, name) do
-    case Enum.find(entries, &(&1.name == name)) do
-      nil -> {:error, :not_found}
-      entry -> {:ok, entry}
     end
   end
 
@@ -629,6 +565,24 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_info(
+        {:segment_inspection_result, ref, pid, result},
+        %{inspection: %{ref: ref, pid: pid, monitor: monitor, from: from}} = state
+      ) do
+    Process.demonitor(monitor, [:flush])
+    GenServer.reply(from, result)
+    {:noreply, %{state | inspection: nil}}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, pid, reason},
+        %{inspection: %{monitor: monitor, pid: pid, from: from}} = state
+      ) do
+    _ = Native.close_read(state.native)
+    GenServer.reply(from, {:error, {:inspection_exit, reason}})
+    {:noreply, %{state | inspection: nil}}
+  end
+
+  def handle_info(
         {:DOWN, monitor, :process, pid, reason},
         %{online_compaction: %{monitor: monitor, pid: pid} = online} = state
       ) do
@@ -709,6 +663,34 @@ defmodule Tay.Storage.Writer do
   end
 
   defp recovery_failure(state, error), do: {:reply, {:error, error}, poison(state, error)}
+
+  defp start_inspection(%{inspection: nil, online_compaction: nil} = state, from, request) do
+    owner = self()
+    ref = make_ref()
+    native = %{state.native | delegate: ref}
+    snapshot = %{store_id: state.store_id, active_segment: state.segment}
+    cache = state.inspection_cache
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        result =
+          case request do
+            {:page, segment_id, cursor, limit} ->
+              SegmentInspection.page(native, snapshot, segment_id, cursor, limit, cache)
+
+            {:detail, segment_id, offset, sequence} ->
+              SegmentInspection.detail(native, snapshot, segment_id, offset, sequence)
+          end
+
+        send(owner, {:segment_inspection_result, ref, self(), result})
+      end)
+
+    inspection = %{ref: ref, pid: pid, monitor: monitor, from: from}
+    {:noreply, %{state | inspection: inspection}}
+  end
+
+  defp start_inspection(state, _from, _request),
+    do: {:reply, {:error, :inspection_busy}, state}
 
   if @test do
     defp step(state, tag, operation) do

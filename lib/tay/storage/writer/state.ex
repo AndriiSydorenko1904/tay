@@ -18,11 +18,22 @@ defmodule Tay.Storage.Writer.State do
       value_limits: Tay.Event.Value.defaults(),
       compacted: false,
       online_compaction: nil,
+      inspection: nil,
+      inspection_cache: inspection_cache(),
       retired_ports: MapSet.new(),
       next_sequence: 1,
       poisoned: nil,
       initialize_only: initialize_only
     }
+  end
+
+  defp inspection_cache do
+    :ets.new(:tay_storage_preview_cache, [
+      :set,
+      :public,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
   end
 
   def prepare(state) do

@@ -28,6 +28,7 @@ defmodule Tay do
   alias Tay.{Error, Inspection, Job, JobID, Schedule}
   alias Tay.Engine.{Admission, Config}
   alias Tay.Event.{Value, V2}
+  alias Tay.Storage.Writer
 
   @doc "Returns the registered name used by Tay APIs when `:name` is omitted."
   def default_name, do: Tay.Engine
@@ -208,21 +209,40 @@ defmodule Tay do
   def storage_records(segment_id, options \\ []) do
     with true <- (is_integer(segment_id) and segment_id > 0) || {:error, :invalid_segment},
          true <- Keyword.keyword?(options) || {:error, :invalid_options},
-         limit = Keyword.get(options, :limit, 200),
+         limit = Keyword.get(options, :limit, 50),
+         cursor = Keyword.get(options, :cursor),
          true <- (is_integer(limit) and limit in 1..1_000) || {:error, :invalid_limit},
-         {:ok, name, timeout} <- request_options(Keyword.drop(options, [:limit])),
-         {:ok, meta} <- ready(name) do
-      Admission.request(
-        name,
-        meta,
-        {:inspect_segment_records, segment_id, limit},
-        256,
-        :storage_records,
-        nil,
-        timeout || meta.timeout
+         true <-
+           (is_nil(cursor) or (is_integer(cursor) and cursor >= 44)) ||
+             {:error, :invalid_cursor},
+         {:ok, name, timeout} <- request_options(Keyword.drop(options, [:limit, :cursor])),
+         {:ok, meta} <- ready(name),
+         timeout = timeout || meta.timeout,
+         {:ok, writer} <- Admission.inspection_writer(meta, timeout) do
+      inspection_call(
+        fn -> Writer.segment_records(writer, segment_id, cursor, limit, timeout) end,
+        :storage_records
       )
     else
       {:error, reason} -> public_error(reason, :storage_records, nil)
+    end
+  end
+
+  @doc false
+  def storage_record(segment_id, offset, sequence, options \\ []) do
+    with true <- (is_integer(segment_id) and segment_id > 0) || {:error, :invalid_segment},
+         true <- (is_integer(offset) and offset >= 44) || {:error, :invalid_offset},
+         true <- (is_integer(sequence) and sequence > 0) || {:error, :invalid_sequence},
+         {:ok, name, timeout} <- request_options(options),
+         {:ok, meta} <- ready(name),
+         timeout = timeout || meta.timeout,
+         {:ok, writer} <- Admission.inspection_writer(meta, timeout) do
+      inspection_call(
+        fn -> Writer.segment_record(writer, segment_id, offset, sequence, timeout) end,
+        :storage_record
+      )
+    else
+      {:error, reason} -> public_error(reason, :storage_record, nil)
     end
   end
 
@@ -473,6 +493,15 @@ defmodule Tay do
       _ ->
         {:error, :unavailable}
     end
+  end
+
+  defp inspection_call(fun, operation) do
+    case fun.() do
+      {:error, reason} -> public_error(reason, operation, nil)
+      result -> result
+    end
+  catch
+    :exit, _ -> {:error, Error.new(:unavailable, :inspection_lost, nil, operation)}
   end
 
   defp await_ready(name, deadline) do

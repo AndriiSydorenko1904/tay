@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.5 — 2026-10-15
+
+### Added
+
+- Added human-readable, on-demand Dashboard details for storage records,
+  including explanations for encoded enum values and execution tokens.
+- Added offset-cursor pagination for large segment inspections.
+
+### Changed
+
+- Moved storage-record decoding out of the Engine command loop and added a
+  bounded preview cache so inspection work cannot delay job processing.
+- Bounded decoded field and raw-payload rendering to keep Dashboard pages
+  responsive for large records.
+
+### Fixed
+
+- Made the fault-injection lock-loss cleanup unambiguous so strict GCC builds
+  pass with `-Werror=misleading-indentation`.
+
 ## 1.4.4 — 2026-10-15
 
 ### Changed

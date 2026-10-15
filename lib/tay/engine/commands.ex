@@ -50,10 +50,6 @@ defmodule Tay.Engine.Commands do
     {{:ok, queues}, state}
   end
 
-  def execute({:inspect_segment_records, segment_id, limit}, state, _insert_new, _cancel_task) do
-    {Tay.Storage.Writer.segment_records(state.writer, segment_id, limit), state}
-  end
-
   def execute(:inspect_schedules, state, _insert_new, _cancel_task) do
     schedules =
       state.schedules

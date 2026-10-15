@@ -44,6 +44,12 @@ defmodule Tay.Engine.Admission do
     ArgumentError -> {:error, :unavailable}
   end
 
+  def inspection_writer(meta, timeout) do
+    GenServer.call(meta.guardian, {:inspection_writer, meta.generation}, timeout)
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
+
   def request(name, meta, payload, bytes, operation, id, timeout, expected_revision \\ nil) do
     deadline = System.monotonic_time(:millisecond) + timeout
 
