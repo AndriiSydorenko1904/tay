@@ -15,6 +15,14 @@ defmodule Tay.Storage.CRC32C do
 
   @polynomial 0x82F63B78
   @mask 0xFFFFFFFF
+  @table List.to_tuple(
+           for byte <- 0..255 do
+             Enum.reduce(1..8, byte, fn _, register ->
+               shifted = register >>> 1
+               if (register &&& 1) == 1, do: bxor(shifted, @polynomial), else: shifted
+             end)
+           end
+         )
   @type register :: 0..0xFFFFFFFF
 
   @spec initial() :: register()
@@ -33,16 +41,23 @@ defmodule Tay.Storage.CRC32C do
   def finalize(register) when is_integer(register) and register >= 0 and register <= @mask,
     do: bxor(register, @mask)
 
-  defp update_bytes(register, <<>>), do: register
+  defp update_bytes(register, <<a, b, c, d, e, f, g, h, rest::binary>>) do
+    register = step(register, a)
+    register = step(register, b)
+    register = step(register, c)
+    register = step(register, d)
+    register = step(register, e)
+    register = step(register, f)
+    register = step(register, g)
+    register = step(register, h)
+    update_bytes(register, rest)
+  end
 
   defp update_bytes(register, <<byte, rest::binary>>),
-    do: update_bytes(shift_bits(bxor(register, byte), 8), rest)
+    do: update_bytes(step(register, byte), rest)
 
-  defp shift_bits(register, 0), do: register
+  defp update_bytes(register, <<>>), do: register
 
-  defp shift_bits(register, remaining) do
-    shifted = register >>> 1
-    next = if (register &&& 1) == 1, do: bxor(shifted, @polynomial), else: shifted
-    shift_bits(next, remaining - 1)
-  end
+  defp step(register, byte),
+    do: bxor(register >>> 8, elem(@table, bxor(register, byte) &&& 0xFF))
 end

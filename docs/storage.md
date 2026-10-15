@@ -35,7 +35,7 @@ STORE_ID, and CRC32C. A sealed segment ends with a 64-byte `TAYF` v1 footer
 containing matching identity/coordinates, last sequence, record count, segment
 CRC32C, and footer CRC32C. An active empty segment is exactly its 44-byte
 header; an empty sealed segment is invalid. Records and segment IDs advance
-contiguously. The physical segment size bound is 1 GiB; the rotation target is
+contiguously. The physical segment size bound is 1 GB; the rotation target is
 an operational setting, not a change to the format.
 
 ## Event and recovery boundary

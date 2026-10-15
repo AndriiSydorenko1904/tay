@@ -219,7 +219,9 @@ defmodule Tay.Storage.V2.Snapshot do
     end)
     |> Enum.with_index(1)
     |> Enum.reduce(jobs, fn {{id, job}, order}, acc ->
-      Map.put(acc, id, Map.put(job, :availability_order, order))
+      if job.availability_order == order,
+        do: acc,
+        else: Map.put(acc, id, Map.put(job, :availability_order, order))
     end)
   end
 

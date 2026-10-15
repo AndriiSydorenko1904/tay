@@ -558,13 +558,13 @@ defmodule Tay.Dashboard.OverviewLive do
 
   @doc false
   def format_bytes(bytes) when bytes < 1_024, do: "#{bytes} B"
-  def format_bytes(bytes) when bytes < 1_048_576, do: format_unit(bytes, 1_024, "KiB")
-  def format_bytes(bytes) when bytes < 1_073_741_824, do: format_unit(bytes, 1_048_576, "MiB")
+  def format_bytes(bytes) when bytes < 1_048_576, do: format_unit(bytes, 1_024, "KB")
+  def format_bytes(bytes) when bytes < 1_073_741_824, do: format_unit(bytes, 1_048_576, "MB")
 
   def format_bytes(bytes) when bytes < 1_099_511_627_776,
-    do: format_unit(bytes, 1_073_741_824, "GiB")
+    do: format_unit(bytes, 1_073_741_824, "GB")
 
-  def format_bytes(bytes), do: format_unit(bytes, 1_099_511_627_776, "TiB")
+  def format_bytes(bytes), do: format_unit(bytes, 1_099_511_627_776, "TB")
 
   defp format_unit(bytes, divisor, unit) do
     value = Float.round(bytes / divisor, 2)

@@ -40,4 +40,29 @@ defmodule Tay.Storage.CRC32CTest do
     assert <<CRC32C.checksum("123456789")::unsigned-big-32>> == <<0xE3, 0x06, 0x92, 0x83>>
     refute CRC32C.checksum("123456789") == :erlang.crc32("123456789")
   end
+
+  test "table implementation agrees with the independent oracle across chunk boundaries" do
+    bytes = for(i <- 0..4096, into: <<>>, do: <<rem(i * 131 + 17, 256)>>)
+    expected = ReferenceCRC32C.checksum(bytes)
+
+    assert CRC32C.checksum(bytes) == expected
+
+    for chunk_size <- [1, 7, 8, 9, 63, 64, 255, 1024] do
+      actual =
+        bytes
+        |> chunk(chunk_size)
+        |> Enum.reduce(CRC32C.initial(), &CRC32C.update(&2, &1))
+        |> CRC32C.finalize()
+
+      assert actual == expected
+    end
+  end
+
+  defp chunk(<<>>, _size), do: []
+
+  defp chunk(bytes, size) do
+    take = min(byte_size(bytes), size)
+    <<head::binary-size(^take), rest::binary>> = bytes
+    [head | chunk(rest, size)]
+  end
 end

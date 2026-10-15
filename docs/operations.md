@@ -132,7 +132,7 @@ capture are appended to the candidate tail. The temporary ETS snapshot is
 consumed directly into one retained map and released without first materializing
 a full ETS list and a second full map. The publisher performs repeated ordered
 catch-up rounds while admission remains open. It requests the final fence only
-when the pending tail is at most 1,024 events and 1 MiB; a new burst above that
+when the pending tail is at most 1,024 events and 1 MB; a new burst above that
 limit becomes another online round. A builder that cannot converge within the
 bounded round limit abandons the candidate and leaves the source epoch writable.
 The new `CURRENT` is published only after the candidate and its incremental tail
@@ -257,7 +257,7 @@ validated persistent local filesystem. The tools reject symlinks, hard-linked
 source files, unsafe aliases, unexpected file types, changed ancestors/source
 identities, missing/extra archive files, malformed catalogs, checksum mismatch,
 and exhausted file/byte budgets. Defaults are 100,000 inventory entries
-(including `segments`) and 10 GiB of file bytes; override only for a separately
+(including `segments`) and 10 GB of file bytes; override only for a separately
 qualified workload.
 
 The destination is a new private `0700` sibling staging directory with `0600`

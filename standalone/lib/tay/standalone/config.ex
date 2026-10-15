@@ -278,29 +278,25 @@ defmodule Tay.Standalone.Config do
       value when is_binary(value) ->
         with %{"amount" => amount, "unit" => unit} <-
                Regex.named_captures(
-                 ~r/\A(?<amount>0|[1-9][0-9]*)(?<unit>K(?:i)?B|M(?:i)?B|G(?:i)?B)?\z/,
+                 ~r/\A(?<amount>0|[1-9][0-9]*)(?<unit>KB|MB|GB)?\z/,
                  value
                ),
              {amount, ""} <- Integer.parse(amount) do
           {:ok, amount * byte_multiplier(unit)}
         else
           _ ->
-            {:error,
-             "#{name} must be bytes or an integer size using KB, KiB, MB, MiB, GB, or GiB"}
+            {:error, "#{name} must be bytes or an integer size using KB, MB, or GB"}
         end
 
       _ ->
-        {:error, "#{name} must be bytes or an integer size using KB, KiB, MB, MiB, GB, or GiB"}
+        {:error, "#{name} must be bytes or an integer size using KB, MB, or GB"}
     end
   end
 
   defp byte_multiplier(""), do: 1
-  defp byte_multiplier("KB"), do: 1_000
-  defp byte_multiplier("KiB"), do: 1_024
-  defp byte_multiplier("MB"), do: 1_000 ** 2
-  defp byte_multiplier("MiB"), do: 1_024 ** 2
-  defp byte_multiplier("GB"), do: 1_000 ** 3
-  defp byte_multiplier("GiB"), do: 1_024 ** 3
+  defp byte_multiplier("KB"), do: 1_024
+  defp byte_multiplier("MB"), do: 1_024 ** 2
+  defp byte_multiplier("GB"), do: 1_024 ** 3
 
   defp terminal_retention(environment) do
     value = Map.get(environment, "TAY_TERMINAL_RETENTION", "24h")

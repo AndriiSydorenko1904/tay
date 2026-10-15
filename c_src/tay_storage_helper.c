@@ -24,8 +24,37 @@
 #include <limits.h>
 #include <signal.h>
 
-#define PACKET_MAX (16777244u + 8192u)
-#define SEGMENT_MAX 1073741824ull
+#define PROTOCOL_VERSION 1u
+#define RECORD_PAYLOAD_MAX_BYTES 16777216u
+#define RECORD_OVERHEAD_BYTES 28u
+#define IO_BODY_MAX (RECORD_PAYLOAD_MAX_BYTES + RECORD_OVERHEAD_BYTES)
+#define PACKET_METADATA_ALLOWANCE 8192u
+#define PACKET_MAX (IO_BODY_MAX + PACKET_METADATA_ALLOWANCE)
+#define SEGMENT_MAX_BYTES 1073741824ull
+#define SEGMENT_HEADER_BYTES 44u
+#define SEGMENT_FOOTER_BYTES 64u
+#define AUTHORITY_METADATA_BYTES 28u
+#define CURRENT_METADATA_BYTES 76u
+#define WRITE_REQUEST_PREFIX_BYTES 9u
+#define PACKET_LENGTH_BYTES 4u
+#define REQUEST_HEADER_BYTES 10u
+#define REPLY_HEADER_BYTES 23u
+#define FRAMED_REPLY_HEADER_BYTES (PACKET_LENGTH_BYTES + REPLY_HEADER_BYTES)
+#define FILE_IDENTITY_PAIR_BYTES 32u
+#define RECLAIM_BASE_BYTES (CURRENT_METADATA_BYTES + 1u)
+#define SEGMENT_ID_DIGITS 20u
+#define HEX_ID_DIGITS 32u
+#define TEMP_FILE_SUFFIX ".tmp"
+#define TEMP_NONCE_BYTES (HEX_ID_DIGITS + sizeof(TEMP_FILE_SUFFIX) - 1u)
+#define SEGMENT_EXTENSION ".tay"
+#define STRING_BYTES(value) (sizeof(value) - 1u)
+#define STORE_STAGE_PREFIX ".tay-store-"
+#define V2_MARKER_STAGE_PREFIX ".tay-v2-marker-"
+#define CURRENT_STAGE_PREFIX ".tay-current-"
+#define ADOPTION_STAGE_PREFIX ".tay-adoption-"
+#define SEGMENT_STAGE_PREFIX ".tay-new-"
+#define NANOSECONDS_PER_SECOND 1000000000ull
+#define READBACK_VERIFY_CHUNK_BYTES 1048576u
 
 enum filesystem_magic {
   FS_EXT = 0xEF53u,
@@ -80,6 +109,57 @@ enum fault_site {
   FAULT_MARKER_UNLINK=268,
   FAULT_ADOPTION_CLEAR_UNLINK=269
 };
+
+/* Frozen test-protocol values shared with Tay.Storage.Native. */
+enum fault_action {
+  FAULT_ERROR_BEFORE_CALL=1,
+  FAULT_SHORT_IO=2,
+  FAULT_HELPER_CRASH_AFTER_CALL=3,
+  FAULT_DROP_REPLY=4,
+  FAULT_HELPER_CRASH_BEFORE_CALL=5,
+  FAULT_LOSE_LOCK=6,
+  FAULT_INVALID_REPLY_ID=7,
+  FAULT_SYSCALL_ERROR_AFTER_CALL=8,
+  FAULT_OWNER_VM_CRASH_AFTER_CALL=9,
+  FAULT_OWNER_VM_CRASH_BEFORE_CALL=10
+};
+
+/* Values are exposed by diagnostics and therefore remain wire-stable. */
+enum write_kind {
+  WRITE_NONE=0,
+  WRITE_SEGMENT=1,
+  WRITE_SEGMENT_HEADER_STAGE=2,
+  WRITE_STORE_STAGE=3,
+  WRITE_COLD_COPY=4,
+  WRITE_CURRENT_STAGE=5,
+  WRITE_STORE_V2_STAGE=6,
+  WRITE_ADOPTION_STAGE=7
+};
+
+enum storage_scope {
+  SCOPE_ROOT=0,
+  SCOPE_SEGMENTS=1,
+  SCOPE_COLD_VERIFY=2,
+  SCOPE_EPOCHS=3,
+  SCOPE_CANDIDATE=4,
+  SCOPE_CANDIDATE_SEGMENTS=5,
+  SCOPE_EPOCH=6
+};
+
+enum cold_scope {
+  COLD_SCOPE_STAGE_ROOT=0,
+  COLD_SCOPE_STAGE_SEGMENTS=1,
+  COLD_SCOPE_CATALOG=2,
+  COLD_SCOPE_VERIFY=3
+};
+
+enum helper_exit_status {
+  HELPER_EXIT_CRASH_AFTER_CALL=93,
+  HELPER_EXIT_CLOSE_FAILURE=94,
+  HELPER_EXIT_CRASH_BEFORE_CALL=95,
+  HELPER_EXIT_OWNER_VM_CRASH=96,
+  HELPER_EXIT_INTERNAL_BOUNDS=97
+};
 static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
 static int candidate_write_fd=-1;
 static int epochs_fd=-1, epoch_fd=-1, candidate_fd=-1, candidate_segments_fd=-1;
@@ -103,7 +183,7 @@ static int list_directory(void);
 /* Cold-copy targets deliberately use a second, source-independent descriptor
  * tree. The source store remains held by a separate existing-only helper; this
  * tree never traverses it and refuses any pinned ancestor that aliases it. */
-struct cold_chain { int *fds; size_t count; };
+struct cold_chain { int *fds; size_t count, capacity; };
 static int cold_target, cold_source;
 /* These parent descriptors alias the last entries in their respective chains.
  * cold_chain_close() is their sole owner/closer. */
@@ -124,7 +204,7 @@ static size_t output_n;
 static void kill_owner_vm(void) {
   pid_t owner=getppid();
   if (owner>1) kill(owner,SIGKILL);
-  _exit(96);
+  _exit(HELPER_EXIT_OWNER_VM_CRASH);
 }
 
 static int fault_op, fault_n, fault_action, fault_errno;
@@ -137,17 +217,19 @@ static int promotion_sync(int fd, unsigned target) {
   int hit=fault_op==(int)target && fault_n>0 && --fault_n==0;
   if (hit) {
     fault_now=1;
-    if (fault_action==5) _exit(95);
-    if (fault_action==10) kill_owner_vm();
-    if (fault_action==1 || fault_action==8) { errno=fault_errno?fault_errno:EIO; return -1; }
+    if (fault_action==FAULT_HELPER_CRASH_BEFORE_CALL) _exit(HELPER_EXIT_CRASH_BEFORE_CALL);
+    if (fault_action==FAULT_OWNER_VM_CRASH_BEFORE_CALL) kill_owner_vm();
+    if (fault_action==FAULT_ERROR_BEFORE_CALL || fault_action==FAULT_SYSCALL_ERROR_AFTER_CALL) {
+      errno=fault_errno?fault_errno:EIO; return -1;
+    }
   }
 #else
   (void)target;
 #endif
   int result=fsync(fd);
 #ifdef TAY_TEST_FAULTS
-  if (hit && fault_action==3) _exit(93);
-  if (hit && fault_action==9) kill_owner_vm();
+  if (hit && fault_action==FAULT_HELPER_CRASH_AFTER_CALL) _exit(HELPER_EXIT_CRASH_AFTER_CALL);
+  if (hit && fault_action==FAULT_OWNER_VM_CRASH_AFTER_CALL) kill_owner_vm();
 #endif
   return result;
 }
@@ -159,17 +241,19 @@ static int reclamation_unlink(int fd,const char *name,int flags,unsigned target)
   int hit=fault_op==(int)target && fault_n>0 && --fault_n==0;
   if (hit) {
     fault_now=1;
-    if (fault_action==5) _exit(95);
-    if (fault_action==10) kill_owner_vm();
-    if (fault_action==1 || fault_action==8) { errno=fault_errno?fault_errno:EIO; return -1; }
+    if (fault_action==FAULT_HELPER_CRASH_BEFORE_CALL) _exit(HELPER_EXIT_CRASH_BEFORE_CALL);
+    if (fault_action==FAULT_OWNER_VM_CRASH_BEFORE_CALL) kill_owner_vm();
+    if (fault_action==FAULT_ERROR_BEFORE_CALL || fault_action==FAULT_SYSCALL_ERROR_AFTER_CALL) {
+      errno=fault_errno?fault_errno:EIO; return -1;
+    }
   }
 #else
   (void)target;
 #endif
   int result=unlinkat(fd,name,flags);
 #ifdef TAY_TEST_FAULTS
-  if (hit && fault_action==3) _exit(93);
-  if (hit && fault_action==9) kill_owner_vm();
+  if (hit && fault_action==FAULT_HELPER_CRASH_AFTER_CALL) _exit(HELPER_EXIT_CRASH_AFTER_CALL);
+  if (hit && fault_action==FAULT_OWNER_VM_CRASH_AFTER_CALL) kill_owner_vm();
 #endif
   return result;
 }
@@ -181,7 +265,7 @@ static uint64_t number(size_t n) {
 static void put(uint64_t n, size_t width) {
   /* A violated bound is an internal protocol-construction bug. Never permit it
    * to become memory corruption or a malformed successful reply. */
-  if (width>sizeof(n) || width>sizeof(output)-output_n) _exit(97);
+  if (width>sizeof(n) || width>sizeof(output)-output_n) _exit(HELPER_EXIT_INTERNAL_BOUNDS);
   for (size_t i=width;i>0;i--) output[output_n++]=(unsigned char)(n>>((i-1)*8));
 }
 static int string(char *dst, size_t cap) {
@@ -194,13 +278,13 @@ static int basename_ok(const char *s) {
   return *s && !strchr(s,'/') && strcmp(s,".") && strcmp(s,"..");
 }
 static int scope_fd(int scope) {
-  if (scope==0) return root_fd;
-  if (scope==1) return segments_fd;
-  if (scope==3) return epochs_fd;
-  if (scope==4) return candidate_fd;
-  if (scope==5) return candidate_segments_fd;
-  if (scope==6) return epoch_fd;
-  return cold_target && scope==2 ? cold_verify_parent_fd : -1;
+  if (scope==SCOPE_ROOT) return root_fd;
+  if (scope==SCOPE_SEGMENTS) return segments_fd;
+  if (scope==SCOPE_EPOCHS) return epochs_fd;
+  if (scope==SCOPE_CANDIDATE) return candidate_fd;
+  if (scope==SCOPE_CANDIDATE_SEGMENTS) return candidate_segments_fd;
+  if (scope==SCOPE_EPOCH) return epoch_fd;
+  return cold_target && scope==SCOPE_COLD_VERIFY ? cold_verify_parent_fd : -1;
 }
 static int same(const struct stat *a,const struct stat *b) {
   return a->st_dev==b->st_dev && a->st_ino==b->st_ino;
@@ -216,7 +300,7 @@ static int release_owned_fd(int *fd) {
   return owned>=0 && close(owned)<0?errno:0;
 }
 static uint64_t time_ns(const struct timespec *time) {
-  return (uint64_t)time->tv_sec*1000000000ull+(uint64_t)time->tv_nsec;
+  return (uint64_t)time->tv_sec*NANOSECONDS_PER_SECOND+(uint64_t)time->tv_nsec;
 }
 static unsigned int type_of(mode_t mode) {
   return S_ISREG(mode)?1:S_ISDIR(mode)?2:S_ISLNK(mode)?3:4;
@@ -299,7 +383,7 @@ static void cold_chain_close(struct cold_chain *chain) {
     for (size_t i=0;i<chain->count;i++) if (chain->fds[i]>=0) close(chain->fds[i]);
     free(chain->fds);
   }
-  chain->fds=NULL; chain->count=0;
+  chain->fds=NULL; chain->count=0; chain->capacity=0;
 }
 static void abandon_cold_target(void) {
   cold_chain_close(&cold_parent_chain);
@@ -309,9 +393,14 @@ static void abandon_cold_target(void) {
   cold_target=0;
 }
 static int cold_chain_push(struct cold_chain *chain,int fd) {
-  int *next=realloc(chain->fds,(chain->count+1)*sizeof(int));
-  if (!next) return ENOMEM;
-  chain->fds=next; chain->fds[chain->count++]=fd; return 0;
+  if (chain->count==chain->capacity) {
+    size_t capacity=chain->capacity?chain->capacity*2u:8u;
+    if (capacity>SIZE_MAX/sizeof(int)) return ENOMEM;
+    int *next=realloc(chain->fds,capacity*sizeof(int));
+    if (!next) return ENOMEM;
+    chain->fds=next; chain->capacity=capacity;
+  }
+  chain->fds[chain->count++]=fd; return 0;
 }
 /* Pin an existing absolute directory path from /. Path components are opened
  * descriptor-relatively with O_NOFOLLOW; the retained chain permits an exact
@@ -486,9 +575,10 @@ static int open_segments(void) {
   return e;
 }
 static int canonical(const char *name) {
-  if (strlen(name)!=24 || strcmp(name+20,".tay")) return 0;
+  if (strlen(name)!=SEGMENT_ID_DIGITS+STRING_BYTES(SEGMENT_EXTENSION) ||
+      strcmp(name+SEGMENT_ID_DIGITS,SEGMENT_EXTENSION)) return 0;
   uint64_t id=0;
-  for (int i=0;i<20;i++) {
+  for (size_t i=0;i<SEGMENT_ID_DIGITS;i++) {
     if (name[i]<'0'||name[i]>'9') return 0;
     unsigned d=(unsigned)(name[i]-'0');
     if (id>(UINT64_MAX-d)/10) return 0;
@@ -497,12 +587,14 @@ static int canonical(const char *name) {
   return id!=0;
 }
 static int nonce(const char *s) {
-  for (int i=0;i<32;i++) if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
-  return !strcmp(s+32,".tmp");
+  for (size_t i=0;i<HEX_ID_DIGITS;i++)
+    if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
+  return !strcmp(s+HEX_ID_DIGITS,TEMP_FILE_SUFFIX);
 }
 static int hex32(const char *s) {
-  if (strlen(s)!=32) return 0;
-  for (int i=0;i<32;i++) if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
+  if (strlen(s)!=HEX_ID_DIGITS) return 0;
+  for (size_t i=0;i<HEX_ID_DIGITS;i++)
+    if (!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return 0;
   return 1;
 }
 static int epoch_name_ok(const char *s) { return !strncmp(s,"e-",2) && hex32(s+2); }
@@ -511,17 +603,47 @@ static int candidate_name_ok(const char *s) {
   return !strncmp(s,".tay-candidate-",15) && nonce(s+15);
 }
 static int stage_kind(int scope,const char *name) {
-  if (scope==0 && strlen(name)==47 && !strncmp(name,".tay-store-",11) && nonce(name+11)) return 3;
-  if (scope==0 && !strncmp(name,".tay-v2-marker-",15) && nonce(name+15)) return 6;
-  if (scope==0 && !strncmp(name,".tay-current-",13) && nonce(name+13)) return 5;
-  if (scope==0 && !strncmp(name,".tay-adoption-",14) && nonce(name+14)) return 7;
-  if (scope==1 && strlen(name)==66 && !strncmp(name,".tay-new-",9) && name[29]=='-' && nonce(name+30)) {
-    char canon[25]; memcpy(canon,name+9,20); memcpy(canon+20,".tay",5);
-    if (canonical(canon)) return 2;
+  if (scope==SCOPE_ROOT &&
+      strlen(name)==STRING_BYTES(STORE_STAGE_PREFIX)+TEMP_NONCE_BYTES &&
+      !strncmp(name,STORE_STAGE_PREFIX,STRING_BYTES(STORE_STAGE_PREFIX)) &&
+      nonce(name+STRING_BYTES(STORE_STAGE_PREFIX)))
+    return WRITE_STORE_STAGE;
+  if (scope==SCOPE_ROOT &&
+      !strncmp(name,V2_MARKER_STAGE_PREFIX,STRING_BYTES(V2_MARKER_STAGE_PREFIX)) &&
+      nonce(name+STRING_BYTES(V2_MARKER_STAGE_PREFIX)))
+    return WRITE_STORE_V2_STAGE;
+  if (scope==SCOPE_ROOT &&
+      !strncmp(name,CURRENT_STAGE_PREFIX,STRING_BYTES(CURRENT_STAGE_PREFIX)) &&
+      nonce(name+STRING_BYTES(CURRENT_STAGE_PREFIX)))
+    return WRITE_CURRENT_STAGE;
+  if (scope==SCOPE_ROOT &&
+      !strncmp(name,ADOPTION_STAGE_PREFIX,STRING_BYTES(ADOPTION_STAGE_PREFIX)) &&
+      nonce(name+STRING_BYTES(ADOPTION_STAGE_PREFIX)))
+    return WRITE_ADOPTION_STAGE;
+  size_t segment_stage_separator=STRING_BYTES(SEGMENT_STAGE_PREFIX)+SEGMENT_ID_DIGITS;
+  if (scope==SCOPE_SEGMENTS &&
+      strlen(name)==segment_stage_separator+1u+TEMP_NONCE_BYTES &&
+      !strncmp(name,SEGMENT_STAGE_PREFIX,STRING_BYTES(SEGMENT_STAGE_PREFIX)) &&
+      name[segment_stage_separator]=='-' && nonce(name+segment_stage_separator+1u)) {
+    char canon[SEGMENT_ID_DIGITS+sizeof(SEGMENT_EXTENSION)];
+    memcpy(canon,name+STRING_BYTES(SEGMENT_STAGE_PREFIX),SEGMENT_ID_DIGITS);
+    memcpy(canon+SEGMENT_ID_DIGITS,SEGMENT_EXTENSION,sizeof(SEGMENT_EXTENSION));
+    if (canonical(canon)) return WRITE_SEGMENT_HEADER_STAGE;
   }
-  if (scope==4 && !strcmp(name,"MANIFEST")) return 4;
-  if (scope==5 && canonical(name)) return 1;
-  return 0;
+  if (scope==SCOPE_CANDIDATE && !strcmp(name,"MANIFEST")) return WRITE_COLD_COPY;
+  if (scope==SCOPE_CANDIDATE_SEGMENTS && canonical(name)) return WRITE_SEGMENT;
+  return WRITE_NONE;
+}
+
+static size_t staged_write_size(int kind) {
+  switch (kind) {
+    case WRITE_SEGMENT_HEADER_STAGE: return SEGMENT_HEADER_BYTES;
+    case WRITE_CURRENT_STAGE: return CURRENT_METADATA_BYTES;
+    case WRITE_STORE_STAGE:
+    case WRITE_STORE_V2_STAGE:
+    case WRITE_ADOPTION_STAGE: return AUTHORITY_METADATA_BYTES;
+    default: return 0;
+  }
 }
 static int acquire(int mode) {
   int existing=mode==1, if_missing=mode==2;
@@ -693,7 +815,7 @@ static int v2_abort(void) {
   if (!e) e=close_error;
   close_error=release_owned_fd(&candidate_fd);
   if (!e) e=close_error;
-  candidate_write_kind=0;
+  candidate_write_kind=WRITE_NONE;
   candidate_write_name[0]=0;
   candidate_name[0]=0;
   return e?e:check_paths();
@@ -721,7 +843,8 @@ static int v2_adopt_v1(void) {
   e=checked_directory(segments_fd,root_fd,"segments"); if (e) return e;
   struct stat intent;
   if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
+      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
   e=absent_at(root_fd,"CURRENT"); if (e) return e;
   if (no_replace_between(root_fd,"segments",epochs_fd,name)<0) return errno;
   segments_parent_fd=epochs_fd; strcpy(segments_name,name);
@@ -737,7 +860,8 @@ static int v2_restore_v1(void) {
   struct stat intent,root_segments,legacy;
   e=absent_at(root_fd,"CURRENT"); if (e) return e;
   if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
+      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
   e=open_epochs(0); if (e) return e;
   int root_exists=fstatat(root_fd,"segments",&root_segments,AT_SYMLINK_NOFOLLOW)==0;
   if (!root_exists && errno!=ENOENT) return errno;
@@ -763,11 +887,13 @@ static int v2_clear_adoption(void) {
   if (read_fd>=0 || write_fd>=0) return EBUSY;
   int e=absent_at(root_fd,"CURRENT"); if (e) return e;
   if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 || intent.st_size!=28) return EINVAL;
+  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
+      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
   if (fstatat(root_fd,"segments",&segments,AT_SYMLINK_NOFOLLOW)<0) return errno;
   if (!S_ISDIR(segments.st_mode)) return EINVAL;
   if (fstatat(root_fd,"STORE-V2",&marker,AT_SYMLINK_NOFOLLOW)==0) {
-    if (!S_ISREG(marker.st_mode) || marker.st_nlink!=1 || marker.st_size!=28) return EINVAL;
+    if (!S_ISREG(marker.st_mode) || marker.st_nlink!=1 ||
+        marker.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
     if (reclamation_unlink(root_fd,"STORE-V2",0,FAULT_MARKER_UNLINK)<0 ||
         promotion_sync(root_fd,FAULT_MARKER_REMOVAL_SYNC)<0) return errno;
   } else if (errno!=ENOENT) return errno;
@@ -779,12 +905,15 @@ static int v2_clear_adoption(void) {
 static int v2_publish_current(void) {
   char stage[256];
   int e=string(stage,sizeof(stage));
-  if (e || stage_kind(0,stage)!=5 || !need(32) || write_fd>=0 || candidate_write_fd>=0)
+  if (e || stage_kind(SCOPE_ROOT,stage)!=WRITE_CURRENT_STAGE ||
+      !need(FILE_IDENTITY_PAIR_BYTES) ||
+      write_fd>=0 || candidate_write_fd>=0)
     return e?e:EINVAL;
   uint64_t stage_dev=number(8),stage_ino=number(8),old_dev=number(8),old_ino=number(8);
   struct stat source,old,after;
   if (fstatat(root_fd,stage,&source,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(source.st_mode) || source.st_nlink!=1 || source.st_size!=76 ||
+  if (!S_ISREG(source.st_mode) || source.st_nlink!=1 ||
+      source.st_size!=CURRENT_METADATA_BYTES ||
       (uint64_t)source.st_dev!=stage_dev || (uint64_t)source.st_ino!=stage_ino) return ESTALE;
   if (!old_dev && !old_ino) {
     e=absent_at(root_fd,"CURRENT"); if (e) return e;
@@ -814,7 +943,7 @@ static int exact_metadata(int directory,const char *name,const unsigned char *ex
   struct stat s;
   int e=checked_regular(fd,directory,name,&s);
   if (!e && (uint64_t)s.st_size!=n) e=ESTALE;
-  unsigned char bytes[76];
+  unsigned char bytes[CURRENT_METADATA_BYTES];
   if (!e) {
     ssize_t got=pread(fd,bytes,n,0);
     if (got<0) e=errno;
@@ -873,15 +1002,18 @@ static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
 static int v2_reclaim(void) {
   char target[256];
   int e=string(target,sizeof(target));
-  if (e || !need(77)) return e?e:EPROTO;
+  if (e || !need(RECLAIM_BASE_BYTES)) return e?e:EPROTO;
   int legacy=legacy_name_ok(target);
   if (!legacy && !epoch_name_ok(target)) return EINVAL;
-  const unsigned char *expected_current=input+pos; pos+=76;
+  const unsigned char *expected_current=input+pos; pos+=CURRENT_METADATA_BYTES;
   int has_intent=(int)number(1);
   const unsigned char *expected_intent=NULL;
-  if (has_intent) { if (!need(28)) return EPROTO; expected_intent=input+pos; pos+=28; }
+  if (has_intent) {
+    if (!need(AUTHORITY_METADATA_BYTES)) return EPROTO;
+    expected_intent=input+pos; pos+=AUTHORITY_METADATA_BYTES;
+  }
   if (legacy!=has_intent || pos!=input_n) return EINVAL;
-  e=exact_metadata(root_fd,"CURRENT",expected_current,76); if (e) return e;
+  e=exact_metadata(root_fd,"CURRENT",expected_current,CURRENT_METADATA_BYTES); if (e) return e;
   if (memcmp(expected_current,"TAYC\001\0\0\0",8)) return EINVAL;
   char current_name[35]="e-";
   static const char hex[]="0123456789abcdef";
@@ -892,7 +1024,7 @@ static int v2_reclaim(void) {
   current_name[34]=0;
   if (!strcmp(target,current_name)) return EBUSY;
   if (legacy) {
-    e=exact_metadata(root_fd,"ADOPTION",expected_intent,28); if (e) return e;
+    e=exact_metadata(root_fd,"ADOPTION",expected_intent,AUTHORITY_METADATA_BYTES); if (e) return e;
     if (memcmp(expected_intent,"TAYA\001\0\0\0",8)) return EINVAL;
     for (int i=0;i<16;i++)
       if (target[7+i*2]!=hex[expected_intent[8+i]>>4] ||
@@ -1042,17 +1174,22 @@ static int cold_stage_create(void) {
   return e;
 }
 static int cold_scope_fd(int scope) {
-  return scope==0?cold_stage_fd:scope==1?cold_stage_segments_fd:scope==2?cold_catalog_parent_fd:scope==3?cold_verify_parent_fd:-1;
+  if (scope==COLD_SCOPE_STAGE_ROOT) return cold_stage_fd;
+  if (scope==COLD_SCOPE_STAGE_SEGMENTS) return cold_stage_segments_fd;
+  if (scope==COLD_SCOPE_CATALOG) return cold_catalog_parent_fd;
+  if (scope==COLD_SCOPE_VERIFY) return cold_verify_parent_fd;
+  return -1;
 }
 static int cold_open_write(void) {
   if (!cold_target || write_fd>=0 || !need(2)) return EPROTO;
   int scope=(int)number(1), lock=(int)number(1), fd=cold_scope_fd(scope);
   int e=string(write_name,sizeof(write_name));
-  if (e || !basename_ok(write_name) || fd<0 || lock>1 || scope==3) return e?e:EINVAL;
-  if (scope==2 && strcmp(write_name,cold_catalog_name)) return EINVAL;
-  if (scope<2 && !cold_stage_created) return EBADF;
+  if (e || !basename_ok(write_name) || fd<0 || lock>1 || scope==COLD_SCOPE_VERIFY)
+    return e?e:EINVAL;
+  if (scope==COLD_SCOPE_CATALOG && strcmp(write_name,cold_catalog_name)) return EINVAL;
+  if (scope<COLD_SCOPE_CATALOG && !cold_stage_created) return EBADF;
   e=cold_check_paths(); if (e) return e;
-  write_scope=scope; write_kind=4;
+  write_scope=scope; write_kind=WRITE_COLD_COPY;
   write_fd=openat(fd,write_name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
   if (write_fd<0) return errno;
   e=checked_regular(write_fd,fd,write_name,&write_identity);
@@ -1091,7 +1228,7 @@ static int cold_list_directory(void) {
   if (!need(5)) return EPROTO;
   int scope=(int)number(1), fd=scope_fd(scope);
   uint32_t limit=(uint32_t)number(4);
-  if (!cold_source || !limit || fd<0 || scope>1) return EINVAL;
+  if (!cold_source || !limit || fd<0 || scope>COLD_SCOPE_STAGE_SEGMENTS) return EINVAL;
   /* Reuse the normal listing implementation's wire format, but give the
    * caller its remaining global budget so copy inventory stops incrementally. */
   uint32_t saved=directory_limit; directory_limit=limit;
@@ -1105,7 +1242,7 @@ static int cold_list_directory(void) {
 static int list_directory(void) {
   if (!need(1)) return EPROTO;
   int scope=(int)number(1), fd=scope_fd(scope);
-  if (fd<0) return scope==1?ENOENT:EINVAL;
+  if (fd<0) return scope==SCOPE_SEGMENTS?ENOENT:EINVAL;
   /* A new open file description avoids shared directory offsets with dup(). */
   int copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
   if (copy<0) return errno;
@@ -1130,7 +1267,8 @@ static int open_read(void) {
   if (read_fd>=0 || !need(1)) return EBUSY;
   read_scope=(int)number(1); int fd=scope_fd(read_scope);
   int e=string(read_name,sizeof(read_name));
-  if (e || !basename_ok(read_name) || fd<0 || (read_scope==2 && strcmp(read_name,cold_verify_name))) return e?e:EINVAL;
+  if (e || !basename_ok(read_name) || fd<0 ||
+      (read_scope==SCOPE_COLD_VERIFY && strcmp(read_name,cold_verify_name))) return e?e:EINVAL;
   read_fd=openat(fd,read_name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
   if (read_fd<0) return errno;
   e=checked_regular(read_fd,fd,read_name,&read_identity);
@@ -1147,12 +1285,12 @@ static int validate_read(void) {
 static int read_at(void) {
   if (!need(12)) return EPROTO;
   uint64_t off=number(8), n=number(4);
-  if (n>16777244u || n>sizeof(output) || off>INT64_MAX ||
+  if (n>IO_BODY_MAX || n>sizeof(output) || off>INT64_MAX ||
       n>(uint64_t)INT64_MAX-off ||
-      (!cold_source && (off>SEGMENT_MAX || off+n>SEGMENT_MAX))) return EFBIG;
+      (!cold_source && (off>SEGMENT_MAX_BYTES || off+n>SEGMENT_MAX_BYTES))) return EFBIG;
   int e=validate_read(); if (e) return e;
 #ifdef TAY_TEST_FAULTS
-  if (fault_now && fault_action==2 && n) n=fault_short<n?fault_short:n-1;
+  if (fault_now && fault_action==FAULT_SHORT_IO && n) n=fault_short<n?fault_short:n-1;
 #endif
   ssize_t got=pread(read_fd,output,(size_t)n,(off_t)off);
   if (got<0) return errno;
@@ -1160,7 +1298,8 @@ static int read_at(void) {
 }
 static int create_stage(void) {
   if (!need(1)) return EPROTO;
-  int scope=(int)number(1), candidate=scope==4 || scope==5;
+  int scope=(int)number(1);
+  int candidate=scope==SCOPE_CANDIDATE || scope==SCOPE_CANDIDATE_SEGMENTS;
   int *target=candidate?&candidate_write_fd:&write_fd;
   int *target_scope=candidate?&candidate_write_scope:&write_scope;
   int *target_kind=candidate?&candidate_write_kind:&write_kind;
@@ -1191,39 +1330,61 @@ static int open_active(void) {
   int e=string(write_name,sizeof(write_name));
   if (e || !need(24) || !canonical(write_name)) return e?e:EINVAL;
   uint64_t size=number(8), dev=number(8), ino=number(8);
-  write_scope=1; write_kind=1;
+  write_scope=SCOPE_SEGMENTS; write_kind=WRITE_SEGMENT;
   write_fd=openat(segments_fd,write_name,O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
   if (write_fd<0) return errno;
   e=checked_regular(write_fd,segments_fd,write_name,&write_identity);
   if (!e && ((uint64_t)write_identity.st_size!=size || (uint64_t)write_identity.st_dev!=dev ||
      (uint64_t)write_identity.st_ino!=ino)) e=ESTALE;
-  if (!e && (size<44 || size>SEGMENT_MAX-64)) e=EINVAL;
+  if (!e && (size<SEGMENT_HEADER_BYTES ||
+      size>SEGMENT_MAX_BYTES-SEGMENT_FOOTER_BYTES)) e=EINVAL;
   if (e) { close(write_fd); write_fd=-1; return e; }
   stat_out(&write_identity); return 0;
 }
 
+static int verify_written_bytes(int fd,uint64_t off,const unsigned char *expected,size_t n) {
+  size_t capacity=n<READBACK_VERIFY_CHUNK_BYTES?n:READBACK_VERIFY_CHUNK_BYTES;
+  unsigned char *readback=malloc(capacity);
+  if (!readback) return ENOMEM;
+  int e=0;
+  size_t checked=0;
+  while (!e && checked<n) {
+    size_t chunk=n-checked<capacity?n-checked:capacity;
+    ssize_t got=pread(fd,readback,chunk,(off_t)(off+checked));
+    if (got<0) e=errno;
+    else if ((size_t)got!=chunk || memcmp(readback,expected+checked,chunk)) e=EIO;
+    checked+=chunk;
+  }
+  free(readback);
+  return e;
+}
+
 static int write_at(void) {
-  if (!need(9)) return EPROTO;
+  if (!need(WRITE_REQUEST_PREFIX_BYTES)) return EPROTO;
   int candidate=(int)number(1);
   int fd=candidate?candidate_write_fd:write_fd;
   int kind=candidate?candidate_write_kind:write_kind;
   if (candidate<0 || candidate>1 || fd<0) return EBADF;
   uint64_t off=number(8); size_t n=input_n-pos;
+  size_t fixed_size=staged_write_size(kind);
   struct stat s;
   if (fstat(fd,&s)<0) return errno;
-  if (!n || n>16777244u || off!=(uint64_t)s.st_size || off>INT64_MAX || n>(uint64_t)INT64_MAX-off ||
-      (kind!=4 && (off>SEGMENT_MAX || n>SEGMENT_MAX-off))) return EINVAL;
-  if (kind>1 && kind!=4 &&
-      (off!=0 || n!=(kind==2?44u:kind==5?76u:28u))) return EINVAL;
+  if (!n || n>IO_BODY_MAX || off!=(uint64_t)s.st_size || off>INT64_MAX ||
+      n>(uint64_t)INT64_MAX-off ||
+      (kind!=WRITE_COLD_COPY &&
+       (off>SEGMENT_MAX_BYTES || n>SEGMENT_MAX_BYTES-off))) return EINVAL;
+  if (fixed_size && (off!=0 || n!=fixed_size)) return EINVAL;
   size_t requested=n;
 #ifdef TAY_TEST_FAULTS
-  if (fault_now && fault_action==2) n=(size_t)(fault_short<n?fault_short:n-1);
+  if (fault_now && fault_action==FAULT_SHORT_IO) n=(size_t)(fault_short<n?fault_short:n-1);
 #endif
   /* A single filesystem pwrite. No EINTR/short-write retry is legal here. */
   known_written=UINT64_MAX; /* A failed syscall need not prove zero changed bytes. */
   ssize_t result;
 #ifdef TAY_TEST_FAULTS
-  if (fault_now && fault_action==8) { errno=fault_errno?fault_errno:EIO; result=-1; }
+  if (fault_now && fault_action==FAULT_SYSCALL_ERROR_AFTER_CALL) {
+    errno=fault_errno?fault_errno:EIO; result=-1;
+  }
   else
 #endif
   result=pwrite(fd,input+pos,n,(off_t)off);
@@ -1231,16 +1392,13 @@ static int write_at(void) {
   known_written=(uint64_t)result;
   if ((size_t)result!=requested) {
 #ifdef TAY_TEST_FAULTS
-    if (fault_now && fault_action==2) return fault_errno?fault_errno:EIO;
+    if (fault_now && fault_action==FAULT_SHORT_IO) return fault_errno?fault_errno:EIO;
 #endif
     return EIO;
   }
   if (fstat(fd,&s)<0) return errno;
   if ((uint64_t)s.st_size!=off+requested) return ESTALE;
-  unsigned char *readback=malloc(requested); if (!readback) return ENOMEM;
-  ssize_t got=pread(fd,readback,requested,(off_t)off);
-  int e=got<0?errno:((size_t)got!=requested || memcmp(readback,input+pos,requested)?EIO:0);
-  free(readback);
+  int e=verify_written_bytes(fd,off,input+pos,requested);
   pos=input_n;
   if (!e) {
     if (candidate) candidate_write_identity=s; else write_identity=s;
@@ -1256,15 +1414,19 @@ static int publish(void) {
   e=string(target,sizeof(target)); if (e || !need(16)) return e?e:EPROTO;
   uint64_t dev=number(8), ino=number(8);
   int kind=stage_kind(scope,source);
-  if (fd<0 || !kind || (scope!=0 && scope!=1) ||
-      (scope==0 && !((kind==3 && !strcmp(target,"STORE")) ||
-                     (kind==6 && !strcmp(target,"STORE-V2")) ||
-                     (kind==7 && !strcmp(target,"ADOPTION")))) ||
-      (scope==1 && (!canonical(target) || strncmp(source+9,target,20)))) return EINVAL;
+  size_t expected_size=staged_write_size(kind);
+  if (fd<0 || !kind || (scope!=SCOPE_ROOT && scope!=SCOPE_SEGMENTS) ||
+      (scope==SCOPE_ROOT && !((kind==WRITE_STORE_STAGE && !strcmp(target,"STORE")) ||
+                     (kind==WRITE_STORE_V2_STAGE && !strcmp(target,"STORE-V2")) ||
+                     (kind==WRITE_ADOPTION_STAGE && !strcmp(target,"ADOPTION")))) ||
+      (scope==SCOPE_SEGMENTS &&
+       (!canonical(target) ||
+        strncmp(source+STRING_BYTES(SEGMENT_STAGE_PREFIX),target,SEGMENT_ID_DIGITS))))
+    return EINVAL;
   struct stat s, after;
   if (fstatat(fd,source,&s,AT_SYMLINK_NOFOLLOW)<0) return errno;
   if (!S_ISREG(s.st_mode) || s.st_nlink!=1 || (uint64_t)s.st_dev!=dev || (uint64_t)s.st_ino!=ino ||
-      s.st_size!=(kind==2?44:28)) return ESTALE;
+      expected_size==0 || (uint64_t)s.st_size!=expected_size) return ESTALE;
   if (no_replace(fd,source,target)<0) return errno;
   if (fstatat(fd,target,&after,AT_SYMLINK_NOFOLLOW)<0) return errno;
   return same(&s,&after) && after.st_nlink==1 ? 0 : ESTALE;
@@ -1315,7 +1477,7 @@ static int dispatch(unsigned op) {
     int descriptors[]={write_fd,candidate_write_fd,read_fd,segments_fd,candidate_segments_fd,candidate_fd,
       epoch_fd,epochs_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_segments_fd,cold_lock_fd};
     for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
-      if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(94);
+      if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(HELPER_EXIT_CLOSE_FAILURE);
     }
     write_fd=candidate_write_fd=read_fd=segments_fd=candidate_segments_fd=candidate_fd=epoch_fd=epochs_fd=root_fd=lock_fd=-1;
     segments_parent_fd=-1; acquired=0;
@@ -1397,8 +1559,8 @@ static int dispatch(unsigned op) {
       if (!need(1)) return EPROTO;
       int candidate=(int)number(1);
       fd=candidate?candidate_write_fd:write_fd;
-      if (candidate) { candidate_write_fd=-1; candidate_write_kind=0; }
-      else { write_fd=-1; write_kind=0; }
+      if (candidate) { candidate_write_fd=-1; candidate_write_kind=WRITE_NONE; }
+      else { write_fd=-1; write_kind=WRITE_NONE; }
       return fd<0?EBADF:close(fd)<0?errno:0;
     }
     case PUBLISH: return publish();
@@ -1407,7 +1569,7 @@ static int dispatch(unsigned op) {
       fd=scope_fd((int)number(1)); return fd<0?ENOENT:fsync(fd)<0?errno:0;
     case CHECK: return check_paths();
     case INFO:
-      put((uint64_t)getpid(),8); put(write_fd<0?0:write_kind,1); put(read_fd>=0,1);
+      put((uint64_t)getpid(),8); put(write_fd<0?WRITE_NONE:write_kind,1); put(read_fd>=0,1);
       put(filesystem_type,8); put(ancestor_syncs,4);
       if (acquired) {
         struct stat root,segments;
@@ -1443,12 +1605,16 @@ static int validate_request(unsigned op) {
     case V2_RESTORE_V1:
       e=string(name,256); break;
     case V2_PUBLISH_CURRENT:
-      e=string(name,256); if (e || !need(32)) return e?e:EPROTO;
-      pos+=32; break;
+      e=string(name,256);
+      if (e || !need(FILE_IDENTITY_PAIR_BYTES)) return e?e:EPROTO;
+      pos+=FILE_IDENTITY_PAIR_BYTES; break;
     case V2_RECLAIM:
-      e=string(name,256); if (e || !need(77)) return e?e:EPROTO;
-      pos+=76;
-      if (number(1)) { if (!need(28)) return EPROTO; pos+=28; }
+      e=string(name,256); if (e || !need(RECLAIM_BASE_BYTES)) return e?e:EPROTO;
+      pos+=CURRENT_METADATA_BYTES;
+      if (number(1)) {
+        if (!need(AUTHORITY_METADATA_BYTES)) return EPROTO;
+        pos+=AUTHORITY_METADATA_BYTES;
+      }
       break;
     case COLD_STAGE_CREATE:
       e=string(name,256); break;
@@ -1479,7 +1645,8 @@ static int validate_request(unsigned op) {
       if (!need(24)) return EPROTO;
       pos+=24; break;
     case WRITE_AT:
-      if (!need(9) || input_n-pos>16777244u+9u) return EPROTO;
+      if (!need(WRITE_REQUEST_PREFIX_BYTES) ||
+          input_n-pos>IO_BODY_MAX+WRITE_REQUEST_PREFIX_BYTES) return EPROTO;
       pos=input_n; break;
     case PUBLISH:
       if (!need(1)) return EPROTO;
@@ -1532,52 +1699,66 @@ static int transfer(int fd,void *bytes,size_t n,int writing) {
 }
 int main(void) {
   signal(SIGPIPE,SIG_IGN);
+  unsigned char *packet=NULL;
+  size_t packet_capacity=0;
   for (;;) {
-    unsigned char size_bytes[4];
-    if (transfer(STDIN_FILENO,size_bytes,4,0)<0) break;
-    uint32_t size=0; for (int i=0;i<4;i++) size=(size<<8)|size_bytes[i];
-    if (size<10 || size>PACKET_MAX) break;
-    unsigned char *packet=malloc(size); if (!packet) break;
-    if (transfer(STDIN_FILENO,packet,size,0)<0) { free(packet); break; }
+    unsigned char size_bytes[PACKET_LENGTH_BYTES];
+    if (transfer(STDIN_FILENO,size_bytes,PACKET_LENGTH_BYTES,0)<0) break;
+    uint32_t size=0;
+    for (size_t i=0;i<PACKET_LENGTH_BYTES;i++) size=(size<<8)|size_bytes[i];
+    if (size<REQUEST_HEADER_BYTES || size>PACKET_MAX) break;
+    if (size>packet_capacity) {
+      size_t next=packet_capacity?packet_capacity:4096u;
+      while (next<size && next<PACKET_MAX/2u) next*=2u;
+      if (next<size) next=PACKET_MAX;
+      unsigned char *grown=realloc(packet,next); if (!grown) break;
+      packet=grown; packet_capacity=next;
+    }
+    if (transfer(STDIN_FILENO,packet,size,0)<0) break;
     input=packet; input_n=size; pos=0;
     unsigned version=(unsigned)number(1), op=(unsigned)number(1); uint64_t id=number(8);
     output_n=0; known_written=0;
     int e=0;
 #ifdef TAY_TEST_FAULTS
     fault_now=(op==(unsigned)fault_op && fault_n>0 && --fault_n==0);
-    if (fault_now && fault_action==1) e=fault_errno?fault_errno:EIO;
-    else if (fault_now && fault_action==5) _exit(95);
-    else if (fault_now && fault_action==10) kill_owner_vm();
-    else if (fault_now && fault_action==6) { if (lock_fd>=0) close(lock_fd); lock_fd=-1; }
+    if (fault_now && fault_action==FAULT_ERROR_BEFORE_CALL) e=fault_errno?fault_errno:EIO;
+    else if (fault_now && fault_action==FAULT_HELPER_CRASH_BEFORE_CALL)
+      _exit(HELPER_EXIT_CRASH_BEFORE_CALL);
+    else if (fault_now && fault_action==FAULT_OWNER_VM_CRASH_BEFORE_CALL) kill_owner_vm();
+    else if (fault_now && fault_action==FAULT_LOSE_LOCK) {
+      if (lock_fd>=0) close(lock_fd); lock_fd=-1;
+    }
 #endif
-    if (!e) e=version==1?validate_request(op):EPROTO;
-    if (!e) { pos=10; e=dispatch(op); }
+    if (!e) e=version==PROTOCOL_VERSION?validate_request(op):EPROTO;
+    if (!e) { pos=REQUEST_HEADER_BYTES; e=dispatch(op); }
     if (!e && pos!=input_n) e=EPROTO;
     if (!e && acquired) e=check_paths();
     if (e && failure_poisons(op)) poisoned=1;
 #ifdef TAY_TEST_FAULTS
-    if (fault_now && fault_action==3) _exit(93);
-    if (fault_now && fault_action==9) kill_owner_vm();
-    if (fault_now && fault_action==4) { free(packet); continue; }
-    if (fault_now && fault_action==7) id^=1;
+    if (fault_now && fault_action==FAULT_HELPER_CRASH_AFTER_CALL)
+      _exit(HELPER_EXIT_CRASH_AFTER_CALL);
+    if (fault_now && fault_action==FAULT_OWNER_VM_CRASH_AFTER_CALL) kill_owner_vm();
+    if (fault_now && fault_action==FAULT_DROP_REPLY) continue;
+    if (fault_now && fault_action==FAULT_INVALID_REPLY_ID) id^=1;
 #endif
     if (e) {
       const char *reason=error_name(e); output_n=strlen(reason); memcpy(output,reason,output_n);
     }
     size_t body_n=output_n;
-    unsigned char *reply=malloc(body_n+27); if (!reply) { free(packet); break; }
-    uint32_t total=(uint32_t)body_n+23;
-    for (int i=0;i<4;i++) reply[i]=(unsigned char)(total>>((3-i)*8));
-    reply[4]=1; reply[5]=(unsigned char)op;
+    unsigned char reply[FRAMED_REPLY_HEADER_BYTES];
+    uint32_t total=(uint32_t)body_n+REPLY_HEADER_BYTES;
+    for (size_t i=0;i<PACKET_LENGTH_BYTES;i++)
+      reply[i]=(unsigned char)(total>>((PACKET_LENGTH_BYTES-1u-i)*8));
+    reply[PACKET_LENGTH_BYTES]=PROTOCOL_VERSION; reply[5]=(unsigned char)op;
     for (int i=0;i<8;i++) reply[6+i]=(unsigned char)(id>>((7-i)*8));
     reply[14]=e?1:0;
     for (int i=0;i<4;i++) reply[15+i]=(unsigned char)((uint32_t)e>>((3-i)*8));
     for (int i=0;i<8;i++) reply[19+i]=(unsigned char)(known_written>>((7-i)*8));
-    memcpy(reply+27,output,body_n);
-    int sent=transfer(STDOUT_FILENO,reply,body_n+27,1);
-    free(reply); free(packet);
+    int sent=transfer(STDOUT_FILENO,reply,FRAMED_REPLY_HEADER_BYTES,1);
+    if (sent==0 && body_n) sent=transfer(STDOUT_FILENO,output,body_n,1);
     if (sent<0 || op==SHUTDOWN) break;
   }
+  free(packet);
   /* Process exit closes every pinned descriptor and releases flock together. */
   return 0;
 }

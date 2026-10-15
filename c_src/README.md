@@ -38,6 +38,16 @@ mode:u32` (37 bytes). Cold-copy sessions append `mtime_ns:u64 | ctime_ns:u64`
 and copying to reject source replacement or extent mutation.
 Type is regular=1, directory=2, symlink=3, other=4.
 
+The helper's `IO_BODY_MAX` is derived rather than duplicated as a literal:
+`RECORD_PAYLOAD_MAX_BYTES` (16,777,216) + `RECORD_OVERHEAD_BYTES` (28) =
+16,777,244 bytes, the largest complete encoded record accepted by one native
+read or write operation.
+
+Diagnostic `write_kind` values use `enum write_kind`: none=0, appendable
+segment=1, segment-header stage=2, STORE stage=3, unrestricted cold-copy file=4,
+CURRENT stage=5, STORE-V2 stage=6, and ADOPTION stage=7. The named values are
+wire-stable; their numeric ordering is not used to classify behavior.
+
 | Opcode | Request body | Success body |
 | --- | --- | --- |
 | 1 acquire | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64 |
@@ -63,8 +73,21 @@ Type is regular=1, directory=2, symlink=3, other=4.
 | 39 abort v2 candidate | — | closes private candidate/read descriptors while preserving the authoritative source |
 | 240 test fault | opcode:u8, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
 
-Fault actions are before-call error=1, short pwrite/pread=2, crash after=3, drop reply=4,
-crash before=5, lose lock FD=6, mismatched reply ID=7, pwrite returning error=8.
+Fault actions use the named `enum fault_action` constants in the helper while
+retaining these frozen wire values:
+
+| Value | Constant | Meaning |
+| --- | --- | --- |
+| 1 | `FAULT_ERROR_BEFORE_CALL` | Return an injected error before the operation. |
+| 2 | `FAULT_SHORT_IO` | Force a short `pread` or `pwrite`. |
+| 3 | `FAULT_HELPER_CRASH_AFTER_CALL` | Exit the helper after the operation. |
+| 4 | `FAULT_DROP_REPLY` | Complete processing but omit the reply. |
+| 5 | `FAULT_HELPER_CRASH_BEFORE_CALL` | Exit the helper before the operation. |
+| 6 | `FAULT_LOSE_LOCK` | Close the held lock descriptor. |
+| 7 | `FAULT_INVALID_REPLY_ID` | Reply with a mismatched request ID. |
+| 8 | `FAULT_SYSCALL_ERROR_AFTER_CALL` | Model a failed `pwrite` with unknown written bytes. |
+| 9 | `FAULT_OWNER_VM_CRASH_AFTER_CALL` | Kill the owner VM after the operation. |
+| 10 | `FAULT_OWNER_VM_CRASH_BEFORE_CALL` | Kill the owner VM before the operation. |
 They are compiled out of the production executable and Elixir API. Malformed
 control packets are rejected before filesystem operations. Poisoned helpers
 permit only cleanup shutdown; a transport failure closes the connection.
@@ -114,6 +137,10 @@ The helper uses `mkdirat`, `fstat`, `fstatat(AT_SYMLINK_NOFOLLOW)`, `fstatfs`,
 `flock(LOCK_EX|LOCK_NB)`, `pread`, one `pwrite` per write request, `fsync` on
 files/directories, and `close`. Directory enumeration uses
 `fdopendir`/`readdir`/`closedir`. Transport uses `read`/`write` on stdin/stdout.
+After `pwrite`, the helper preserves its exact readback verification while
+comparing in chunks of at most 1 MB, bounding temporary native memory instead
+of allocating a second maximum-record-sized buffer. Reply headers and bodies
+are written separately, avoiding another full-body reply copy.
 
 Linux publication is `syscall(SYS_renameat2, ..., RENAME_NOREPLACE)`. There is
 no replacing-rename fallback, ftruncate, unlink, or segment deletion operation.

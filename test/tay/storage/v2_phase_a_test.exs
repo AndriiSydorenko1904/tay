@@ -48,6 +48,8 @@ defmodule Tay.Storage.V2PhaseATest do
     assert job.terminal_at == nil
 
     assert {:ok, snapshot_bytes} = Codec.encode_snapshot(job)
+    assert {:ok, snapshot_size} = Codec.snapshot_size(job)
+    assert snapshot_size == byte_size(snapshot_bytes)
     assert {:ok, decoded} = Codec.decode_snapshot(snapshot_bytes)
     assert Map.drop(decoded, [:charge]) == Map.drop(job, [:charge])
     assert {:ok, restored} = Reducer.insert_snapshot(Reducer.candidate(), decoded)

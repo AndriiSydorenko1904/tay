@@ -37,6 +37,20 @@ defmodule Tay.Storage.V2.Codec do
     end
   end
 
+  def snapshot_size(job, limits \\ Value.defaults()) do
+    with :ok <- snapshot?(job, limits), do: snapshot_size_validated(job, limits)
+  end
+
+  @doc false
+  def snapshot_size_validated(job, limits \\ Value.defaults()) do
+    with {:ok, %{encoded_bytes: body_bytes}} <- Value.measure(snapshot_body(job), limits),
+         execution_bytes <- if(is_nil(Map.get(job, :execution)), do: 1, else: 9),
+         bytes <- 16 + 8 + 8 + execution_bytes + body_bytes,
+         true <- bytes <= 16_777_216 || {:error, :payload_too_large} do
+      {:ok, bytes}
+    end
+  end
+
   def decode_snapshot(payload, limits \\ Value.defaults())
 
   def decode_snapshot(payload, limits)

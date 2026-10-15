@@ -4,7 +4,7 @@ defmodule Tay.Storage.Record do
 
   The public contract is `docs/storage.md`: a 24-byte
   header, 28-byte overhead, big-endian integers, CRC32C over header bytes 0..19
-  and over those bytes followed by the opaque payload, and a 16 MiB hard limit.
+  and over those bytes followed by the opaque payload, and a 16 MB hard limit.
 
   Every type in 1..254 and schema in 1..255 is physically valid. Success does
   not establish sequence continuity, semantic acceptance, or an applied event.

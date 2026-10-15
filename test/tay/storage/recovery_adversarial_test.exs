@@ -233,7 +233,7 @@ defmodule Tay.Storage.RecoveryAdversarialTest do
   end
 
   @tag timeout: 180_000
-  test "exact 16 MiB payload is valid and lowering decode budget does not change its validity", %{
+  test "exact 16 MB payload is valid and lowering decode budget does not change its validity", %{
     path: path
   } do
     bytes = :binary.copy(<<131>>, 16_777_216)

@@ -27,7 +27,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_CALLER_TIMEOUT_MS` | `5000` | Maximum time an admitted Engine call may wait for its reply. A timeout after submission is reported as `unknown_outcome`; reconcile with the same job ID. |
 | `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | Durable enqueue group-commit window in milliseconds (`0..1000`). `0` preserves immediate fsync behavior. Invalid values stop startup. |
 | `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Automatic checkpoints run after new durable events even with active jobs, capture live state at a durable frontier without replaying old journal segments, and recovery replays the snapshot plus its tail. |
-| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs. Accepts bytes or an integer with `KB`, `KiB`, `MB`, `MiB`, `GB`, or `GiB`, for example `5GiB`. |
+| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`. These suffixes use binary multiples. |
 | `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. The Dashboard/API may use zero as a one-shot full terminal-history purge, after which the persisted retention is `1h`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
@@ -54,10 +54,9 @@ change recovery, capacity accounting, or failure semantics; a write/fsync error
 fails the generation without returning success for that batch. Embedded Engines
 use the `:group_commit_interval_ms` option. `durability: :write` remains immediate.
 
-`TAY_MAX_STATE_BYTES` uses decimal multipliers for `KB`, `MB`, and `GB`, and
-binary multipliers for `KiB`, `MiB`, and `GiB`. For example, `5GB` is
-`5_000_000_000` bytes while `5GiB` is `5_368_709_120` bytes. A value without a
-suffix is interpreted as bytes for backward compatibility.
+`TAY_MAX_STATE_BYTES` uses binary multipliers: `KB` is 1,024 bytes, `MB` is
+1,024 KB, and `GB` is 1,024 MB. For example, `5GB` is `5_368_709_120` bytes.
+A value without a suffix is interpreted as bytes for backward compatibility.
 
 Active-job and terminal-history counts are informational and have no configured
 maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are

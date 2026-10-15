@@ -55,7 +55,7 @@ defmodule Tay.Dashboard.LiveTest do
     refute html =~ ~s(#tay-dashboard[data-theme="dark"])
     assert html =~ "Run compaction"
     assert html =~ "Stored job history"
-    assert html =~ "MiB"
+    assert html =~ "MB"
     assert html =~ "Finished-job retention"
     assert html =~ "24 h"
     assert html =~ "Application memory"
@@ -124,10 +124,11 @@ defmodule Tay.Dashboard.LiveTest do
     {:ok, root} = EngineHelpers.start(path, @engine, max_state_bytes: 5 * 1_073_741_824)
     {:ok, view, html} = live(build_conn(), "/tay/")
 
-    assert html =~ "0 B / 5 GiB"
-    refute html =~ "5120.0 MiB"
-    assert Tay.Dashboard.OverviewLive.format_bytes(round(0.14 * 1_048_576)) == "143.36 KiB"
-    assert Tay.Dashboard.OverviewLive.format_bytes(5 * 1_073_741_824) == "5 GiB"
+    assert html =~ "0 B / 5 GB"
+    refute html =~ "5120.0 MB"
+    assert Tay.Dashboard.OverviewLive.format_bytes(round(0.14 * 1_048_576)) == "143.36 KB"
+    assert Tay.Dashboard.OverviewLive.format_bytes(5 * 1_073_741_824) == "5 GB"
+    assert Tay.Dashboard.OverviewLive.format_bytes(2 * 1_099_511_627_776) == "2 TB"
     assert has_element?(view, "#storage-segments")
 
     EngineHelpers.stop(root)

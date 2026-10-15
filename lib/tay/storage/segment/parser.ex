@@ -1,6 +1,7 @@
 defmodule Tay.Storage.Segment.Parser do
   @moduledoc false
   alias Tay.Storage.{CRC32C, Record, Segment}
+  @read_window 1_048_576
 
   @spec scan(any(), any(), any()) ::
           {:error,
@@ -113,11 +114,14 @@ defmodule Tay.Storage.Segment.Parser do
         reducer: reducer,
         mode: mode,
         id: Keyword.get(options, :id),
-        highest: Keyword.get(options, :highest, true)
+        highest: Keyword.get(options, :highest, true),
+        digest: if(Keyword.get(options, :sha256, false), do: :crypto.hash_init(:sha256)),
+        buffer_offset: 0,
+        buffer: <<>>
       }
 
-      case read_at(context, 0, 44) do
-        {:ok, header} -> start(context, header, accumulator)
+      case read_exact(context, 0, min(size, 44)) do
+        {:ok, header, context} -> start(context, header, accumulator)
         {:error, reason} -> fail(context, :io_or_resource_error, 0, reason)
       end
     else
@@ -133,6 +137,7 @@ defmodule Tay.Storage.Segment.Parser do
         {:store_id, id} -> is_binary(id) and byte_size(id) == 16 and id != <<0::128>>
         {:highest, highest} -> is_boolean(highest)
         {:max_decode_payload_bytes, n} -> is_integer(n) and n in 0..16_777_216
+        {:sha256, enabled} -> is_boolean(enabled)
         _ -> false
       end)
   end
@@ -142,7 +147,7 @@ defmodule Tay.Storage.Segment.Parser do
 
     case Segment.decode_header(header, expected) do
       {:ok, segment} ->
-        ctx = %{ctx | id: segment.id}
+        ctx = ctx |> Map.put(:id, segment.id) |> digest_update(header)
 
         if ctx.size > Segment.max_bytes() do
           fail(ctx, :corrupt_segment_header, 0, :segment_size_exceeds_format)
@@ -171,7 +176,7 @@ defmodule Tay.Storage.Segment.Parser do
     offset = segment.bytes
 
     case read_at(ctx, offset, 4) do
-      {:ok, <<>>} ->
+      {:ok, <<>>, ctx} ->
         cond do
           not ctx.highest ->
             fail(ctx, :sealed_history_error, offset, :earlier_active_segment)
@@ -180,21 +185,21 @@ defmodule Tay.Storage.Segment.Parser do
             fail(ctx, :record_or_sequence_error, offset, :active_size_exceeds_format)
 
           true ->
-            {:ok, %{segment | state: :active}, accumulator}
+            {:ok, %{segment | state: :active, digest: digest_final(ctx)}, accumulator}
         end
 
-      {:ok, "TAYF"} ->
+      {:ok, "TAYF", ctx} ->
         finish(ctx, segment, accumulator)
 
-      {:ok, <<"TAY", 0>>} ->
+      {:ok, <<"TAY", 0>>, ctx} ->
         record(ctx, segment, accumulator)
 
-      {:ok, short} when byte_size(short) < 4 ->
+      {:ok, short, ctx} when byte_size(short) < 4 ->
         if short == binary_part("TAY", 0, byte_size(short)),
           do: incomplete(ctx, :ambiguous_short_tail, offset, byte_size(short), 4),
           else: fail(ctx, :record_or_sequence_error, offset, {:error, {:corrupt, :invalid_magic}})
 
-      {:ok, _} ->
+      {:ok, _, ctx} ->
         fail(ctx, :record_or_sequence_error, offset, {:error, {:corrupt, :invalid_magic}})
 
       {:error, reason} ->
@@ -205,11 +210,11 @@ defmodule Tay.Storage.Segment.Parser do
   defp record(ctx, segment, accumulator) do
     options = Keyword.take(ctx.options, [:max_decode_payload_bytes])
 
-    with {:ok, header} <- read_at(ctx, segment.bytes, 24) do
+    with {:ok, header, ctx} <- read_at(ctx, segment.bytes, 24) do
       case Record.decode(header, options) do
         {:incomplete, stage, metadata} when stage in [:payload, :checksum] ->
           case read_at(ctx, segment.bytes, metadata.record_bytes) do
-            {:ok, bytes} ->
+            {:ok, bytes, ctx} ->
               accept_record(ctx, segment, accumulator, bytes, Record.decode(bytes, options))
 
             {:error, reason} ->
@@ -240,17 +245,22 @@ defmodule Tay.Storage.Segment.Parser do
         fail(ctx, :record_or_sequence_error, segment.bytes, :record_count_exceeds_format)
 
       true ->
+        updated = %{
+          segment
+          | last_sequence: record.sequence,
+            count: segment.count + 1,
+            bytes: segment.bytes + byte_size(bytes),
+            crc_state: CRC32C.update(segment.crc_state, bytes)
+        }
+
+        ctx = digest_update(ctx, bytes)
+
         case visit(ctx, record, segment.bytes, accumulator) do
           {:cont, accumulator} ->
-            updated = %{
-              segment
-              | last_sequence: record.sequence,
-                count: segment.count + 1,
-                bytes: segment.bytes + byte_size(bytes),
-                crc_state: CRC32C.update(segment.crc_state, bytes)
-            }
-
             next(ctx, updated, accumulator)
+
+          {:halt, accumulator} ->
+            {:halted, updated, accumulator}
 
           {:error, reason} ->
             fail(ctx, :visitor_error, segment.bytes, reason)
@@ -267,6 +277,7 @@ defmodule Tay.Storage.Segment.Parser do
   defp visit(ctx, record, offset, acc) do
     case ctx.reducer.(record, offset, acc) do
       {:cont, _} = result -> result
+      {:halt, _} = result -> result
       {:error, _} = result -> result
       _ -> {:error, :invalid_visitor_result}
     end
@@ -296,7 +307,7 @@ defmodule Tay.Storage.Segment.Parser do
 
       true ->
         case read_at(ctx, segment.bytes, 64) do
-          {:ok, bytes} ->
+          {:ok, bytes, ctx} ->
             expected = %{
               id: segment.id,
               first_sequence: segment.first_sequence,
@@ -308,7 +319,16 @@ defmodule Tay.Storage.Segment.Parser do
 
             case Segment.decode_footer(bytes, expected) do
               {:ok, footer} ->
-                {:ok, %{segment | state: :sealed, footer: footer, bytes: ctx.size}, accumulator}
+                ctx = digest_update(ctx, bytes)
+
+                {:ok,
+                 %{
+                   segment
+                   | state: :sealed,
+                     footer: footer,
+                     bytes: ctx.size,
+                     digest: digest_final(ctx)
+                 }, accumulator}
 
               {:error, {:unsupported_version, _} = reason} ->
                 fail(ctx, :unsupported_segment_version, segment.bytes, reason)
@@ -331,14 +351,48 @@ defmodule Tay.Storage.Segment.Parser do
 
   defp read_at(ctx, offset, limit) do
     length = min(limit, max(ctx.size - offset, 0))
+    buffer_end = ctx.buffer_offset + byte_size(ctx.buffer)
 
+    cond do
+      length == 0 ->
+        {:ok, <<>>, ctx}
+
+      offset >= ctx.buffer_offset and offset + length <= buffer_end ->
+        {:ok, binary_part(ctx.buffer, offset - ctx.buffer_offset, length), ctx}
+
+      length > @read_window ->
+        read_exact(%{ctx | buffer: <<>>}, offset, length)
+
+      true ->
+        fetch = min(@read_window, ctx.size - offset)
+
+        case read_exact(ctx, offset, fetch) do
+          {:ok, buffer, ctx} ->
+            ctx = %{ctx | buffer_offset: offset, buffer: buffer}
+            {:ok, binary_part(buffer, 0, length), ctx}
+
+          {:error, _} = error ->
+            error
+        end
+    end
+  end
+
+  defp read_exact(ctx, offset, length) do
     case ctx.read.(offset, length) do
-      {:ok, bytes} when is_binary(bytes) and byte_size(bytes) == length -> {:ok, bytes}
+      {:ok, bytes} when is_binary(bytes) and byte_size(bytes) == length -> {:ok, bytes, ctx}
       {:ok, _} -> {:error, :changed_file_or_short_read}
       {:error, _} = error -> error
       _ -> {:error, :invalid_read_result}
     end
   end
+
+  defp digest_update(%{digest: nil} = ctx, _bytes), do: ctx
+
+  defp digest_update(ctx, bytes),
+    do: %{ctx | digest: :crypto.hash_update(ctx.digest, bytes)}
+
+  defp digest_final(%{digest: nil}), do: nil
+  defp digest_final(ctx), do: :crypto.hash_final(ctx.digest)
 
   defp incomplete(ctx, kind, offset, available, expected, reason \\ nil) do
     classification = if ctx.highest, do: kind, else: :sealed_history_error

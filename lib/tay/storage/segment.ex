@@ -17,6 +17,7 @@ defmodule Tay.Storage.Segment do
     :state,
     :last_sequence,
     :crc_state,
+    :digest,
     :footer,
     :identity,
     count: 0,

@@ -4,7 +4,7 @@ defmodule Tay.Test.ReferenceCRC32C do
 
   # Independent test oracle: normal polynomial, left shifts, explicit reflection.
   # Unlike the production bit-by-bit right-shifting reference, this uses a table
-  # so independently checking the 16 MiB boundary remains practical.
+  # so independently checking the 16 MB boundary remains practical.
   @mask 0xFFFFFFFF
   @table List.to_tuple(
            for byte <- 0..255 do

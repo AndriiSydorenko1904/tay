@@ -620,7 +620,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   end
 
   # Disposable retained-history fixture: stream frames and CRCs without keeping
-  # an 80 MiB segment in the test process. Actual compaction below is automatic,
+  # an 80 MB segment in the test process. Actual compaction below is automatic,
   # through the production evaluator/permit/Writer/publication/recovery path.
   defp retained_history(path) do
     alias Tay.Test.{EventHelpers, SegmentHelpers}

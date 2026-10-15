@@ -102,6 +102,38 @@ defmodule Tay.Storage.SegmentParserTest do
              Segment.parse(h <> r <> footer(h, [r], flags: 1))
   end
 
+  test "small records share a bounded sequential read window" do
+    records = for sequence <- 1..100, do: R.frame(sequence: sequence, payload: <<sequence>>)
+    bytes = IO.iodata_to_binary([header(), records])
+    counter = :counters.new(1, [])
+
+    read = fn offset, length ->
+      :counters.add(counter, 1, 1)
+      {:ok, binary_part(bytes, offset, length)}
+    end
+
+    assert {:ok, %{count: 100}} = Segment.scan(read, byte_size(bytes))
+    assert :counters.get(counter, 1) == 2
+  end
+
+  test "scan computes SHA-256 in the validation pass and visitors can halt early" do
+    bytes = fixture("s05.tay")
+    read = fn offset, length -> {:ok, binary_part(bytes, offset, length)} end
+
+    assert {:ok, summary} = Segment.scan(read, byte_size(bytes), sha256: true)
+    assert summary.digest == :crypto.hash(:sha256, bytes)
+
+    assert {:halted, %{count: 1}, [sequence]} =
+             Segment.reduce_while(
+               read,
+               byte_size(bytes),
+               [],
+               fn record, _offset, _acc -> {:halt, [record.sequence]} end
+             )
+
+    assert sequence == 1
+  end
+
   property "arbitrary records parse with bounded reads, ordering and opaque payloads" do
     check all(
             payloads <- list_of(binary(max_length: 150), min_length: 1, max_length: 12),
@@ -115,7 +147,7 @@ defmodule Tay.Storage.SegmentParserTest do
       bytes = IO.iodata_to_binary([h, records, if(sealed, do: footer(h, records), else: <<>>)])
 
       read = fn offset, length ->
-        assert length <= 178
+        assert length <= min(byte_size(bytes) - offset, 1_048_576)
         {:ok, binary_part(bytes, offset, length)}
       end
 

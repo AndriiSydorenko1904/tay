@@ -122,15 +122,12 @@ defmodule Tay.Standalone.ConfigTest do
     assert message =~ "TAY_MAX_STATE_BYTES"
   end
 
-  test "parses decimal and binary active-state byte units" do
+  test "parses binary active-state byte units" do
     for {value, expected} <- [
           {"0", 0},
-          {"5KB", 5_000},
-          {"5KiB", 5_120},
-          {"5MB", 5_000_000},
-          {"5MiB", 5_242_880},
-          {"5GB", 5_000_000_000},
-          {"5GiB", 5_368_709_120}
+          {"5KB", 5_120},
+          {"5MB", 5_242_880},
+          {"5GB", 5_368_709_120}
         ] do
       assert {:ok, config} = Config.load(%{"TAY_MAX_STATE_BYTES" => value})
       assert config.max_state_bytes == expected
@@ -138,9 +135,9 @@ defmodule Tay.Standalone.ConfigTest do
   end
 
   test "rejects malformed active-state byte units" do
-    for value <- ["5K", "5Gi", "5gb", "5TB", "1.5GiB", " 5GiB", "05GiB", "-1"] do
+    for value <- ["5K", "5KiB", "5gb", "5TB", "1.5MB", " 5GB", "05GB", "-1"] do
       assert {:error, message} = Config.load(%{"TAY_MAX_STATE_BYTES" => value})
-      assert message =~ "KB, KiB, MB, MiB, GB, or GiB"
+      assert message =~ "KB, MB, or GB"
     end
   end
 

@@ -12,13 +12,11 @@ defmodule Tay.Storage.V2.Publisher do
 
   alias Tay.Event.V2
   alias Tay.State.Auxiliary
-  alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
+  alias Tay.Storage.{BufferedRead, CRC32C, Native, Reader, Record, Segment}
   alias Tay.Storage.V2.{Authority, Codec, Reducer, Retention, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
 
   @max 18_446_744_073_709_551_615
-  @digest_chunk 1_048_576
-  @scan_chunk 1_048_576
   @minimum_headroom 67_108_864
   @catch_up_target_events 1_024
   @catch_up_target_bytes 1_048_576
@@ -266,10 +264,11 @@ defmodule Tay.Storage.V2.Publisher do
                  buffered_scan(native, entry.size,
                    id: id,
                    store_id: store_id,
-                   highest: ordinal == total
+                   highest: ordinal == total,
+                   sha256: true
                  ),
                :ok <- source_state(summary, ordinal == total),
-               {:ok, digest} <- maybe_source_digest(native, summary, entry.size) do
+               {:ok, digest} <- maybe_source_digest(summary) do
             {:ok, summary, digest}
           end
         end)
@@ -295,10 +294,8 @@ defmodule Tay.Storage.V2.Publisher do
   defp source_state(%{state: :active, count: 0}, true), do: :ok
   defp source_state(_, _), do: {:error, :unsealed_source}
 
-  defp maybe_source_digest(_native, %{state: :active}, _), do: {:ok, nil}
-
-  defp maybe_source_digest(native, _, size),
-    do: digest(native, 0, size, :crypto.hash_init(:sha256))
+  defp maybe_source_digest(%{state: :active}), do: {:ok, nil}
+  defp maybe_source_digest(%{digest: digest}) when byte_size(digest) == 32, do: {:ok, digest}
 
   defp with_file(native, entry, fun) do
     with {:ok, opened} <- Native.open_read(native, :segments, entry.name) do
@@ -315,95 +312,26 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp digest(_native, _offset, 0, context), do: {:ok, :crypto.hash_final(context)}
-
-  defp digest(native, offset, remaining, context) do
-    length = min(remaining, @digest_chunk)
-
-    case Native.read(native, offset, length) do
-      {:ok, bytes} when byte_size(bytes) == length ->
-        digest(native, offset + length, remaining - length, :crypto.hash_update(context, bytes))
-
-      {:ok, _} ->
-        {:error, :short_source_read}
-
-      error ->
-        error
-    end
-  end
-
   defp buffered_scan(native, size, options) do
-    cache = {__MODULE__, make_ref()}
-
-    try do
-      Segment.scan(&buffered_read(native, cache, size, &1, &2), size, options)
-    after
-      Process.delete(cache)
-    end
-  end
-
-  defp buffered_read(_native, _cache, _size, _offset, 0), do: {:ok, <<>>}
-
-  defp buffered_read(native, cache, size, offset, length)
-       when offset >= 0 and length > 0 and offset + length <= size do
-    buffered_read(native, cache, size, offset, length, [])
-  end
-
-  defp buffered_read(_native, _cache, _size, _offset, _length),
-    do: {:error, :invalid_source_read_range}
-
-  defp buffered_read(_native, _cache, _size, _offset, 0, chunks),
-    do: {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
-
-  defp buffered_read(native, cache, size, offset, remaining, chunks) do
-    chunk_offset = div(offset, @scan_chunk) * @scan_chunk
-
-    with {:ok, bytes} <- scan_chunk(native, cache, size, chunk_offset) do
-      within = offset - chunk_offset
-      take = min(remaining, byte_size(bytes) - within)
-
-      buffered_read(
-        native,
-        cache,
-        size,
-        offset + take,
-        remaining - take,
-        [binary_part(bytes, within, take) | chunks]
-      )
-    end
-  end
-
-  defp scan_chunk(native, cache, size, offset) do
-    case Process.get(cache) do
-      {^offset, bytes} ->
-        {:ok, bytes}
-
-      _ ->
-        length = min(@scan_chunk, size - offset)
-
-        case Native.read(native, offset, length) do
-          {:ok, bytes} when byte_size(bytes) == length ->
-            Process.put(cache, {offset, bytes})
-            {:ok, bytes}
-
-          {:ok, _} ->
-            {:error, :short_source_read}
-
-          error ->
-            error
-        end
-    end
+    BufferedRead.with_reader(
+      &Native.read(native, &1, &2),
+      size,
+      &Segment.scan(&1, size, options),
+      invalid_range: :invalid_source_read_range,
+      short_read: :short_source_read
+    )
   end
 
   defp estimate(jobs, ids, auxiliary_events, target, deadline) do
-    sources = Enum.map(ids, &{:job, &1}) ++ Enum.map(auxiliary_events, &{:event, &1})
+    sources =
+      Stream.concat(Stream.map(ids, &{:job, &1}), Stream.map(auxiliary_events, &{:event, &1}))
 
     Enum.reduce_while(sources, {:ok, %{current: 44, count: 0, total: 0, segments: 0}}, fn source,
                                                                                           {:ok,
                                                                                            acc} ->
-      case with :ok <- deadline_ok(deadline), do: encode_base_payload(source, jobs) do
-        {:ok, payload} ->
-          size = byte_size(payload) + 28
+      case with :ok <- deadline_ok(deadline), do: base_payload_size(source, jobs) do
+        {:ok, payload_bytes} ->
+          size = payload_bytes + 28
 
           cond do
             44 + size + 64 > Segment.max_bytes() ->
@@ -456,7 +384,8 @@ defmodule Tay.Storage.V2.Publisher do
   end
 
   defp write_base(native, jobs, ids, auxiliary_events, store_id, target, source) do
-    sources = Enum.map(ids, &{:job, &1}) ++ Enum.map(auxiliary_events, &{:event, &1})
+    sources =
+      Stream.concat(Stream.map(ids, &{:job, &1}), Stream.map(auxiliary_events, &{:event, &1}))
 
     Enum.with_index(sources, 1)
     |> Enum.reduce_while({:ok, nil, [], 0, process_memory()}, fn {base_source, sequence},
@@ -494,8 +423,11 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp encode_base_payload(source, jobs) do
-    with {:ok, {_type, _schema, payload}} <- encode_base_record(source, jobs), do: {:ok, payload}
+  defp base_payload_size({:job, id}, jobs), do: Codec.snapshot_size_validated(jobs[id])
+
+  defp base_payload_size({:event, event}, _jobs) do
+    with {:ok, {_type, _schema, payload}} <- Tay.Event.encode(event),
+         do: {:ok, byte_size(payload)}
   end
 
   defp encode_base_record({:job, id}, jobs) do

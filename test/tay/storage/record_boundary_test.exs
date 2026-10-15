@@ -20,7 +20,7 @@ defmodule Tay.Storage.RecordBoundaryTest do
     end
   end
 
-  test "16 MiB payload is legal and anchored to F10 plus an independent full record checksum" do
+  test "16 MB payload is legal and anchored to F10 plus an independent full record checksum" do
     payload = :binary.copy(<<0, 255, 84, 65, 89, 0, 127, 128>>, div(@hard, 8))
 
     record =

@@ -20,7 +20,7 @@ defmodule Tay.Storage.Writer.SegmentOps do
     end
   end
 
-  def append_with_capacity(state, bytes, type, schema, payload) do
+  def append_with_capacity(state, bytes) do
     rotate? =
       state.segment.state == :sealed or
         state.segment.bytes + byte_size(bytes) + @footer_bytes >
@@ -28,9 +28,7 @@ defmodule Tay.Storage.Writer.SegmentOps do
 
     if rotate? do
       with {:ok, next} <- rotate(state),
-           # The sequence may change when rotation publishes its successor.
-           {:ok, final} <- encode_candidate(next, type, schema, payload),
-           do: append_bytes(next, final)
+           do: append_bytes(next, bytes)
     else
       append_bytes(state, bytes)
     end

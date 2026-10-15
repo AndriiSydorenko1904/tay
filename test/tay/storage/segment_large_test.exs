@@ -27,7 +27,7 @@ defmodule Tay.Storage.SegmentLargeTest do
                end
              )
 
-  test "exactly 1 GiB sealed geometry streams with one lazy record buffer" do
+  test "exactly 1 GB sealed geometry streams with one lazy record buffer" do
     key = make_ref()
     header = SegmentHelpers.header()
     payload = :binary.copy(<<7>>, 16_777_216)

@@ -16,7 +16,7 @@ defmodule Tay.Storage.RecoveryLargeTest do
     %{path: path}
   end
 
-  test "exact 1 GiB existing segment replays and activates with bounded reads and constant-size candidate",
+  test "exact 1 GB existing segment replays and activates with bounded reads and constant-size candidate",
        %{path: path} do
     store(path)
     header = SegmentHelpers.header()
@@ -86,7 +86,7 @@ defmodule Tay.Storage.RecoveryLargeTest do
       delivered = :erlang.trace_delivered(writer)
       assert_receive {:trace_delivered, ^writer, ^delivered}, 5_000
       reads = collect_reads(writer, [])
-      assert length(reads) > 64 * 3
+      assert length(reads) >= 64 * 2
       assert Enum.max(reads) == 16_777_244
       assert Enum.all?(reads, &(&1 in 0..16_777_244))
       GenServer.stop(writer)

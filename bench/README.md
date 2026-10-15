@@ -128,7 +128,9 @@ controller. No extra production worker or public API is introduced.
 - Indexed job/queue/scheduler function counts are recorded. Reader calls during
   live tracing expose disclosed rotation validation scans. Fresh recovery itself
   also fully traverses history; read/index tracing is not a claim that recovery
-  or rotation avoids physical scans. No scan optimization is made here.
+  or rotation avoids physical scans. The segment parser uses bounded 1 MB
+  sequential read-ahead, while records larger than that retain their bounded
+  direct-read path.
 - Memory uses 5 ms sampling and records bounded maxima, not a sample history.
   Engine/Writer process heaps, VM binary/ETS/total memory, a pre-restart baseline,
   post-activation private ETS byte metadata and semantic state/definition charges

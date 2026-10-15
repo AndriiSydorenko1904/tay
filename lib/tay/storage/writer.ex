@@ -443,7 +443,7 @@ defmodule Tay.Storage.Writer do
 
   def handle_call({:segment_records, segment_id, limit}, _from, state)
       when is_integer(segment_id) and segment_id > 0 and is_integer(limit) and limit in 1..1_000 do
-    result = inspect_segment(state.native, state.store_id, state.segment.id, segment_id, limit)
+    result = inspect_segment(state.native, state.store_id, state.segment, segment_id, limit)
     {:reply, result, state}
   end
 
@@ -457,52 +457,61 @@ defmodule Tay.Storage.Writer do
     end
   end
 
-  defp inspect_segment(native, store_id, highest_id, segment_id, limit) do
+  defp inspect_segment(native, store_id, active_segment, segment_id, limit) do
     with {:ok, name} <- Segment.filename(segment_id),
          {:ok, entries} <- Native.list(native, :segments),
          {:ok, %{size: size}} <- fetch_entry(entries, name),
          {:ok, _identity} <- Native.open_read(native, :segments, name) do
       result =
-        Segment.reduce(
-          &Native.read(native, &1, &2),
-          size,
-          [],
-          fn record, offset, acc ->
-            if length(acc) < limit do
-              [
-                Map.merge(
-                  %{
-                    sequence: record.sequence,
-                    offset: offset,
-                    record_type: record.record_type,
-                    payload_schema_version: record.payload_schema_version,
-                    payload_bytes: byte_size(record.payload)
-                  },
-                  %{inspection: RecordInspection.describe(record)}
-                )
-                | acc
-              ]
-            else
-              acc
-            end
-          end,
-          id: segment_id,
-          store_id: store_id,
-          highest: segment_id == highest_id
-        )
+        with {:ok, total_count} <-
+               inspection_count(native, size, store_id, active_segment, segment_id) do
+          visitor = fn record, offset, {records, count} ->
+            entry = %{
+              sequence: record.sequence,
+              offset: offset,
+              record_type: record.record_type,
+              payload_schema_version: record.payload_schema_version,
+              payload_bytes: byte_size(record.payload),
+              inspection: RecordInspection.describe(record)
+            }
+
+            next = {[entry | records], count + 1}
+
+            if count + 1 == limit and total_count > limit,
+              do: {:halt, next},
+              else: {:cont, next}
+          end
+
+          traversal =
+            Segment.reduce_while(
+              &Native.read(native, &1, &2),
+              size,
+              {[], 0},
+              visitor,
+              id: segment_id,
+              store_id: store_id,
+              highest: segment_id == active_segment.id
+            )
+
+          {traversal, total_count}
+        end
 
       close = Native.close_read(native)
 
       case {result, close} do
-        {{:ok, summary, records}, :ok} ->
+        {{{status, _summary, {records, _count}}, total_count}, :ok}
+        when status in [:ok, :halted] ->
           {:ok,
            %{
              records: Enum.reverse(records),
-             total_count: summary.count,
-             truncated: summary.count > limit
+             total_count: total_count,
+             truncated: total_count > limit
            }}
 
         {{:error, reason}, _} ->
+          {:error, reason}
+
+        {{{:error, reason}, _total_count}, _} ->
           {:error, reason}
 
         {_, error} ->
@@ -512,6 +521,23 @@ defmodule Tay.Storage.Writer do
       error -> error
     end
   end
+
+  defp inspection_count(_native, _size, _store_id, %{id: id, count: count}, id),
+    do: {:ok, count}
+
+  defp inspection_count(native, size, store_id, _active_segment, segment_id)
+       when size >= 64 do
+    with {:ok, bytes} when byte_size(bytes) == 64 <- Native.read(native, size - 64, 64),
+         {:ok, footer} <- Segment.decode_footer(bytes, %{id: segment_id, store_id: store_id}) do
+      {:ok, footer.count}
+    else
+      {:ok, _} -> {:error, :short_footer_read}
+      error -> error
+    end
+  end
+
+  defp inspection_count(_native, _size, _store_id, _active_segment, _segment_id),
+    do: {:error, :incomplete_footer}
 
   defp fetch_entry(entries, name) do
     case Enum.find(entries, &(&1.name == name)) do
@@ -523,7 +549,7 @@ defmodule Tay.Storage.Writer do
   defp mutate({:append, type, schema, payload}, _from, state) do
     case SegmentOps.encode_candidate(state, type, schema, payload) do
       {:ok, bytes} ->
-        case SegmentOps.append_with_capacity(state, bytes, type, schema, payload) do
+        case SegmentOps.append_with_capacity(state, bytes) do
           {:ok, next, receipt} ->
             {:reply, {:ok, receipt}, journal_compaction(next, {type, schema, payload})}
 

@@ -45,7 +45,7 @@ from .errors import (
 from .protocol import json_bytes, normalize_json, validate_task_name
 from .task import Task, TaskConfig
 
-# Buffer at most one MiB plus one byte to detect an oversized response.
+# Buffer at most one MB plus one byte to detect an oversized response.
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
 _MAX_TASK_RESULT_BYTES = 65_536
 _MAX_WORKER_CAPACITY = 256

@@ -94,7 +94,7 @@ defmodule Tay.Engine.CompactionEstimate do
         end
 
       snapshot_bound = estimate.definition_bytes + estimate.jobs * 512 - expired_bound
-      # Manifest entries<=256 each; 1 MiB covers fixed metadata and empty tail.
+      # Manifest entries<=256 each; 1 MB covers fixed metadata and empty tail.
       candidate_bound =
         snapshot_bound + 1_048_576 +
           (sealed_segments + estimate.jobs - expired) * 256

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.4.4 — 2026-10-15
+
+### Changed
+
+- Accelerated CRC32C with a table-driven implementation and added bounded
+  sequential read-ahead with direct reads for large records across recovery,
+  Store-v2 validation, and publication.
+- Reduced native-helper allocation pressure with chunked write verification,
+  streamed reply bodies, reusable request storage, and geometrically grown
+  descriptor chains while preserving readback and durability checks.
+- Combined append paths and avoided re-encoding records during segment
+  rotation; compaction estimates now measure snapshot payloads without
+  materializing them.
+- Computed sealed-segment SHA-256 during the validation pass instead of reading
+  each source segment a second time.
+- Bounded Dashboard segment inspection to the requested record limit, using
+  sealed footers or active Writer state for the total count.
+- Standardized displayed and configured binary byte units as KB, MB, GB, and
+  TB, where every step is 1,024; standalone configuration no longer accepts
+  the `KiB`, `MiB`, or `GiB` suffixes.
+- Replaced native protocol and fault-injection magic numbers with named,
+  wire-stable constants and documented their meanings.
+
 ## 1.4.3 — 2026-10-15
 
 ### Changed
@@ -236,8 +259,8 @@
   machine word size, retained canonical encoding, and binary payload bytes; the
   former `max_state_nodes` option remains accepted but ignored for 1.x
   configuration compatibility.
-- Displayed byte values in the most readable binary unit, including KiB for
-  sub-MiB values and GiB for large limits.
+- Displayed byte values in the most readable binary unit, including KB for
+  sub-MB values and GB for large limits.
 
 ### Fixed
 
@@ -584,7 +607,7 @@
 
 ### Added
 
-- Added canonical history size in MiB, segment count, and configured terminal
+- Added canonical history size in MB, segment count, and configured terminal
   retention to the dashboard Overview page.
 - Added an explicit retention-hours control to manual dashboard compaction.
 - Exposed the configured compaction terminal retention in the bounded Engine
@@ -796,7 +819,7 @@
 - Qualification: unchanged binary/Event fixtures, macOS development and
   validated Linux/Btrfs strict-sync ordinary suites, ASan/UBSan, independent
   crash/race and cold-restore tests, detached consumer releases, 10,000-job
-  reconstruction, 1 GiB physical recovery, 300-segment tests and the measured
+  reconstruction, 1 GB physical recovery, 300-segment tests and the measured
   benchmark scenarios. The R5 profile is finite and target validation is
   required; see [compatibility and limits](docs/compatibility.md).
 - Limitations: no hardware-independent power-loss certification, automatic

@@ -38,7 +38,7 @@ elixir test/fixtures/storage/record/v1/materialize.exs
 Tests read the binary files as committed compatibility anchors. They never
 regenerate them with the encoder. Encoder and decoder fixture tests are separate;
 the committed manifest provides an additional byte-level check.
-The 16 MiB payload is constructed deterministically only in boundary tests,
+The 16 MB payload is constructed deterministically only in boundary tests,
 anchored by F10 and an independent checksum oracle, not stored as a large fixture.
 
 Do not repair negative fixtures or change these expected bytes to make tests

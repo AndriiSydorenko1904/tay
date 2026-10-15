@@ -32,7 +32,9 @@ defmodule Tay.Engine.Persistence do
       hook(state.config, {:execution, type, :pre_append})
       hook(state.config, :pre_append)
 
-      case Writer.append(state.writer, state.admission, type, schema, payload) do
+      {writer_result, state} = append_record(state, type, schema, payload)
+
+      case writer_result do
         {:ok, receipt} ->
           validate_receipt!(state, receipt, byte_size(payload))
           hook(state.config, :post_append)
@@ -82,7 +84,7 @@ defmodule Tay.Engine.Persistence do
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: state.next_sequence}, seed),
          :ok <- headroom(state, byte_size(payload), state.settlement_reserve) do
-      {writer_result, state} = append_auxiliary(state, type, payload)
+      {writer_result, state} = append_record(state, type, 2, payload)
 
       case writer_result do
         {:ok, receipt} ->
@@ -117,13 +119,7 @@ defmodule Tay.Engine.Persistence do
     end
   end
 
-  defp append_auxiliary(%{epoch_id: epoch} = state, type, payload) when is_binary(epoch),
-    do: append_v2_record(state, type, 2, payload)
-
-  defp append_auxiliary(state, type, payload),
-    do: {Writer.append(state.writer, state.admission, type, 2, payload), state}
-
-  defp append_v2_record(state, type, schema, payload) do
+  defp append_record(state, type, schema, payload) do
     case Writer.append(state.writer, state.admission, type, schema, payload) do
       {:ok, receipt, {:online_compaction, stats}} ->
         adopted = OnlineCheckpoint.adopt(state, stats)
@@ -153,7 +149,7 @@ defmodule Tay.Engine.Persistence do
          {:ok, job, budget} <- ProjectionState.account_active(state, previous, predicted) do
       hook(state.config, {:execution, 8, :pre_append})
       hook(state.config, :pre_append)
-      {writer_result, state} = append_v2(state, payload)
+      {writer_result, state} = append_record(state, 8, 1, payload)
 
       case writer_result do
         {:ok, receipt} ->
@@ -179,17 +175,6 @@ defmodule Tay.Engine.Persistence do
         _ ->
           exit(:writer_commit_unknown)
       end
-    end
-  end
-
-  defp append_v2(state, payload) do
-    case Writer.append(state.writer, state.admission, 8, 1, payload) do
-      {:ok, receipt, {:online_compaction, stats}} ->
-        adopted = OnlineCheckpoint.adopt(state, stats)
-        {{:ok, receipt}, %{adopted | online_compaction: {:switched, state.online_compaction}}}
-
-      result ->
-        {result, state}
     end
   end
 
