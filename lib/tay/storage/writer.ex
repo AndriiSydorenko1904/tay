@@ -13,7 +13,7 @@ defmodule Tay.Storage.Writer do
   Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{Native, Reader, Recovery, Segment}
+  alias Tay.Storage.{Native, Reader, RecordInspection, Recovery, Segment}
   alias Tay.Storage.Recovery.Error
 
   alias Tay.Storage.Writer.{
@@ -470,13 +470,16 @@ defmodule Tay.Storage.Writer do
           fn record, offset, acc ->
             if length(acc) < limit do
               [
-                %{
-                  sequence: record.sequence,
-                  offset: offset,
-                  record_type: record.record_type,
-                  payload_schema_version: record.payload_schema_version,
-                  payload_bytes: byte_size(record.payload)
-                }
+                Map.merge(
+                  %{
+                    sequence: record.sequence,
+                    offset: offset,
+                    record_type: record.record_type,
+                    payload_schema_version: record.payload_schema_version,
+                    payload_bytes: byte_size(record.payload)
+                  },
+                  %{inspection: RecordInspection.describe(record)}
+                )
                 | acc
               ]
             else

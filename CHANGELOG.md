@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.3 — 2026-10-15
+
+### Changed
+
+- Dashboard storage-record inspection now identifies the related job or schedule,
+  revision, timestamp, and event summary. Decoded payload details can be expanded
+  inline, and job identifiers link to their job page.
+
 ## 1.4.2 — 2026-10-15
 
 ### Security

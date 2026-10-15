@@ -204,7 +204,7 @@ defmodule Tay do
     end
   end
 
-  @doc "Returns bounded physical record metadata for one storage segment."
+  @doc "Returns bounded physical metadata and decoded inspection previews for one storage segment."
   def storage_records(segment_id, options \\ []) do
     with true <- (is_integer(segment_id) and segment_id > 0) || {:error, :invalid_segment},
          true <- Keyword.keyword?(options) || {:error, :invalid_options},

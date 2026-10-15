@@ -33,6 +33,7 @@ defmodule Tay.Dashboard.OverviewLive do
        storage_segments: [],
        storage_segments_truncated: false,
        expanded_segment: nil,
+       expanded_record: nil,
        segment_records: [],
        segment_records_truncated: false
      )
@@ -59,6 +60,7 @@ defmodule Tay.Dashboard.OverviewLive do
       {:noreply,
        assign(socket,
          expanded_segment: id,
+         expanded_record: nil,
          segment_records: page.records,
          segment_records_truncated: page.truncated,
          flash_error: nil
@@ -68,6 +70,7 @@ defmodule Tay.Dashboard.OverviewLive do
         {:noreply,
          assign(socket,
            expanded_segment: nil,
+           expanded_record: nil,
            segment_records: [],
            segment_records_truncated: false
          )}
@@ -77,6 +80,17 @@ defmodule Tay.Dashboard.OverviewLive do
 
       _ ->
         {:noreply, assign(socket, flash_error: "Invalid storage segment.")}
+    end
+  end
+
+  def handle_event("toggle-record-details", %{"sequence" => value}, socket) do
+    case Integer.parse(value) do
+      {sequence, ""} ->
+        expanded = if socket.assigns.expanded_record == sequence, do: nil, else: sequence
+        {:noreply, assign(socket, expanded_record: expanded)}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -341,26 +355,78 @@ defmodule Tay.Dashboard.OverviewLive do
                     <p :if={@segment_records_truncated} class="notice">
                       Showing the first {length(@segment_records)} records.
                     </p>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>SEQUENCE</th>
-                          <th>OFFSET</th>
-                          <th>TYPE</th>
-                          <th>SCHEMA</th>
-                          <th>PAYLOAD</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr :for={record <- @segment_records}>
-                          <td>{record.sequence}</td>
-                          <td>{record.offset}</td>
-                          <td>{record_label(record)}</td>
-                          <td>{record.payload_schema_version}</td>
-                          <td>{format_bytes(record.payload_bytes)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                    <div class="record-table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>SEQUENCE</th>
+                            <th>OFFSET</th>
+                            <th>EVENT</th>
+                            <th>ENTITY</th>
+                            <th>REVISION</th>
+                            <th>RECORDED AT</th>
+                            <th>PAYLOAD</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <%= for record <- @segment_records do %>
+                            <tr id={"segment-record-#{record.sequence}"}>
+                              <td>{record.sequence}</td>
+                              <td>{record.offset}</td>
+                              <td>
+                                <button
+                                  class="record-toggle"
+                                  phx-click="toggle-record-details"
+                                  phx-value-sequence={record.sequence}
+                                  aria-expanded={@expanded_record == record.sequence}
+                                  aria-controls={"record-details-#{record.sequence}"}
+                                >
+                                  <span aria-hidden="true">
+                                    {if @expanded_record == record.sequence, do: "▾", else: "▸"}
+                                  </span>
+                                  {record_label(record)}
+                                </button>
+                                <div class="record-summary">{record.inspection.summary}</div>
+                              </td>
+                              <td>
+                                <div>{record.inspection.entity || "—"}</div>
+                                <.link
+                                  :if={record.inspection.entity == "job"}
+                                  navigate={@dashboard_path <> "/jobs/" <> record.inspection.identity}
+                                  title="Open job details"
+                                >
+                                  <code class="record-identity">{record.inspection.identity}</code>
+                                </.link>
+                                <code
+                                  :if={record.inspection.entity != "job"}
+                                  class="record-identity"
+                                >{record.inspection.identity}</code>
+                              </td>
+                              <td>{record_revision(record.inspection.revision)}</td>
+                              <td>{record_time(record.inspection.at)}</td>
+                              <td>
+                                {format_bytes(record.payload_bytes)}
+                                <div class="record-schema">
+                                  schema {record.payload_schema_version}
+                                </div>
+                              </td>
+                            </tr>
+                            <tr
+                              :if={@expanded_record == record.sequence}
+                              id={"record-details-#{record.sequence}"}
+                              class="record-detail-row"
+                            >
+                              <td colspan="7">
+                                <div class="record-detail-heading">
+                                  Decoded payload · sequence {record.sequence} · offset {record.offset}
+                                </div>
+                                <pre>{record.inspection.details}</pre>
+                              </td>
+                            </tr>
+                          <% end %>
+                        </tbody>
+                      </table>
+                    </div>
                   </td>
                 </tr>
               <% end %>
@@ -555,6 +621,20 @@ defmodule Tay.Dashboard.OverviewLive do
 
   defp sequence_range(segment),
     do: "#{segment.first_sequence}–#{segment.last_sequence}"
+
+  defp record_revision(nil), do: "—"
+  defp record_revision(revision), do: revision
+
+  defp record_time(nil), do: "—"
+
+  defp record_time(milliseconds) when is_integer(milliseconds) do
+    case DateTime.from_unix(milliseconds, :millisecond) do
+      {:ok, datetime} -> Calendar.strftime(datetime, "%Y-%m-%d %H:%M:%S.%3f UTC")
+      {:error, _} -> to_string(milliseconds)
+    end
+  end
+
+  defp record_time(value), do: to_string(value)
 
   defp record_label(%{payload_schema_version: 2, record_type: type}) do
     case Tay.Event.V2.type_name(type) do

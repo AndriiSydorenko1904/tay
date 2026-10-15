@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.3
 ```
 
 For a ready-made Tay deployment example:
@@ -86,7 +86,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.3
 ```
 
 ## Why Tay?
@@ -435,7 +435,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.4.2
+ghcr.io/andriisydorenko1904/tay:1.4.3
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -445,7 +445,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.2
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.3
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:

@@ -194,6 +194,15 @@ defmodule Tay.Dashboard.Live do
         #tay-dashboard button { border:0; border-radius:6px; padding:8px 12px; background:var(--tay-primary); color:white; cursor:pointer; }
         #tay-dashboard button:hover { background:var(--tay-primary-hover); }
         #tay-dashboard button.secondary { background:var(--tay-surface-muted); color:var(--tay-text); border:1px solid var(--tay-border); }
+        #tay-dashboard button.record-toggle { display:flex; align-items:center; gap:6px; padding:0; background:transparent; color:var(--tay-link); font:inherit; font-weight:650; text-align:left; }
+        #tay-dashboard button.record-toggle:hover { background:transparent; color:var(--tay-text); }
+        #tay-dashboard .record-summary, #tay-dashboard .record-schema { color:var(--tay-muted); font-size:12px; margin-top:4px; }
+        #tay-dashboard .record-table-scroll { overflow-x:auto; }
+        #tay-dashboard .record-table-scroll table { min-width:920px; }
+        #tay-dashboard .record-identity { display:block; max-width:18rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; margin-top:4px; }
+        #tay-dashboard .record-detail-row td { padding:0 10px 14px; background:var(--tay-surface-muted); }
+        #tay-dashboard .record-detail-row pre { margin:8px 0 0; max-height:28rem; overflow:auto; }
+        #tay-dashboard .record-detail-heading { color:var(--tay-muted); font-size:12px; font-weight:650; padding-top:12px; text-transform:uppercase; }
         #tay-dashboard input, #tay-dashboard select { border:1px solid var(--tay-border); border-radius:6px; padding:8px; background:var(--tay-surface); color:var(--tay-text); }
         #tay-dashboard pre { white-space:pre-wrap; overflow-wrap:anywhere; background:var(--tay-surface-muted); padding:14px; border-radius:8px; }
         #tay-dashboard .outcome { border-left:4px solid var(--tay-border); padding:10px 12px; border-radius:4px; background:var(--tay-surface-muted); }

@@ -135,7 +135,7 @@ defmodule Tay.Dashboard.LiveTest do
 
   test "expands physical records inside a storage segment", %{path: path} do
     {:ok, root} = EngineHelpers.start(path, @engine)
-    {:ok, _job} = EngineWorker.new(%{"record" => true}) |> Tay.insert(name: @engine)
+    {:ok, job} = EngineWorker.new(%{"record" => true}) |> Tay.insert(name: @engine)
     {:ok, view, _html} = live(build_conn(), "/tay/")
 
     view |> element("#storage-segments summary") |> render_click()
@@ -146,6 +146,18 @@ defmodule Tay.Dashboard.LiveTest do
 
     assert has_element?(view, "#segment-records-1")
     assert render(view) =~ "job inserted"
+    assert render(view) =~ job.id
+    assert render(view) =~ "revision"
+    assert has_element?(view, "a[href='/tay/jobs/#{job.id}']")
+
+    first_sequence =
+      view
+      |> element("#segment-records-1 button[phx-click='toggle-record-details']")
+      |> render_click()
+
+    assert first_sequence =~ "Decoded payload"
+    assert first_sequence =~ "worker_key"
+    assert has_element?(view, ".record-detail-row")
     EngineHelpers.stop(root)
   end
 
