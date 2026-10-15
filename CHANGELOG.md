@@ -20,6 +20,8 @@
 - Standardized displayed and configured binary byte units as KB, MB, GB, and
   TB, where every step is 1,024; standalone configuration no longer accepts
   the `KiB`, `MiB`, or `GiB` suffixes.
+- Updated the Python client package to 1.3.1 for its matching terminology
+  change and release artifact.
 - Replaced native protocol and fault-injection magic numbers with named,
   wire-stable constants and documented their meanings.
 
