@@ -37,9 +37,26 @@
 #define CURRENT_METADATA_BYTES 76u
 #define WRITE_REQUEST_PREFIX_BYTES 9u
 #define PACKET_LENGTH_BYTES 4u
-#define REQUEST_HEADER_BYTES 10u
-#define REPLY_HEADER_BYTES 23u
+#define PROTOCOL_VERSION_BYTES 1u
+#define OPERATION_CODE_BYTES 1u
+#define REQUEST_ID_BYTES 8u
+#define ERROR_FLAG_BYTES 1u
+#define ERROR_CODE_BYTES 4u
+#define KNOWN_WRITTEN_BYTES 8u
+#define REQUEST_HEADER_BYTES \
+  (PROTOCOL_VERSION_BYTES + OPERATION_CODE_BYTES + REQUEST_ID_BYTES)
+#define REPLY_HEADER_BYTES \
+  (REQUEST_HEADER_BYTES + ERROR_FLAG_BYTES + ERROR_CODE_BYTES + KNOWN_WRITTEN_BYTES)
 #define FRAMED_REPLY_HEADER_BYTES (PACKET_LENGTH_BYTES + REPLY_HEADER_BYTES)
+#define REPLY_VERSION_OFFSET PACKET_LENGTH_BYTES
+#define REPLY_OPERATION_OFFSET (REPLY_VERSION_OFFSET + PROTOCOL_VERSION_BYTES)
+#define REPLY_REQUEST_ID_OFFSET (REPLY_OPERATION_OFFSET + OPERATION_CODE_BYTES)
+#define REPLY_ERROR_FLAG_OFFSET (REPLY_REQUEST_ID_OFFSET + REQUEST_ID_BYTES)
+#define REPLY_ERROR_CODE_OFFSET (REPLY_ERROR_FLAG_OFFSET + ERROR_FLAG_BYTES)
+#define REPLY_KNOWN_WRITTEN_OFFSET (REPLY_ERROR_CODE_OFFSET + ERROR_CODE_BYTES)
+/* Keep small requests cheap, then grow geometrically up to the protocol limit. */
+#define INITIAL_PACKET_CAPACITY_BYTES 4096u
+#define PACKET_CAPACITY_GROWTH_FACTOR 2u
 #define FILE_IDENTITY_PAIR_BYTES 32u
 #define RECLAIM_BASE_BYTES (CURRENT_METADATA_BYTES + 1u)
 #define SEGMENT_ID_DIGITS 20u
@@ -261,6 +278,11 @@ static int reclamation_unlink(int fd,const char *name,int flags,unsigned target)
 static int need(size_t n) { return n <= input_n-pos; }
 static uint64_t number(size_t n) {
   uint64_t v=0; for (size_t i=0;i<n;i++) v=(v<<8)|input[pos++]; return v;
+}
+static void encode_big_endian(unsigned char *destination, uint64_t value, size_t width) {
+  if (width>sizeof(value)) _exit(HELPER_EXIT_INTERNAL_BOUNDS);
+  for (size_t i=0;i<width;i++)
+    destination[i]=(unsigned char)(value>>((width-1u-i)*8));
 }
 static void put(uint64_t n, size_t width) {
   /* A violated bound is an internal protocol-construction bug. Never permit it
@@ -1708,15 +1730,18 @@ int main(void) {
     for (size_t i=0;i<PACKET_LENGTH_BYTES;i++) size=(size<<8)|size_bytes[i];
     if (size<REQUEST_HEADER_BYTES || size>PACKET_MAX) break;
     if (size>packet_capacity) {
-      size_t next=packet_capacity?packet_capacity:4096u;
-      while (next<size && next<PACKET_MAX/2u) next*=2u;
+      size_t next=packet_capacity?packet_capacity:INITIAL_PACKET_CAPACITY_BYTES;
+      while (next<size && next<PACKET_MAX/PACKET_CAPACITY_GROWTH_FACTOR)
+        next*=PACKET_CAPACITY_GROWTH_FACTOR;
       if (next<size) next=PACKET_MAX;
       unsigned char *grown=realloc(packet,next); if (!grown) break;
       packet=grown; packet_capacity=next;
     }
     if (transfer(STDIN_FILENO,packet,size,0)<0) break;
     input=packet; input_n=size; pos=0;
-    unsigned version=(unsigned)number(1), op=(unsigned)number(1); uint64_t id=number(8);
+    unsigned version=(unsigned)number(PROTOCOL_VERSION_BYTES);
+    unsigned op=(unsigned)number(OPERATION_CODE_BYTES);
+    uint64_t id=number(REQUEST_ID_BYTES);
     output_n=0; known_written=0;
     int e=0;
 #ifdef TAY_TEST_FAULTS
@@ -1750,13 +1775,13 @@ int main(void) {
     size_t body_n=output_n;
     unsigned char reply[FRAMED_REPLY_HEADER_BYTES];
     uint32_t total=(uint32_t)body_n+REPLY_HEADER_BYTES;
-    for (size_t i=0;i<PACKET_LENGTH_BYTES;i++)
-      reply[i]=(unsigned char)(total>>((PACKET_LENGTH_BYTES-1u-i)*8));
-    reply[PACKET_LENGTH_BYTES]=PROTOCOL_VERSION; reply[5]=(unsigned char)op;
-    for (int i=0;i<8;i++) reply[6+i]=(unsigned char)(id>>((7-i)*8));
-    reply[14]=e?1:0;
-    for (int i=0;i<4;i++) reply[15+i]=(unsigned char)((uint32_t)e>>((3-i)*8));
-    for (int i=0;i<8;i++) reply[19+i]=(unsigned char)(known_written>>((7-i)*8));
+    encode_big_endian(reply,total,PACKET_LENGTH_BYTES);
+    reply[REPLY_VERSION_OFFSET]=PROTOCOL_VERSION;
+    reply[REPLY_OPERATION_OFFSET]=(unsigned char)op;
+    encode_big_endian(reply+REPLY_REQUEST_ID_OFFSET,id,REQUEST_ID_BYTES);
+    reply[REPLY_ERROR_FLAG_OFFSET]=e?1:0;
+    encode_big_endian(reply+REPLY_ERROR_CODE_OFFSET,(uint32_t)e,ERROR_CODE_BYTES);
+    encode_big_endian(reply+REPLY_KNOWN_WRITTEN_OFFSET,known_written,KNOWN_WRITTEN_BYTES);
     int sent=transfer(STDOUT_FILENO,reply,FRAMED_REPLY_HEADER_BYTES,1);
     if (sent==0 && body_n) sent=transfer(STDOUT_FILENO,output,body_n,1);
     if (sent<0 || op==SHUTDOWN) break;

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.6 — 2026-10-15
+
+### Added
+
+- Added live BEAM CPU utilization, online scheduler capacity, and run-queue
+  pressure to the Dashboard Overview with an explicit shared-runtime boundary.
+
+### Changed
+
+- Replaced native reply-header offsets, field widths, and packet-allocation
+  growth values with named protocol constants and a shared big-endian encoder.
+
 ## 1.4.5 — 2026-10-15
 
 ### Added

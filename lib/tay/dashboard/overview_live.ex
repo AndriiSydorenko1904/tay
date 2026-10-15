@@ -3,6 +3,8 @@ defmodule Tay.Dashboard.OverviewLive do
   use Phoenix.LiveView
   alias Tay.Dashboard.Live
 
+  @resource_refresh_ms 1_000
+
   @impl true
   def mount(_params, session, socket) do
     {:ok,
@@ -17,6 +19,8 @@ defmodule Tay.Dashboard.OverviewLive do
        engine_state: :unavailable,
        engine_phase: nil,
        refresh_timer: nil,
+       beam_cpu: %{usage: nil, schedulers: :erlang.system_info(:schedulers_online), run_queue: 0},
+       scheduler_sample: nil,
        beam_memory: %{total: 0, processes: 0, ets: 0, binary: 0},
        capacity: %{
          jobs: 0,
@@ -233,7 +237,7 @@ defmodule Tay.Dashboard.OverviewLive do
   end
 
   def handle_info({:tay_dashboard_refresh_tick, signal}, socket) do
-    {:noreply, socket |> Live.finish_refresh(signal) |> assign(refresh_timer: nil) |> refresh()}
+    {:noreply, socket |> Live.finish_refresh(signal) |> refresh()}
   end
 
   def handle_info(:tay_dashboard_refresh, socket) do
@@ -311,6 +315,34 @@ defmodule Tay.Dashboard.OverviewLive do
           <div class="card-help">{state_description(state)}</div>
         </.link>
       </div>
+      <section style="margin-top:28px">
+        <h3>Processor use</h3>
+        <p class="section-help">
+          CPU activity inside the Erlang runtime that hosts Tay. Utilization is sampled between dashboard refreshes and normalized to the available BEAM scheduler capacity.
+        </p>
+        <div class="cards">
+          <div class="card" id="beam-cpu-utilization">
+            <div>BEAM CPU utilization</div>
+            <div class="count">{format_cpu(@beam_cpu.usage)}</div>
+            <div class="card-help">
+              Scheduler time used by Tay, its workers, and this dashboard during the latest sample.
+            </div>
+          </div>
+          <div class="card" id="beam-scheduler-capacity">
+            <div>Scheduler capacity</div>
+            <div class="count">{@beam_cpu.schedulers}</div>
+            <div class="card-help">Normal BEAM schedulers currently online.</div>
+          </div>
+          <div class="card" id="beam-run-queue">
+            <div>Run queue</div>
+            <div class="count">{@beam_cpu.run_queue}</div>
+            <div class="card-help">Runnable work waiting for scheduler time at this instant.</div>
+          </div>
+        </div>
+        <p class="section-note">
+          BEAM does not attribute CPU time to a single library. If other applications share this runtime, their work is included in the utilization value.
+        </p>
+      </section>
       <section style="margin-top:28px">
         <h3>Application memory</h3>
         <p class="section-help">
@@ -605,19 +637,24 @@ defmodule Tay.Dashboard.OverviewLive do
     status = Tay.status(name: socket.assigns.engine)
     memory = Map.new(:erlang.memory())
 
+    {beam_cpu, scheduler_sample} =
+      sample_cpu(socket.assigns.scheduler_sample, Phoenix.LiveView.connected?(socket))
+
+    timer = resource_refresh_timer(socket)
+
     case Tay.stats(name: socket.assigns.engine) do
       {:ok, stats} ->
         retention = Map.get(status, :compaction_terminal_retention, {:hours, 24})
         retention_hours = retention_hours(retention)
-
-        if socket.assigns.refresh_timer, do: Process.cancel_timer(socket.assigns.refresh_timer)
 
         assign(socket,
           stats: stats,
           engine_available: true,
           engine_state: Map.get(status, :state, :ready),
           engine_phase: Map.get(status, :phase),
-          refresh_timer: nil,
+          refresh_timer: timer,
+          beam_cpu: beam_cpu,
+          scheduler_sample: scheduler_sample,
           beam_memory: %{
             total: Map.get(memory, :total, 0),
             processes: Map.get(memory, :processes, 0),
@@ -641,17 +678,14 @@ defmodule Tay.Dashboard.OverviewLive do
         )
 
       {:error, error} ->
-        timer =
-          if Phoenix.LiveView.connected?(socket) and is_nil(socket.assigns.refresh_timer),
-            do: Process.send_after(self(), :tay_dashboard_refresh, 500),
-            else: socket.assigns.refresh_timer
-
         assign(socket,
           stats: %{},
           engine_available: false,
           engine_state: Map.get(status, :state, :unavailable),
           engine_phase: Map.get(status, :phase),
           refresh_timer: timer,
+          beam_cpu: beam_cpu,
+          scheduler_sample: scheduler_sample,
           beam_memory: %{
             total: Map.get(memory, :total, 0),
             processes: Map.get(memory, :processes, 0),
@@ -662,6 +696,74 @@ defmodule Tay.Dashboard.OverviewLive do
         )
     end
   end
+
+  defp resource_refresh_timer(socket) do
+    if socket.assigns.refresh_timer, do: Process.cancel_timer(socket.assigns.refresh_timer)
+
+    if Phoenix.LiveView.connected?(socket),
+      do: Process.send_after(self(), :tay_dashboard_refresh, @resource_refresh_ms),
+      else: nil
+  end
+
+  defp sample_cpu(previous, connected?) do
+    schedulers = :erlang.system_info(:schedulers_online)
+
+    if connected? do
+      sample_connected_cpu(previous, schedulers)
+    else
+      {%{usage: nil, schedulers: schedulers, run_queue: :erlang.statistics(:run_queue)}, previous}
+    end
+  end
+
+  defp sample_connected_cpu(previous, schedulers) do
+    current = scheduler_wall_time()
+
+    {%{
+       usage: scheduler_utilization(previous, current, schedulers),
+       schedulers: schedulers,
+       run_queue: :erlang.statistics(:run_queue)
+     }, current}
+  end
+
+  defp scheduler_wall_time do
+    case :erlang.statistics(:scheduler_wall_time) do
+      :undefined ->
+        _previous = :erlang.system_flag(:scheduler_wall_time, true)
+        :erlang.statistics(:scheduler_wall_time)
+
+      sample ->
+        sample
+    end
+  end
+
+  @doc false
+  def scheduler_utilization(nil, _current, _schedulers), do: nil
+
+  def scheduler_utilization(previous, current, schedulers)
+      when is_list(previous) and is_list(current) and is_integer(schedulers) and schedulers > 0 do
+    previous = Map.new(previous, fn {id, active, total} -> {id, {active, total}} end)
+
+    {active_delta, total_delta} =
+      Enum.reduce(current, {0, 0}, fn
+        {id, active, total}, {active_acc, total_acc} when id <= schedulers ->
+          case Map.get(previous, id) do
+            {old_active, old_total} when active >= old_active and total >= old_total ->
+              {active_acc + active - old_active, total_acc + total - old_total}
+
+            _ ->
+              {active_acc, total_acc}
+          end
+
+        _, acc ->
+          acc
+      end)
+
+    if total_delta > 0,
+      do: (active_delta / total_delta * 100) |> max(0.0) |> min(100.0),
+      else: nil
+  end
+
+  def scheduler_utilization(_, _, _), do: nil
 
   defp available(true, value), do: value
   defp available(false, _value), do: "—"
@@ -687,6 +789,10 @@ defmodule Tay.Dashboard.OverviewLive do
     do: format_unit(bytes, 1_073_741_824, "GB")
 
   def format_bytes(bytes), do: format_unit(bytes, 1_099_511_627_776, "TB")
+
+  @doc false
+  def format_cpu(nil), do: "Collecting…"
+  def format_cpu(value), do: "#{Float.round(value, 1)}%"
 
   defp format_unit(bytes, divisor, unit) do
     value = Float.round(bytes / divisor, 2)

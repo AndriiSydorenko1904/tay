@@ -59,6 +59,22 @@ defmodule Tay.Dashboard.LiveTest do
     assert html =~ "Finished-job retention"
     assert html =~ "24 h"
     assert html =~ "Application memory"
+    assert html =~ "Processor use"
+    assert html =~ "BEAM CPU utilization"
+    assert html =~ "Scheduler capacity"
+    assert html =~ "Run queue"
+    assert html =~ "BEAM does not attribute CPU time to a single library"
+    assert has_element?(view, "#beam-cpu-utilization")
+    assert has_element?(view, "#beam-scheduler-capacity")
+    assert has_element?(view, "#beam-run-queue")
+
+    assert EngineHelpers.eventually(fn ->
+             view
+             |> element("#beam-cpu-utilization .count")
+             |> render()
+             |> String.contains?("%")
+           end)
+
     assert html =~ "Total runtime memory"
     assert html =~ "Fast lookup tables (ETS)"
     assert html =~ "Shared data buffers"
@@ -132,6 +148,16 @@ defmodule Tay.Dashboard.LiveTest do
     assert has_element?(view, "#storage-segments")
 
     EngineHelpers.stop(root)
+  end
+
+  test "calculates normalized BEAM scheduler utilization" do
+    previous = [{1, 10, 100}, {2, 20, 100}, {3, 50, 100}]
+    current = [{1, 30, 200}, {2, 60, 200}, {3, 90, 200}]
+
+    assert Tay.Dashboard.OverviewLive.scheduler_utilization(previous, current, 2) == 30.0
+    assert Tay.Dashboard.OverviewLive.scheduler_utilization(nil, current, 2) == nil
+    assert Tay.Dashboard.OverviewLive.format_cpu(nil) == "Collecting…"
+    assert Tay.Dashboard.OverviewLive.format_cpu(12.345) == "12.3%"
   end
 
   test "expands physical records inside a storage segment", %{path: path} do

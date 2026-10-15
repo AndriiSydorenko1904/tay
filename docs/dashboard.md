@@ -84,9 +84,10 @@ model.
 ## Pages
 
 - **Overview** shows incrementally maintained counts for available, scheduled,
-  executing, retryable, completed, cancelled, and discarded jobs. It also
-  exposes a confirmation-protected manual compaction action with a result
-  summary.
+  executing, retryable, completed, cancelled, and discarded jobs. It samples
+  BEAM CPU utilization, online scheduler capacity, run-queue pressure, and
+  runtime memory, and exposes a confirmation-protected manual compaction action
+  with a result summary.
 - **Jobs** provides first, previous, next, and last cursor navigation with exact
   result/page totals, plus state, queue, and partial worker-key filters. Details
   show safe public job fields, bounded argument rendering, readable failure
@@ -106,11 +107,16 @@ The dashboard follows the operating-system light/dark preference by default.
 The Theme control stores an explicit override in the browser's local storage.
 
 Successful Tay transitions emit bounded telemetry. Connected dashboard
-LiveViews receive refresh hints and re-run only bounded public queries; the
-dashboard does not poll or scan all history. Live pages handle stale revisions,
-missing jobs, invalid URLs, and unavailable engines as ordinary visible errors.
-Storage inspection decoding runs outside the Engine command loop, uses bounded
-display values and a bounded preview cache, and does not cache complete payloads.
+LiveViews receive refresh hints and re-run only bounded public queries. Overview
+also samples bounded runtime summaries once per second so CPU utilization remains
+meaningful while the engine is idle; it does not scan job history. CPU is the
+share of normal BEAM scheduler capacity used between samples and therefore
+includes other applications if they share Tay's VM. Opening a connected Overview
+enables Erlang scheduler wall-time accounting for the runtime. Live pages handle
+stale revisions, missing jobs, invalid URLs, and unavailable engines as ordinary
+visible errors. Storage inspection decoding runs outside the Engine command loop,
+uses bounded display values and a bounded preview cache, and does not cache
+complete payloads.
 
 ## Operational boundary
 
