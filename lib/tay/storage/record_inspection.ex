@@ -180,7 +180,6 @@ defmodule Tay.Storage.RecordInspection do
   end
 
   defp detail_fields(details) when is_map(details), do: map_fields(details)
-  defp detail_fields(_), do: []
 
   defp body_fields(body) do
     ordered_map_fields(body, [

@@ -3,6 +3,9 @@ defmodule Tay.Executor.ServerSocketTest do
   import Bitwise
 
   alias Tay.Executor.Server
+  alias Tay.Test.{EngineHelpers, ExecutionHelpers, NativeHelpers}
+
+  @durable_engine Tay.Executor.ServerSocketDurableEngine
 
   setup do
     Process.flag(:trap_exit, true)
@@ -12,10 +15,10 @@ defmodule Tay.Executor.ServerSocketTest do
     %{root: root, socket: socket}
   end
 
-  defp options(socket, private_directory \\ true) do
+  defp options(socket, private_directory \\ true, engine_name \\ __MODULE__) do
     %{
       engine: self(),
-      engine_name: __MODULE__,
+      engine_name: engine_name,
       socket_path: socket,
       socket_mode: 0o600,
       private_directory: private_directory,
@@ -100,7 +103,8 @@ defmodule Tay.Executor.ServerSocketTest do
   end
 
   test "redeclaring the same stable schedule preserves its timer", %{socket: socket} do
-    assert {:ok, server} = Server.start_link(options(socket))
+    _root = start_durable_engine()
+    assert {:ok, server} = Server.start_link(options(socket, true, @durable_engine))
     assert_receive {:executor_server_ready, ^server}
 
     fields = %{
@@ -133,7 +137,8 @@ defmodule Tay.Executor.ServerSocketTest do
   test "a due occurrence remains pending when durable admission is unavailable", %{
     socket: socket
   } do
-    assert {:ok, server} = Server.start_link(options(socket))
+    root = start_durable_engine()
+    assert {:ok, server} = Server.start_link(options(socket, true, @durable_engine))
     assert_receive {:executor_server_ready, ^server}
 
     fields = %{
@@ -141,16 +146,36 @@ defmodule Tay.Executor.ServerSocketTest do
       "task" => "media.cleanup-orphans.v1",
       "args" => %{},
       "every" => %{"seconds" => 30},
+      "delay" => 0.05,
       "options" => %{"queue" => "default"}
     }
 
     assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
-    Process.sleep(50)
+    EngineHelpers.stop(root)
+    Process.sleep(100)
     entry = :sys.get_state(server).schedules["retrying-schedule"]
 
     assert entry.schedule.next_at == first["next_at"]
     assert is_reference(entry.timer)
     GenServer.stop(server)
+  end
+
+  defp start_durable_engine do
+    path = NativeHelpers.path()
+    ExecutionHelpers.initialize(path)
+    assert {:ok, root} = EngineHelpers.start(path, @durable_engine)
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+
+      File.rm_rf!(path)
+    end)
+
+    root
   end
 
   test "invalid occurrence options reject the declaration", %{socket: socket} do
@@ -169,6 +194,23 @@ defmodule Tay.Executor.ServerSocketTest do
                }
              })
 
+    GenServer.stop(server)
+  end
+
+  test "unavailable durable admission never installs a volatile schedule", %{socket: socket} do
+    assert {:ok, server} = Server.start_link(options(socket))
+    assert_receive {:executor_server_ready, ^server}
+
+    fields = %{
+      "declaration_id" => "must-be-durable",
+      "task" => "media.cleanup-orphans.v1",
+      "args" => %{},
+      "every" => %{"hours" => 24},
+      "options" => %{"queue" => "default"}
+    }
+
+    assert {:error, "unavailable"} = GenServer.call(server, {:put_schedule, fields})
+    assert :sys.get_state(server).schedules == %{}
     GenServer.stop(server)
   end
 end

@@ -130,6 +130,8 @@ defmodule Tay.Executor.Server do
           monitors: %{},
           reservations: %{},
           schedules: schedules,
+          schedule_operation: nil,
+          schedule_operations: :queue.new(),
           results: Map.get(config, :results, %{}),
           result_order: :queue.new()
         })
@@ -230,27 +232,8 @@ defmodule Tay.Executor.Server do
             case Schedule.advance_after_delivery(schedule, due, System.system_time(:millisecond)) do
               {:ok, advanced} ->
                 now = System.system_time(:millisecond)
-
-                case Tay.advance_schedule(
-                       id,
-                       schedule.revision,
-                       due,
-                       advanced.next_at,
-                       now,
-                       name: s.engine_name
-                     ) do
-                  {:ok, durable} ->
-                    advanced = %{advanced | revision: durable.revision}
-                    entry = arm_schedule(advanced, options, now)
-                    {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
-
-                  _ ->
-                    timer =
-                      Process.send_after(self(), {:schedule_due, id, due}, @schedule_retry_ms)
-
-                    entry = %{schedule: schedule, options: options, timer: timer}
-                    {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
-                end
+                operation = {:advance, schedule, advanced, options, due, now}
+                {:noreply, enqueue_schedule_operation(s, operation)}
 
               {:error, _} ->
                 {:noreply, drop_schedule(s, id)}
@@ -265,6 +248,14 @@ defmodule Tay.Executor.Server do
       _ ->
         {:noreply, s}
     end
+  end
+
+  def handle_info(
+        {:schedule_operation_result, token, result},
+        %{schedule_operation: {token, operation}} = s
+      ) do
+    next = complete_schedule_operation(s, operation, result)
+    {:noreply, continue_schedule_operations(%{next | schedule_operation: nil})}
   end
 
   def handle_info(_, s), do: {:noreply, s}
@@ -369,58 +360,22 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  def handle_call({:put_schedule, fields}, _from, s) do
+  def handle_call({:put_schedule, fields}, from, s) do
     id = Map.get(fields, "declaration_id") || schedule_id()
     now = System.system_time(:millisecond)
 
     with {:ok, schedule} <- Schedule.new(id, fields, now),
          options <- Map.get(fields, "options", %{}),
          {:ok, _} <- enqueue_options(options) do
-      existing_entry = Map.get(s.schedules, id)
-
-      if equivalent_schedule_entry?(existing_entry, schedule, options) do
-        {:reply, {:ok, public_schedule(existing_entry.schedule)}, s}
-      else
-        case Tay.register_schedule(schedule, name: s.engine_name) do
-          {:ok, durable} ->
-            schedule = %{schedule | revision: durable.revision}
-            state = drop_schedule(s, id)
-            entry = arm_schedule(schedule, options, now)
-            next = %{state | schedules: Map.put(state.schedules, id, entry)}
-            {:reply, {:ok, public_schedule(schedule)}, next}
-
-          _ ->
-            state = drop_schedule(s, id)
-            entry = arm_schedule(schedule, options, now)
-            next = %{state | schedules: Map.put(state.schedules, id, entry)}
-            {:reply, {:ok, public_schedule(schedule)}, next}
-        end
-      end
+      operation = {:register, schedule, options, now, from}
+      {:noreply, enqueue_schedule_operation(s, operation)}
     else
       _ -> {:reply, {:error, "invalid_schedule"}, s}
     end
   end
 
-  def handle_call({:cancel_schedule, id}, _from, s) do
-    case Map.fetch(s.schedules, id) do
-      {:ok, %{schedule: schedule}} ->
-        case Tay.cancel_schedule(id, name: s.engine_name) do
-          {:ok, durable} ->
-            cancelled = %{
-              Schedule.cancel(schedule, durable.cancelled_at)
-              | revision: durable.revision
-            }
-
-            {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
-
-          _ ->
-            cancelled = Schedule.cancel(schedule, System.system_time(:millisecond))
-            {:reply, {:ok, public_schedule(cancelled)}, drop_schedule(s, id)}
-        end
-
-      :error ->
-        {:reply, {:error, "schedule_not_found"}, s}
-    end
+  def handle_call({:cancel_schedule, id}, from, s) do
+    {:noreply, enqueue_schedule_operation(s, {:cancel, id, from})}
   end
 
   def handle_call({:reserve, task, queue}, _from, s) do
@@ -989,7 +944,13 @@ defmodule Tay.Executor.Server do
 
       {:error, code} ->
         {:error, code}
+
+      {:error, code, fields} ->
+        {:error, code, fields}
     end
+  catch
+    :exit, {:timeout, _} ->
+      {:error, "unknown_outcome", %{"reason" => "caller_timeout_or_disconnect"}}
   end
 
   defp cancel_schedule(server, %{"schedule_id" => id}) when is_binary(id) do
@@ -999,7 +960,13 @@ defmodule Tay.Executor.Server do
 
       {:error, code} ->
         {:error, code}
+
+      {:error, code, fields} ->
+        {:error, code, fields}
     end
+  catch
+    :exit, {:timeout, _} ->
+      {:error, "unknown_outcome", %{"reason" => "caller_timeout_or_disconnect"}}
   end
 
   defp cancel_schedule(_, _), do: {:error, "invalid_schedule_id"}
@@ -1014,6 +981,192 @@ defmodule Tay.Executor.Server do
     do: Schedule.equivalent?(existing, candidate)
 
   defp equivalent_schedule_entry?(_, _, _), do: false
+
+  defp enqueue_schedule_operation(s, operation) do
+    next = %{s | schedule_operations: :queue.in(operation, s.schedule_operations)}
+    continue_schedule_operations(next)
+  end
+
+  defp continue_schedule_operations(%{schedule_operation: nil} = s) do
+    case :queue.out(s.schedule_operations) do
+      {{:value, operation}, remaining} ->
+        begin_schedule_operation(%{s | schedule_operations: remaining}, operation)
+
+      {:empty, _} ->
+        s
+    end
+  end
+
+  defp continue_schedule_operations(s), do: s
+
+  defp begin_schedule_operation(s, {:register, schedule, options, _now, from} = operation) do
+    case Map.get(s.schedules, schedule.id) do
+      existing when not is_nil(existing) ->
+        if equivalent_schedule_entry?(existing, schedule, options) do
+          GenServer.reply(from, {:ok, public_schedule(existing.schedule)})
+          continue_schedule_operations(s)
+        else
+          launch_schedule_operation(s, operation)
+        end
+
+      nil ->
+        launch_schedule_operation(s, operation)
+    end
+  end
+
+  defp begin_schedule_operation(s, {:cancel, id, from}) do
+    case Map.fetch(s.schedules, id) do
+      {:ok, %{schedule: schedule}} ->
+        launch_schedule_operation(s, {:cancel, schedule, from})
+
+      :error ->
+        GenServer.reply(from, {:error, "schedule_not_found"})
+        continue_schedule_operations(s)
+    end
+  end
+
+  defp begin_schedule_operation(
+         s,
+         {:advance, schedule, _advanced, _options, due, _now} = operation
+       ) do
+    case Map.get(s.schedules, schedule.id) do
+      %{schedule: %{revision: revision, next_at: ^due}}
+      when revision == schedule.revision ->
+        launch_schedule_operation(s, operation)
+
+      _ ->
+        continue_schedule_operations(s)
+    end
+  end
+
+  defp launch_schedule_operation(s, operation) do
+    server = self()
+    token = make_ref()
+    engine_name = s.engine_name
+
+    Task.start(fn ->
+      result = run_schedule_operation(operation, engine_name)
+      send(server, {:schedule_operation_result, token, result})
+    end)
+
+    %{s | schedule_operation: {token, operation}}
+  end
+
+  defp run_schedule_operation({:register, schedule, _options, _now, _from}, engine_name),
+    do: Tay.register_schedule(schedule, name: engine_name)
+
+  defp run_schedule_operation({:cancel, schedule, _from}, engine_name),
+    do: Tay.cancel_schedule(schedule.id, schedule.revision, name: engine_name)
+
+  defp run_schedule_operation(
+         {:advance, schedule, advanced, _options, due, now},
+         engine_name
+       ) do
+    Tay.advance_schedule(
+      schedule.id,
+      schedule.revision,
+      due,
+      advanced.next_at,
+      now,
+      name: engine_name
+    )
+  end
+
+  defp complete_schedule_operation(
+         s,
+         {:register, schedule, options, now, from},
+         {:ok, durable}
+       ) do
+    schedule = durable_schedule(schedule, durable)
+    state = drop_schedule(s, schedule.id)
+    entry = arm_schedule(schedule, options, now)
+    GenServer.reply(from, {:ok, public_schedule(schedule)})
+    %{state | schedules: Map.put(state.schedules, schedule.id, entry)}
+  end
+
+  defp complete_schedule_operation(s, {:register, schedule, _options, _now, from}, error) do
+    GenServer.reply(from, schedule_operation_error(error))
+
+    if unknown_schedule_outcome?(error),
+      do: drop_schedule(s, schedule.id),
+      else: s
+  end
+
+  defp complete_schedule_operation(s, {:cancel, schedule, from}, {:ok, durable}) do
+    cancelled = durable_schedule(schedule, durable)
+    GenServer.reply(from, {:ok, public_schedule(cancelled)})
+    drop_schedule(s, schedule.id)
+  end
+
+  defp complete_schedule_operation(s, {:cancel, schedule, from}, error) do
+    GenServer.reply(from, schedule_operation_error(error))
+
+    if unknown_schedule_outcome?(error),
+      do: drop_schedule(s, schedule.id),
+      else: s
+  end
+
+  defp complete_schedule_operation(
+         s,
+         {:advance, schedule, advanced, options, _due, now},
+         {:ok, durable}
+       ) do
+    advanced = durable_schedule(advanced, durable)
+    entry = arm_schedule(advanced, options, now)
+    %{s | schedules: Map.put(s.schedules, schedule.id, entry)}
+  end
+
+  defp complete_schedule_operation(
+         s,
+         {:advance, schedule, _advanced, options, due, _now},
+         error
+       ) do
+    cond do
+      unknown_schedule_outcome?(error) ->
+        drop_schedule(s, schedule.id)
+
+      retryable_schedule_error?(error) ->
+        timer = Process.send_after(self(), {:schedule_due, schedule.id, due}, @schedule_retry_ms)
+        entry = %{schedule: schedule, options: options, timer: timer}
+        %{s | schedules: Map.put(s.schedules, schedule.id, entry)}
+
+      true ->
+        drop_schedule(s, schedule.id)
+    end
+  end
+
+  defp durable_schedule(schedule, durable) do
+    %{
+      schedule
+      | revision: durable.revision,
+        next_at: durable.next_at,
+        last_at: durable.last_at,
+        cancelled_at: durable.cancelled_at
+    }
+  end
+
+  defp schedule_operation_error({:error, %Tay.Error{kind: :unknown_outcome, reason: reason}}),
+    do: {:error, "unknown_outcome", %{"reason" => unknown_outcome_reason(reason)}}
+
+  defp schedule_operation_error({:error, %Tay.Error{kind: :capacity, reason: reason}}),
+    do: {:error, "capacity", %{"reason" => capacity_reason(reason)}}
+
+  defp schedule_operation_error({:error, %Tay.Error{kind: :unavailable}}),
+    do: {:error, "unavailable"}
+
+  defp schedule_operation_error({:error, %Tay.Error{kind: :conflict}}),
+    do: {:error, "schedule_conflict"}
+
+  defp schedule_operation_error(_), do: {:error, "invalid_schedule"}
+
+  defp unknown_schedule_outcome?({:error, %Tay.Error{kind: :unknown_outcome}}), do: true
+  defp unknown_schedule_outcome?(_), do: false
+
+  defp retryable_schedule_error?({:error, %Tay.Error{kind: kind}})
+       when kind in [:capacity, :unavailable],
+       do: true
+
+  defp retryable_schedule_error?(_), do: false
 
   defp drop_schedule(s, id) do
     case Map.pop(s.schedules, id) do

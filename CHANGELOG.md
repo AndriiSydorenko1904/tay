@@ -19,6 +19,10 @@
 
 - Made the fault-injection lock-loss cleanup unambiguous so strict GCC builds
   pass with `-Werror=misleading-indentation`.
+- Removed the synchronous schedule-operation cycle between the Engine and
+  Executor Server. Registrations, advancements, and cancellations now retain
+  request order without blocking executor capacity polling, acknowledge only
+  durable commits, and report unknown outcomes without automatic retries.
 
 ## 1.4.4 — 2026-10-15
 

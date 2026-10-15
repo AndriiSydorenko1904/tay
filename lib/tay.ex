@@ -195,6 +195,19 @@ defmodule Tay do
   def cancel_schedule(_, _), do: {:error, Error.new(:invalid, :invalid_schedule_id)}
 
   @doc false
+  def cancel_schedule(id, revision, options)
+      when is_binary(id) and is_integer(revision) and revision >= 0 do
+    schedule_request(
+      {:cancel_schedule, id, revision, System.system_time(:millisecond)},
+      :cancel_schedule,
+      id,
+      options
+    )
+  end
+
+  def cancel_schedule(_, _, _), do: {:error, Error.new(:invalid, :invalid_schedule_id)}
+
+  @doc false
   def result(id, options \\ []) do
     with {:ok, raw} <- JobID.decode(id),
          {:ok, name, timeout} <- request_options(options),

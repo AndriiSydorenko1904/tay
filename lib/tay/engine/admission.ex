@@ -185,9 +185,19 @@ defmodule Tay.Engine.Admission do
     catch
       :exit, _ ->
         kind =
-          if operation in [:insert, :cancel, :retry, :pause_queue, :resume_queue, :drain],
-            do: :unknown_outcome,
-            else: :unavailable
+          if operation in [
+               :insert,
+               :cancel,
+               :retry,
+               :register_schedule,
+               :advance_schedule,
+               :cancel_schedule,
+               :pause_queue,
+               :resume_queue,
+               :drain
+             ],
+             do: :unknown_outcome,
+             else: :unavailable
 
         {:error, Error.new(kind, :submitted_request_lost, id, operation, expected_revision)}
     end

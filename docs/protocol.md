@@ -88,7 +88,11 @@ schedules created through `schedule` are also durable and can be cancelled
 through `cancel_schedule`. Due occurrences retry temporary admission failure
 with a stable job ID, and schedule advancement is recorded only after durable
 job admission. Client redeclaration with the same stable declaration ID remains
-idempotent. Overlap enforcement, custom retry curves, multi-host leases, and
+idempotent. Registration and cancellation replies are sent only after the
+schedule mutation is durably committed. A lost post-commit reply is reported as
+`unknown_outcome` and is never retried automatically; reconcile it by reading
+the durable schedule state or by explicitly repeating the same stable
+declaration. Overlap enforcement, custom retry curves, multi-host leases, and
 exactly-once external effects are unsupported.
 
 ## HTTP/JSON producer API
