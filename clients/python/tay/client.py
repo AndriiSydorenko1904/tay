@@ -13,7 +13,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from .errors import (
     ConnectionLost,
@@ -122,7 +122,7 @@ class Tay:
     a lost enqueue reply is an intentionally visible unknown outcome.
     """
 
-    _instances: weakref.WeakSet[Tay] = weakref.WeakSet()
+    _instances: ClassVar[weakref.WeakSet[Tay]] = weakref.WeakSet()
 
     def __init__(
         self,
