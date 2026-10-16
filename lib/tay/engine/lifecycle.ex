@@ -164,6 +164,7 @@ defmodule Tay.Engine.Lifecycle do
     if s.meta.status.state == :recovering and Process.alive?(s.writer) and fence_live do
       s = publish(s, Map.merge(snapshot, %{state: :ready, durability: s.meta.status.durability}))
       if s.policy, do: send(s.policy, {:policy_generation, self()})
+      send(self(), :release_startup_heap)
       {:reply, :ok, s}
     else
       {:reply, {:error, :revoked}, s}
@@ -752,6 +753,15 @@ defmodule Tay.Engine.Lifecycle do
     end
 
     Process.send_after(self(), :reap, 100)
+    {:noreply, s}
+  end
+
+  # Recovery and activation messages can temporarily copy the recovered
+  # projection through the guardian. Once readiness has been published, keep
+  # only the small steady-state lifecycle data instead of waiting for BEAM's
+  # very high full-sweep threshold to reclaim the old heap.
+  def handle_info(:release_startup_heap, s) do
+    :erlang.garbage_collect()
     {:noreply, s}
   end
 

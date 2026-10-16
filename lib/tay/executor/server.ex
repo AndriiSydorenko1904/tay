@@ -137,10 +137,16 @@ defmodule Tay.Executor.Server do
         })
 
       send(config.engine, {:executor_server_ready, self()})
-      {:ok, state}
+      {:ok, state, {:continue, :release_startup_heap}}
     else
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  @impl true
+  def handle_continue(:release_startup_heap, state) do
+    :erlang.garbage_collect()
+    {:noreply, state}
   end
 
   defp start_socket(%{socket_path: nil}), do: {:ok, nil, nil, nil}

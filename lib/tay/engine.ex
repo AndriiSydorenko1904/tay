@@ -274,6 +274,10 @@ defmodule Tay.Engine do
       :erlang.garbage_collect(s.writer)
     end
 
+    if Process.alive?(s.guardian) do
+      :erlang.garbage_collect(s.guardian)
+    end
+
     :erlang.garbage_collect()
     hook(s.config, :memory_reclaimed)
     {:noreply, %{s | memory_reclaim: nil, memory_reclaimed: true}}

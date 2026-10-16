@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.7 — 2026-10-16
+
+### Fixed
+
+- Reclaimed transient startup and recovery heaps in the Engine, lifecycle
+  guardian, and executor server after readiness is published.
+
 ## 1.4.6 — 2026-10-15
 
 ### Added
