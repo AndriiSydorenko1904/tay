@@ -19,9 +19,11 @@ public.
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
 3. Update versioned GitHub documentation links in package metadata.
-4. Commit, create `v<mix-version>`, and push the commit and tag.
-5. Verify that `https://github.com/AndriiSydorenko1904/tay` and the tag are
-   accessible without authentication.
+4. Commit and push the release commit to `main` without creating the tag yet.
+5. Wait for both `Continuous integration` and `Standalone runtime` to succeed
+   for that exact commit SHA.
+6. Create `v<mix-version>`, push the tag, and verify that both the repository and
+   tag are accessible without authentication.
 
 ## Qualify
 

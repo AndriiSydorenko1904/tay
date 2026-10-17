@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.2 — 2026-10-17
+
+### Changed
+
+- Clarified the top-level source-of-truth contract for persistent Store-v2 jobs
+  and RAM-only volatile jobs.
+
+### Fixed
+
+- Updated the standalone release smoke test to verify the Store-v2 `STORE-V2`
+  authority marker and `CURRENT` pointer across restart instead of expecting the
+  removed Store-v1 `STORE` marker.
+- Removed a 100-ms timing assumption from the blocked-recovery lifecycle test so
+  slower Store-v2 startup still exercises the same synchronization boundary.
+
 ## 1.5.1 — 2026-10-17
 
 ### Added

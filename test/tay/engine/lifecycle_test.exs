@@ -62,7 +62,7 @@ defmodule Tay.Engine.GenerationTest do
         {:ok, root}
       end)
 
-    assert_receive {:waiting, writer}
+    assert_receive {:waiting, writer}, 5_000
     assert Tay.status(name: @name).state == :recovering
     assert {:error, %{kind: :unavailable}} = Tay.get_job(Tay.JobID.new(), name: @name)
     send(writer, :continue)

@@ -1,15 +1,22 @@
 defmodule Tay do
   @moduledoc """
-  An embedded background job engine with an authoritative append-only log.
-  Start an Engine explicitly; application startup only validates configuration
-  and starts an empty supervisor. The log is authoritative, while ETS indexes
-  and execution state are disposable projections rebuilt after full recovery.
+  An embedded background job engine supporting persistent and volatile jobs.
+  For persistent jobs, the append-only Store-v2 journal is authoritative and
+  ETS indexes are disposable projections rebuilt during recovery. Volatile jobs
+  use the same state machine and execution paths but exist only in RAM/ETS,
+  never enter persistent storage, and disappear when the Engine's in-memory
+  state is lost.
 
-  Tay supports durable insertion, supervised multi-queue execution, scheduling,
-  retries, revision-checked cancellation and manual retry, volatile queue
-  controls, drain, and explicit fresh-generation stop/restart. Callback effects
-  are at-least-once, not exactly-once. Cancellation durably fences future Tay
-  outcomes before best-effort termination, but cannot reverse external effects.
+  Start an Engine explicitly; application startup only validates configuration
+  and starts an empty supervisor.
+
+  Tay supports selective-durability insertion, supervised multi-queue execution,
+  scheduling, retries, revision-checked cancellation and manual retry, volatile
+  queue controls, drain, and explicit fresh-generation stop/restart. Callback
+  effects are at-least-once, not exactly-once. Cancellation durably fences future
+  persistent outcomes before best-effort termination; volatile cancellation is
+  enforced only by the current in-memory state. Neither can reverse external
+  effects.
 
   Physical framing validity is separate from Event support and state replay.
   Torn, corrupt or unsupported history preserves evidence and refuses writable

@@ -18,8 +18,21 @@ release_dir="$test_root/release"
 data_dir="$test_root/data/store"
 socket_dir="$test_root/socket"
 socket_path="$socket_dir/tay.sock"
+store_marker="$data_dir/STORE-V2"
+current_pointer="$data_dir/CURRENT"
 mkdir "$socket_dir"
 cp -R "$release_source" "$release_dir"
+
+require_regular_file() {
+  if [ ! -f "$1" ]; then
+    echo "expected regular file is missing: $1" >&2
+    exit 1
+  fi
+}
+
+checksum() {
+  sha256sum "$1" | cut -d ' ' -f 1
+}
 
 cleanup() {
   TAY_DATA_DIR="$data_dir" TAY_SOCKET_PATH="$socket_path" \
@@ -46,8 +59,10 @@ until "$release_dir/bin/tay_standalone" rpc 'Tay.Standalone.Health.check!()' >/d
 done
 
 test -S "$socket_path"
-test -f "$data_dir/STORE"
-store_before=$(sha256sum "$data_dir/STORE" | cut -d ' ' -f 1)
+require_regular_file "$store_marker"
+require_regular_file "$current_pointer"
+store_before=$(checksum "$store_marker")
+current_before=$(checksum "$current_pointer")
 "$release_dir/bin/tay_standalone" stop
 
 export TAY_INITIALIZE_IF_MISSING=false
@@ -58,8 +73,18 @@ until "$release_dir/bin/tay_standalone" rpc 'Tay.Standalone.Health.check!()' >/d
   test "$attempt" -lt 50
   sleep 0.2
 done
-store_after=$(sha256sum "$data_dir/STORE" | cut -d ' ' -f 1)
-test "$store_before" = "$store_after"
+require_regular_file "$store_marker"
+require_regular_file "$current_pointer"
+store_after=$(checksum "$store_marker")
+current_after=$(checksum "$current_pointer")
+test "$store_before" = "$store_after" || {
+  echo "Store-v2 identity changed across restart" >&2
+  exit 1
+}
+test "$current_before" = "$current_after" || {
+  echo "Store-v2 CURRENT pointer changed across restart" >&2
+  exit 1
+}
 "$release_dir/bin/tay_standalone" stop
 
 test ! -e "$release_dir/mix.exs"
