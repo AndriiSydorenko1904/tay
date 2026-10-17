@@ -67,7 +67,7 @@ with `TAY_ENABLE_DASHBOARD=true`. From the repository root, start the complete
 example with:
 
 ```sh
-TAY_ENABLE_DASHBOARD=true docker compose up --build
+TAY_IMAGE=tay:local TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open <http://localhost:4000/tay>. The example publishes the port only on

@@ -17,11 +17,13 @@ import uuid
 import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Self
 
+x509: Any = None
 try:
-    from cryptography import x509
+    from cryptography import x509 as _x509
     from cryptography.exceptions import UnsupportedAlgorithm
     from cryptography.hazmat.primitives.serialization import (
         Encoding,
@@ -29,10 +31,12 @@ try:
         PrivateFormat,
         pkcs12,
     )
+
+    x509 = _x509
 except ModuleNotFoundError as exc:
-    if exc.name != "cryptography" and not exc.name.startswith("cryptography."):
+    missing = exc.name or ""
+    if missing != "cryptography" and not missing.startswith("cryptography."):
         raise
-    x509 = None
 
 from .client import _extract_identifier, _server_error_from_payload
 from .errors import (
@@ -408,18 +412,22 @@ class TayHTTPWorker(TayHTTP):
                 if type(execution) is not str:
                     raise ProtocolError("execute is missing execution_id")
                 if execution not in self._executions:
-                    declared = self._tasks.get(message.get("task"))
+                    task_name = message.get("task")
+                    if type(task_name) is not str:
+                        raise ProtocolError("execute is missing task")
+                    declared = self._tasks.get(task_name)
                     self._execution_is_sync[execution] = (
                         declared is not None
                         and not inspect.iscoroutinefunction(declared.function)
                     )
                     task = asyncio.create_task(self._execute(message))
                     self._executions[execution] = task
-                    task.add_done_callback(
-                        lambda done, key=execution: self._execution_finished(key, done)
-                    )
+
+                    task.add_done_callback(partial(self._execution_finished, execution))
             elif kind == "cancel_execution":
                 key = message.get("execution_id")
+                if type(key) is not str:
+                    raise ProtocolError("cancel_execution is missing execution_id")
                 execution = self._executions.get(key)
                 if execution is not None and not self._execution_is_sync.get(
                     key, False
@@ -453,7 +461,10 @@ class TayHTTPWorker(TayHTTP):
             "reservation_id": message["reservation_id"],
             "execution_id": message["execution_id"],
         }
-        task = self._tasks.get(message.get("task"))
+        task_name = message.get("task")
+        if type(task_name) is not str:
+            raise ProtocolError("execute is missing task")
+        task = self._tasks.get(task_name)
         if task is None:
             await self._worker_request(
                 "POST",

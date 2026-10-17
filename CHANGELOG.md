@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.8 — 2026-10-17
+
+### Security
+
+- Updated Bandit to 1.13.1 for the HTTP/1 authority-validation and HTTP/2
+  blocked-send fixes, removed the obsolete advisory exception, and restored
+  HTTP/2 support.
+
+### Changed
+
+- Updated the Python client package to 1.3.2, corrected its public task-owner
+  typing, and made unsupported schedule operations fail explicitly.
+- Added dependency auditing, Python 3.11–3.14 testing, Python static type
+  checking, and complete standalone workflow path triggers to CI.
+- Kept production container examples on immutable version tags and separated
+  published-image usage from local image builds.
+
 ## 1.4.7 — 2026-10-16
 
 ### Fixed

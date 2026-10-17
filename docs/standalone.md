@@ -97,13 +97,13 @@ no privileges at startup and never runs as root.
 From the repository root:
 
 ```sh
-docker compose up --build
+TAY_IMAGE=tay:local docker compose up --build
 ```
 
 This starts Tay only. To include the example local socket worker, use
-`docker compose --profile local-worker up --build`. Compose lists settings
-needed for this deployment example; the table above lists all supported
-standalone environment settings.
+`TAY_IMAGE=tay:local docker compose --profile local-worker up --build`.
+Compose lists settings needed for this deployment example; the table above
+lists all supported standalone environment settings.
 
 Set `TAY_ENABLE_DASHBOARD=true` in the same Compose deployment to enable the
 dashboard. The HTTP API is opt-in; to expose it outside the container, set
@@ -136,7 +136,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.3.6
+  ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -179,7 +179,7 @@ Phoenix endpoint. Set `TAY_ENABLE_DASHBOARD=true` to expose both
 is optional. No second container or image is required.
 
 ```sh
-TAY_ENABLE_DASHBOARD=true docker compose up --build
+TAY_IMAGE=tay:local TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 The headless and dashboard-enabled modes use the same data and transport

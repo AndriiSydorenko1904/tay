@@ -976,9 +976,11 @@ class Tay:
             )
             self._executions[execution_id] = execution
             self._execution_is_sync[execution_id] = synchronous
-            execution.add_done_callback(
-                lambda _done, key=execution_id: self._execution_finished(key)
-            )
+
+            def finished(_done: asyncio.Task[None]) -> None:
+                self._execution_finished(execution_id)
+
+            execution.add_done_callback(finished)
 
     def _execution_finished(self, execution_id: str) -> None:
         self._executions.pop(execution_id, None)

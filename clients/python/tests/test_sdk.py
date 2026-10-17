@@ -11,6 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from tay import (
     HTTPJobHandle,
+    ModeError,
     ProtocolError,
     ServerError,
     TaskRegistrationError,
@@ -252,6 +253,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(retry.config.retries, 4)
         self.assertEqual(retry.config.backoff, "exponential")
+
+        with self.assertRaisesRegex(ModeError, "does not support schedules"):
+            await retry.schedule(cron="0 * * * *")
 
         with self.assertRaisesRegex(ValidationError, "0..65534"):
             worker.task(name="tests.invalid", retries=65_535)

@@ -20,7 +20,7 @@ The repository example starts the dashboard-enabled runtime. A local Python
 socket worker is available through the `local-worker` profile:
 
 ```sh
-TAY_ENABLE_DASHBOARD=true docker compose up --build
+TAY_IMAGE=tay:local TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Open <http://localhost:4000/tay>. The example binds HTTP to host loopback and
@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay:1.3.6
+  ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is

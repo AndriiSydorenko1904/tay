@@ -35,6 +35,7 @@ mix hex.build
 
 uvx ruff check clients/python
 uvx ruff format --check clients/python
+uv run --with mypy --with cryptography mypy clients/python/tay
 python -m unittest discover -s clients/python/tests -v
 uv build clients/python
 uvx twine check clients/python/dist/*

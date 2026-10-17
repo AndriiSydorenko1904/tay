@@ -31,6 +31,8 @@ jobs:
           install-rebar: false
       - name: Install locked dependencies
         run: mix deps.get --check-locked
+      - name: Audit dependencies
+        run: mix hex.audit
       - name: Verify core
         run: |
           mix format --check-formatted
@@ -40,19 +42,26 @@ jobs:
           MIX_ENV=prod mix compile --warnings-as-errors
 
   python:
-    name: Python client
+    name: Python client ${{ matrix.python }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 security backports
         with:
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-      - name: Verify client
+      - name: Lint and type-check client
+        if: matrix.python == '3.13'
         run: |
           uv run --with ruff ruff check clients/python
           uv run --with ruff ruff format --check clients/python
-          uv run --with pytest pytest clients/python
+          uv run --with mypy --with cryptography mypy clients/python/tay
+      - name: Test client
+        run: uv run --with pytest pytest clients/python

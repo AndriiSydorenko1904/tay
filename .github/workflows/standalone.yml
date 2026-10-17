@@ -5,6 +5,9 @@ on:
     paths:
       - Dockerfile
       - .dockerignore
+      - .github/workflows/standalone.yml
+      - config/**
+      - c_src/**
       - standalone/**
       - examples/standalone/**
       - lib/**
@@ -16,6 +19,9 @@ on:
     paths:
       - Dockerfile
       - .dockerignore
+      - .github/workflows/standalone.yml
+      - config/**
+      - c_src/**
       - standalone/**
       - examples/standalone/**
       - lib/**

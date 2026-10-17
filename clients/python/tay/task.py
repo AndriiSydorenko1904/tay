@@ -7,13 +7,25 @@ import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from .errors import ValidationError
+from .errors import ModeError, ValidationError
 from .protocol import normalize_json, validate_task_name
 
 if TYPE_CHECKING:  # pragma: no cover
     from .client import JobHandle, ScheduleHandle, Tay
+    from .http import HTTPJobHandle
+
+
+class _TaskOwner(Protocol):
+    async def enqueue(
+        self,
+        task: str,
+        args: Mapping[str, Any] | None = None,
+        *,
+        options: Mapping[str, Any] | None = None,
+        **option_keywords: Any,
+    ) -> JobHandle | HTTPJobHandle: ...
 
 
 _ENQUEUE_OPTION_NAMES = frozenset(
@@ -63,7 +75,7 @@ class Task:
 
     def __init__(
         self,
-        tay: Tay,
+        tay: _TaskOwner,
         function: Callable[..., Any],
         *,
         name: str,
@@ -73,6 +85,7 @@ class Task:
         self.function = function
         self.name = validate_task_name(name)
         self.config = config
+        self.signature: inspect.Signature | None
         try:
             self.signature = inspect.signature(function)
         except (TypeError, ValueError):
@@ -178,7 +191,7 @@ class Task:
                 keyword[parameter.name] = value
         return self.function(*positional, **keyword)
 
-    async def enqueue(self, *args: Any, **kwargs: Any) -> JobHandle:
+    async def enqueue(self, *args: Any, **kwargs: Any) -> JobHandle | HTTPJobHandle:
         """Submit a durable job using this task's stable identity."""
 
         task_kwargs, options = self._split_enqueue_kwargs(kwargs)
@@ -200,7 +213,8 @@ class Task:
     ) -> ScheduleHandle:
         """Create or update a cron schedule for this task."""
 
-        return await self.tay.schedule(
+        scheduler = self._scheduler("schedule")
+        return await scheduler.schedule(
             self,
             cron=cron,
             kwargs=kwargs,
@@ -228,7 +242,8 @@ class Task:
     ) -> ScheduleHandle:
         """Create or update an interval schedule for this task."""
 
-        return await self.tay.every(
+        scheduler = self._scheduler("every")
+        return await scheduler.every(
             self,
             seconds=seconds,
             minutes=minutes,
@@ -241,6 +256,11 @@ class Task:
             start_at=start_at,
             **options,
         )
+
+    def _scheduler(self, operation: str) -> Tay:
+        if not hasattr(self.tay, operation):
+            raise ModeError("this Tay transport does not support schedules")
+        return cast("Tay", self.tay)
 
     def static_schedule_declaration(self) -> dict[str, Any] | None:
         """Return the idempotent declaration reconciled at startup, if any."""

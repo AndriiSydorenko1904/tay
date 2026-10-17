@@ -51,17 +51,18 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 For a ready-made Tay deployment example:
 
 ```sh
-docker compose up --build
+docker compose up --no-build tay
 ```
 
-To add the optional local Python socket worker, use
-`docker compose --profile local-worker up --build`.
+That command uses the published image. To build Tay and the optional local
+Python socket worker from this checkout instead, use
+`TAY_IMAGE=tay:local docker compose --profile local-worker up --build`.
 
 The Tay container owns durable state at `/var/lib/tay`. Applications and
 language workers can use the shared `/run/tay` Unix socket or the optional
@@ -73,7 +74,7 @@ data volume is preserved.
 Want the operational UI as well?
 
 ```sh
-TAY_ENABLE_DASHBOARD=true docker compose up --build
+TAY_ENABLE_DASHBOARD=true docker compose up --no-build tay
 ```
 
 Then open:
@@ -86,7 +87,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 ## Why Tay?
@@ -435,7 +436,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.4.6
+ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -445,7 +446,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.6
+docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -479,10 +480,11 @@ Durable state belongs on:
 The Compose example starts Tay; the local worker uses an optional profile:
 
 ```sh
-docker compose up --build
+TAY_IMAGE=tay:local docker compose up --build
 ```
 
-Run `docker compose --profile local-worker up --build` to include that worker.
+Run `TAY_IMAGE=tay:local docker compose --profile local-worker up --build` to
+include that worker.
 
 The container is:
 
@@ -515,7 +517,7 @@ TAY_ENABLE_DASHBOARD=true
 Start the repository example:
 
 ```sh
-TAY_ENABLE_DASHBOARD=true docker compose up --build
+TAY_IMAGE=tay:local TAY_ENABLE_DASHBOARD=true docker compose up --build
 ```
 
 Then open:
