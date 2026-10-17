@@ -37,11 +37,8 @@ defmodule Tay.Storage.Native do
     v2_select: 29,
     v2_begin: 30,
     v2_publish_epoch: 31,
-    v2_adopt_v1: 32,
     v2_publish_current: 33,
     v2_space: 34,
-    v2_restore_v1: 35,
-    v2_clear_adoption: 36,
     v2_reclaim: 37,
     acquire_if_missing: 38,
     v2_abort: 39,
@@ -49,6 +46,9 @@ defmodule Tay.Storage.Native do
   }
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
   @type t :: %__MODULE__{}
+
+  @default_max_directory_entries 100_000
+  @max_directory_entries_limit 4_294_967_295
 
   @doc "Acquires only existing ownership objects; no creation or sync is allowed."
   def open_existing(path, options \\ []) do
@@ -65,8 +65,8 @@ defmodule Tay.Storage.Native do
     if valid_open_options?(path, options) and Path.expand(path) != "/" and
          length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
          Enum.all?(Keyword.keys(options), &(&1 in allowed)) and
-         is_integer(Keyword.get(options, :max_directory_entries, 100_000)) and
-         Keyword.get(options, :max_directory_entries, 100_000) in 1..4_294_967_295 and
+         is_integer(Keyword.get(options, :max_directory_entries, @default_max_directory_entries)) and
+         Keyword.get(options, :max_directory_entries, @default_max_directory_entries) in 1..@max_directory_entries_limit and
          (is_nil(Keyword.get(options, :deadline)) or is_integer(Keyword.get(options, :deadline))) do
       do_open(path, options, :acquire_existing)
     else
@@ -185,7 +185,7 @@ defmodule Tay.Storage.Native do
 
     budget =
       if operation == :acquire_existing,
-        do: <<Keyword.get(options, :max_directory_entries, 100_000)::32>>,
+        do: <<Keyword.get(options, :max_directory_entries, @default_max_directory_entries)::32>>,
         else: <<>>
 
     result =
@@ -233,6 +233,10 @@ defmodule Tay.Storage.Native do
         {:packet, 4}
       ])
 
+    # Port identifiers may be reused after a close. Do not let an old
+    # connection's owner-local poison marker apply to the new helper.
+    Process.delete({__MODULE__, port})
+
     %__MODULE__{
       port: port,
       owner: self(),
@@ -276,6 +280,37 @@ defmodule Tay.Storage.Native do
   end
 
   def close(%__MODULE__{}), do: {:error, %{kind: :native_owner, reason: :not_port_owner}}
+
+  @doc false
+  def close_and_await(%__MODULE__{port: port} = native, timeout \\ 1_000) do
+    :ok = close(native)
+    await_closed_port(port, false, false, System.monotonic_time(:millisecond) + timeout)
+    flush_closed_port(port)
+    :ok
+  end
+
+  defp await_closed_port(_port, true, true, _deadline), do: :ok
+
+  defp await_closed_port(port, exit_seen, status_seen, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:exit_status, _}} -> await_closed_port(port, exit_seen, true, deadline)
+      {:EXIT, ^port, _} -> await_closed_port(port, true, status_seen, deadline)
+      {^port, _} -> await_closed_port(port, exit_seen, status_seen, deadline)
+    after
+      remaining -> :ok
+    end
+  end
+
+  defp flush_closed_port(port) do
+    receive do
+      {^port, _} -> flush_closed_port(port)
+      {:EXIT, ^port, _} -> flush_closed_port(port)
+    after
+      0 -> :ok
+    end
+  end
 
   @doc false
   def request_owned(%__MODULE__{owner: owner} = native, operation, body)
@@ -327,7 +362,7 @@ defmodule Tay.Storage.Native do
 
   @doc false
   def cold_list(native, scope, remaining)
-      when is_integer(remaining) and remaining in 1..4_294_967_295 do
+      when is_integer(remaining) and remaining in 1..@max_directory_entries_limit do
     case request(native, :cold_list, <<scope(scope)::8, remaining::32>>) do
       {:ok, <<count::32, bytes::binary>>, 0} ->
         case entries(bytes, count, [], true) do
@@ -347,7 +382,8 @@ defmodule Tay.Storage.Native do
     do: {:error, %{kind: :native_argument, reason: :invalid_cold_list_limit}}
 
   @doc false
-  def cold_create_stage(native, name), do: empty(native, :cold_stage_create, string(name))
+  def cold_create_stage(native, name, epoch),
+    do: empty(native, :cold_stage_create, string(name) <> string(epoch))
 
   @doc false
   def cold_open_write(native, scope, name, lock \\ false) when is_boolean(lock),
@@ -367,6 +403,7 @@ defmodule Tay.Storage.Native do
   @doc false
   def cold_check(native), do: empty(native, :cold_check)
 
+  @doc false
   def mkdir_segments(native), do: empty(native, :mkdir)
 
   @doc "Pins the CURRENT-named epoch and its mutable segments directory."
@@ -391,19 +428,6 @@ defmodule Tay.Storage.Native do
       do: empty(native, :v2_publish_epoch, string("e-" <> Base.encode16(epoch_id, case: :lower)))
 
   def v2_publish_epoch(_, _), do: {:error, %{kind: :native_argument, reason: :epoch_id}}
-
-  def v2_adopt_v1(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,
-    do: empty(native, :v2_adopt_v1, string("legacy-" <> Base.encode16(nonce, case: :lower)))
-
-  def v2_adopt_v1(_, _), do: {:error, %{kind: :native_argument, reason: :adoption_nonce}}
-
-  @doc "Restores the exact intent-named V1 source when CURRENT is absent."
-  def v2_restore_v1(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,
-    do: empty(native, :v2_restore_v1, string("legacy-" <> Base.encode16(nonce, case: :lower)))
-
-  def v2_restore_v1(_, _), do: {:error, %{kind: :native_argument, reason: :adoption_nonce}}
-
-  def v2_clear_adoption(native), do: empty(native, :v2_clear_adoption)
 
   @doc false
   def v2_abort(native), do: empty(native, :v2_abort)
@@ -433,22 +457,16 @@ defmodule Tay.Storage.Native do
   end
 
   @doc "Unlinks only a verified non-CURRENT predecessor via pinned descriptors."
-  def v2_reclaim(native, target, current, intent \\ nil)
-
-  def v2_reclaim(native, target, current, intent)
-      when is_binary(target) and is_binary(current) and byte_size(current) == 76 and
-             (is_nil(intent) or (is_binary(intent) and byte_size(intent) == 28)) do
-    body = <<string(target)::binary, current::binary, if(intent, do: 1, else: 0)>>
-    body = if intent, do: <<body::binary, intent::binary>>, else: body
-
-    case request(native, :v2_reclaim, body) do
+  def v2_reclaim(native, target, current)
+      when is_binary(target) and is_binary(current) and byte_size(current) == 76 do
+    case request(native, :v2_reclaim, <<string(target)::binary, current::binary, 0>>) do
       {:ok, <<bytes::64>>, 0} -> {:ok, bytes}
       {:error, _} = error -> error
       _ -> uncertain(native, :invalid_reclaim_reply)
     end
   end
 
-  def v2_reclaim(_, _, _, _), do: {:error, %{kind: :native_argument, reason: :reclaim}}
+  def v2_reclaim(_, _, _), do: {:error, %{kind: :native_argument, reason: :reclaim}}
 
   def open_read(native, scope, name),
     do: identity_request(native, :open_read, <<scope(scope), string(name)::binary>>)
@@ -567,13 +585,7 @@ defmodule Tay.Storage.Native do
             v2_epoch_segments_sync: 248,
             v2_epoch_directory_sync: 249,
             v2_epoch_parent_sync: 250,
-            v2_adoption_root_sync: 251,
-            v2_adoption_epochs_sync: 252,
             v2_current_root_sync: 253,
-            v2_restore_epochs_sync: 254,
-            v2_restore_root_sync: 255,
-            v2_rollback_marker_sync: 256,
-            v2_rollback_intent_sync: 257,
             v2_reclaim_segment_unlink: 258,
             v2_reclaim_segment_sync: 259,
             v2_reclaim_segments_unlink: 260,
@@ -581,11 +593,7 @@ defmodule Tay.Storage.Native do
             v2_reclaim_manifest_unlink: 262,
             v2_reclaim_manifest_sync: 263,
             v2_reclaim_epoch_unlink: 264,
-            v2_reclaim_epochs_sync: 265,
-            v2_reclaim_adoption_unlink: 266,
-            v2_reclaim_root_sync: 267,
-            v2_rollback_marker_unlink: 268,
-            v2_rollback_intent_unlink: 269
+            v2_reclaim_epochs_sync: 265
           },
           operation
         ) || Map.fetch!(@ops, operation)

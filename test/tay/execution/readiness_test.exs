@@ -193,7 +193,7 @@ defmodule Tay.Execution.ReadinessTest do
     for {job, token, old_task, old_metadata} <- jobs do
       {task, metadata} = H.await_entry(token)
       assert metadata.attempt == 1
-      assert elem(metadata.revision, 4) > elem(old_metadata.revision, 4)
+      assert elem(metadata.revision, 5) > elem(old_metadata.revision, 5)
       refute Process.alive?(old_task)
       send(task, {:return, :ok})
       H.await_job(@name, job.id, :completed)

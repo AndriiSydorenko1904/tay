@@ -2,7 +2,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
   use ExUnit.Case, async: false
 
   alias Tay.Storage.{CRC32C, Native, Record, Segment}
-  alias Tay.Storage.V2.{Authority, Codec, Publisher, Reclaimer, Reducer, V1Migration}
+  alias Tay.Storage.V2.{Authority, Codec, Publisher, Reclaimer, Reducer}
   alias Tay.Storage.V2.Reader, as: V2Reader
   alias Tay.Test.{NativeHelpers, RecoveryHelpers}
 
@@ -37,12 +37,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     {:v2_epoch_parent_sync, 1, :crash_after},
     {:publish, 1, :crash_after},
     {:publish, 2, :crash_after},
-    {:v2_adopt_v1, 1, :crash_before},
-    {:v2_adopt_v1, 1, :crash_after},
-    {:v2_adoption_root_sync, 1, :crash_before},
-    {:v2_adoption_root_sync, 1, :crash_after},
-    {:v2_adoption_epochs_sync, 1, :crash_before},
-    {:v2_adoption_epochs_sync, 1, :crash_after},
     {:v2_publish_current, 1, :crash_before},
     {:v2_publish_current, 1, :crash_after},
     {:v2_current_root_sync, 1, :crash_before},
@@ -50,21 +44,22 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     {:v2_publish_current, 1, :drop_reply}
   ]
 
-  test "every first-adoption publication fault preserves one replayable authority" do
+  test "every Store-v2 publication fault preserves one replayable authority" do
     for {operation, occurrence, action} <- @faults do
       path = NativeHelpers.path()
       RecoveryHelpers.store(path)
-      {:ok, store_id} = path |> Path.join("STORE") |> File.read!() |> Segment.decode_store()
+      store_id = store_id(path)
 
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
       native = %{native | timeout: 200}
       assert :ok = Native.fault(native, operation, occurrence, action)
 
       _ =
         Publisher.publish(native, %{
           store_id: store_id,
-          epoch_id: nil,
+          epoch_id: epoch_id(path),
+          current: File.read!(Path.join(path, "CURRENT")),
           jobs: %{},
           frontier: 0,
           rotation_target_bytes: 67_108_864,
@@ -75,67 +70,12 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       Native.shutdown(native)
       {:ok, reopened} = reopen(path)
 
-      assert :ok = V2Reader.reconcile_adoption(reopened),
-             "adoption rollback failed for #{inspect({operation, occurrence, action})}"
+      assert {:ok, %{store_id: ^store_id, candidate: %{jobs: %{}}}} =
+               V2Reader.recover(reopened, Reducer.candidate())
 
-      {:ok, root} = Native.list(reopened, :root)
-
-      if Enum.any?(root, &(&1.name == "CURRENT")) do
-        assert {:ok, %{store_id: ^store_id, candidate: %{jobs: %{}}}} =
-                 V2Reader.recover(reopened, Reducer.candidate())
-
-        refute File.exists?(Path.join(path, "segments"))
-      else
-        assert {:ok, %{store: %{store_id: ^store_id}}} =
-                 Tay.Storage.Reader.preflight(reopened)
-
-        assert File.dir?(Path.join(path, "segments"))
-      end
+      refute File.exists?(Path.join(path, "segments"))
 
       assert :ok = Native.shutdown(reopened)
-      File.rm_rf!(path)
-    end
-  end
-
-  test "rollback itself resumes safely across every internal directory sync" do
-    sites = [
-      :v2_restore_epochs_sync,
-      :v2_restore_root_sync,
-      :v2_rollback_marker_unlink,
-      :v2_rollback_marker_sync,
-      :v2_rollback_intent_unlink,
-      :v2_rollback_intent_sync
-    ]
-
-    for site <- sites, action <- [:crash_before, :crash_after] do
-      path = NativeHelpers.path()
-      RecoveryHelpers.store(path)
-      {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
-      assert :ok = Native.fault(native, :publish, 2, :crash_after)
-
-      _ =
-        Publisher.publish(native, %{
-          store_id: store_id(path),
-          epoch_id: nil,
-          jobs: %{},
-          frontier: 0,
-          rotation_target_bytes: 67_108_864,
-          candidate_limits: %{},
-          value_limits: Tay.Event.Value.defaults()
-        })
-
-      Native.shutdown(native)
-      {:ok, first} = reopen(path)
-      assert :ok = Native.fault(first, site, 1, action)
-      _ = V2Reader.reconcile_adoption(first)
-      Native.shutdown(first)
-
-      {:ok, second} = reopen(path)
-      assert :ok = V2Reader.reconcile_adoption(second)
-      assert {:ok, %{store: %{store_id: id}}} = Tay.Storage.Reader.preflight(second)
-      assert id == store_id(path)
-      assert :ok = Native.shutdown(second)
       File.rm_rf!(path)
     end
   end
@@ -163,24 +103,18 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       path = NativeHelpers.path()
       {id, source} = one_job_source(path)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
       assert :ok = Native.fault(native, operation, occurrence, action)
       _ = Publisher.publish(native, source)
       Native.shutdown(native)
 
       {:ok, reopened} = reopen(path)
-      assert :ok = V2Reader.reconcile_adoption(reopened)
-      {:ok, root} = Native.list(reopened, :root)
 
-      if Enum.any?(root, &(&1.name == "CURRENT")) do
-        assert {:ok, %{candidate: %{jobs: %{^id => job}}}} =
-                 V2Reader.recover(reopened, Reducer.candidate())
+      assert {:ok, %{candidate: %{jobs: jobs}}} =
+               V2Reader.recover(reopened, Reducer.candidate())
 
-        assert job.revision == 1
-      else
-        assert {:ok, %{store: %{next_sequence: 2}}} =
-                 Tay.Storage.Reader.preflight(reopened)
-      end
+      assert map_size(jobs) in [0, 1]
+      if job = jobs[id], do: assert(job.revision == 1)
 
       assert :ok = Native.shutdown(reopened)
       File.rm_rf!(path)
@@ -195,24 +129,17 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       path = NativeHelpers.path()
       {_id, source} = one_job_source(path)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
       assert :ok = Native.fault(native, operation, occurrence, :syscall_error, 28)
       _ = Publisher.publish(native, source)
       Native.shutdown(native)
 
       {:ok, reopened} = reopen(path)
-      assert :ok = V2Reader.reconcile_adoption(reopened)
-      {:ok, root} = Native.list(reopened, :root)
 
-      if Enum.any?(root, &(&1.name == "CURRENT")) do
-        assert {:ok, %{candidate: %{jobs: jobs}}} =
-                 V2Reader.recover(reopened, Reducer.candidate())
+      assert {:ok, %{candidate: %{jobs: jobs}}} =
+               V2Reader.recover(reopened, Reducer.candidate())
 
-        assert map_size(jobs) == 1
-      else
-        assert {:ok, %{store: %{next_sequence: 2}}} =
-                 Tay.Storage.Reader.preflight(reopened)
-      end
+      assert map_size(jobs) in [0, 1]
 
       assert :ok = Native.shutdown(reopened)
       File.rm_rf!(path)
@@ -237,7 +164,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       path = NativeHelpers.path()
       {_id, source} = one_job_source(path)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
       assert {:ok, first} = Publisher.publish(native, source)
       assert {:ok, %{reclamation: :complete}} = Reclaimer.predecessor(native, first.recovered)
 
@@ -270,37 +197,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     end
   end
 
-  test "first-adoption legacy deletion resumes after each unlink and directory sync" do
-    sites = [
-      :v2_reclaim_segment_unlink,
-      :v2_reclaim_segment_sync,
-      :v2_reclaim_epoch_unlink,
-      :v2_reclaim_epochs_sync,
-      :v2_reclaim_adoption_unlink,
-      :v2_reclaim_root_sync
-    ]
-
-    for site <- sites, action <- [:syscall_error, :crash_after] do
-      path = NativeHelpers.path()
-      {_id, source} = one_job_source(path)
-      {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
-      assert {:ok, published} = Publisher.publish(native, source)
-      assert :ok = Native.fault(native, site, 1, action)
-      assert {:ok, %{reclamation: :deferred}} = Reclaimer.predecessor(native, published.recovered)
-      Native.shutdown(native)
-
-      {:ok, reopened} = reopen(path)
-      assert {:ok, recovered} = V2Reader.recover(reopened, Reducer.candidate())
-      assert recovered.candidate.jobs == published.recovered.candidate.jobs
-      assert :ok = Native.enable_mutations(reopened)
-      assert {:ok, %{reclamation: :complete}} = Reclaimer.predecessor(reopened, recovered)
-      refute File.exists?(Path.join(path, "ADOPTION"))
-      assert :ok = Native.shutdown(reopened)
-      File.rm_rf!(path)
-    end
-  end
-
   test "candidate admission bounds actual bytes across empty, rotated and large-snapshot stores" do
     for {count, arg_bytes, target} <- [
           {0, 0, 67_108_864},
@@ -312,17 +208,17 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       RecoveryHelpers.store(path)
       jobs = generated_jobs(count, arg_bytes)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
 
-      source = %{
-        store_id: store_id(path),
-        epoch_id: nil,
-        jobs: jobs,
-        frontier: 0,
-        rotation_target_bytes: target,
-        candidate_limits: %{},
-        value_limits: Tay.Event.Value.defaults()
-      }
+      source =
+        Map.merge(current_source(path), %{
+          store_id: store_id(path),
+          jobs: jobs,
+          frontier: 0,
+          rotation_target_bytes: target,
+          candidate_limits: %{},
+          value_limits: Tay.Event.Value.defaults()
+        })
 
       assert {:ok, published} = Publisher.publish(native, source)
       actual_candidate_bytes = candidate_file_bytes(path, published.epoch_id)
@@ -335,12 +231,12 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     end
   end
 
-  test "candidate-headroom refusal never deletes or edits its V1 source" do
+  test "candidate-headroom refusal never deletes or edits its Store-v2 source" do
     path = NativeHelpers.path()
     {_id, source} = one_job_source(path)
     before = RecoveryHelpers.snapshot(path)
     {:ok, native} = RecoveryHelpers.open(path)
-    assert :ok = Native.enable_mutations(native)
+    assert :ok = enable(native, path)
 
     assert {:error, :candidate_limit} =
              Publisher.publish(native, Map.put(source, :max_candidate_bytes, 1))
@@ -350,12 +246,12 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     File.rm_rf!(path)
   end
 
-  test "expired deadline before candidate creation leaves the V1 authority untouched" do
+  test "expired deadline before candidate creation leaves Store-v2 authority untouched" do
     path = NativeHelpers.path()
     {_id, source} = one_job_source(path)
     before = RecoveryHelpers.snapshot(path)
     {:ok, native} = RecoveryHelpers.open(path)
-    assert :ok = Native.enable_mutations(native)
+    assert :ok = enable(native, path)
     expired = %{native | deadline: System.monotonic_time(:millisecond) - 1}
     assert {:error, _} = Publisher.publish(expired, source)
     assert :ok = Native.shutdown(native)
@@ -380,7 +276,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       path = NativeHelpers.path()
       {_id, source} = one_job_source(path)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
       assert {:ok, published} = Publisher.publish(native, source)
       assert :ok = Native.shutdown(native)
 
@@ -449,17 +345,17 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       path = NativeHelpers.path()
       RecoveryHelpers.store(path)
       {:ok, native} = RecoveryHelpers.open(path)
-      assert :ok = Native.enable_mutations(native)
+      assert :ok = enable(native, path)
 
-      source = %{
-        store_id: store_id(path),
-        epoch_id: nil,
-        jobs: generated_jobs(2, 0),
-        frontier: 0,
-        rotation_target_bytes: 67_108_864,
-        candidate_limits: %{},
-        value_limits: Tay.Event.Value.defaults()
-      }
+      source =
+        Map.merge(current_source(path), %{
+          store_id: store_id(path),
+          jobs: generated_jobs(2, 0),
+          frontier: 0,
+          rotation_target_bytes: 67_108_864,
+          candidate_limits: %{},
+          value_limits: Tay.Event.Value.defaults()
+        })
 
       assert {:ok, published} = Publisher.publish(native, source)
       assert :ok = Native.shutdown(native)
@@ -582,12 +478,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     ) +
       Enum.sum(
         Enum.map(
-          [
-            Path.join(epoch, "MANIFEST"),
-            Path.join(path, "CURRENT"),
-            Path.join(path, "STORE-V2"),
-            Path.join(path, "ADOPTION")
-          ],
+          [Path.join(epoch, "MANIFEST"), Path.join(path, "CURRENT")],
           &File.stat!(&1).size
         )
       )
@@ -596,53 +487,35 @@ defmodule Tay.Storage.V2FaultMatrixTest do
   defp one_job_source(path) do
     id = <<9::128>>
 
-    event = %Tay.Event{
-      record_type: 1,
-      data: %{
-        "at" => 100,
-        "expected_revision" => 0,
-        "job_id" => id,
-        "definition" => %{
-          "args" => %{"value" => 1},
-          "definition_version" => 1,
-          "max_attempts" => 3,
-          "queue_key" => "default",
-          "retry_policy" => Tay.Event.V2.policy(),
-          "scheduled_at" => nil,
-          "timeout_ms" => 1_000,
-          "worker_key" => "worker"
-        },
-        "eligible_at" => 100
-      }
-    }
-
-    {:ok, {1, 1, payload}} = Tay.Event.encode(event)
-
-    {:ok, bytes} =
-      Record.encode(%Record{
-        sequence: 1,
-        record_type: 1,
-        payload_schema_version: 1,
-        payload: payload
-      })
-
-    RecoveryHelpers.store(path, [RecoveryHelpers.segment(1, 1, [bytes], true)])
-    {:ok, migrated} = V1Migration.reduce(V1Migration.candidate(), event, %{sequence: 1})
+    RecoveryHelpers.store(path)
+    jobs = generated_jobs(1, 0)
+    job = jobs[<<1::128>>]
 
     {id,
-     %{
+     Map.merge(current_source(path), %{
        store_id: store_id(path),
-       epoch_id: nil,
-       jobs: migrated.v2.jobs,
-       frontier: 1,
+       jobs: %{id => %{job | id: id}},
+       frontier: 0,
        rotation_target_bytes: 67_108_864,
        candidate_limits: %{},
        value_limits: Tay.Event.Value.defaults()
-     }}
+     })}
   end
 
   defp store_id(path) do
-    {:ok, id} = path |> Path.join("STORE") |> File.read!() |> Segment.decode_store()
-    id
+    {:ok, store_id} = path |> Path.join("STORE-V2") |> File.read!() |> Authority.decode_marker()
+    store_id
+  end
+
+  defp epoch_id(path) do
+    {:ok, current} = path |> Path.join("CURRENT") |> File.read!() |> Authority.decode_current()
+    current.epoch_id
+  end
+
+  defp current_source(path),
+    do: %{epoch_id: epoch_id(path), current: File.read!(Path.join(path, "CURRENT"))}
+
+  defp enable(native, path) do
+    with :ok <- Native.v2_select(native, epoch_id(path)), do: Native.enable_mutations(native)
   end
 end

@@ -1,8 +1,8 @@
 defmodule Tay.Storage.Writer.Compaction do
   @moduledoc false
 
-  alias Tay.Storage.{Native, Reader}
-  alias Tay.Storage.V2.{CompactionControl, Publisher, Reclaimer, Snapshot, V1Migration}
+  alias Tay.Storage.Native
+  alias Tay.Storage.V2.{CompactionControl, Publisher, Reclaimer, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
   alias Tay.Storage.V2.Reducer, as: V2Reducer
   alias Tay.Storage.Writer.SegmentOps
@@ -66,13 +66,18 @@ defmodule Tay.Storage.Writer.Compaction do
       if Map.has_key?(stats, :native) or CompactionControl.requested?() do
         %{reclamation: :deferred, reclaimed_bytes: 0}
       else
-        case Reclaimer.predecessor(native, recovered) do
-          {:ok, details} -> details
-          _ -> %{reclamation: :deferred, reclaimed_bytes: 0}
-        end
+        {:ok, details} = Reclaimer.predecessor(native, recovered)
+        details
       end
 
-    stats = stats |> Map.delete(:native) |> Map.merge(reclaimed)
+    stats =
+      stats
+      |> Map.delete(:native)
+      |> Map.merge(reclaimed)
+      |> Map.put(
+        :net_reclaimed_bytes,
+        max(Map.get(reclaimed, :reclaimed_bytes, 0) - Map.get(stats, :candidate_bytes, 0), 0)
+      )
 
     {:ok,
      %{
@@ -188,37 +193,7 @@ defmodule Tay.Storage.Writer.Compaction do
 
   defp seal_frontier(state), do: {:ok, state}
 
-  defp replay_source(%{epoch_id: nil} = state) do
-    options = Map.to_list(state.recovery.options)
-
-    with {:ok, view} <- Reader.preflight(state.native, options),
-         true <-
-           (view.store.store_id == state.store_id and
-              view.store.next_sequence == state.next_sequence) ||
-             {:error, :compaction_source_changed},
-         {:ok, migrated} <-
-           Reader.reduce_while(
-             state.native,
-             view,
-             V1Migration.candidate(state.candidate_limits, state.value_limits),
-             fn record, position, acc ->
-               with {:ok, event, _} <-
-                      Tay.Event.decode_payload(
-                        record.record_type,
-                        record.payload_schema_version,
-                        record.payload,
-                        state.value_limits
-                      ),
-                    {:ok, next} <- V1Migration.reduce(acc, event, position),
-                    do: {:cont, next}
-             end,
-             options
-           ) do
-      {:ok, migrated.v2, nil}
-    end
-  end
-
-  defp replay_source(state) do
+  defp replay_source(%{epoch_id: epoch_id} = state) when is_binary(epoch_id) do
     with {:ok, recovered} <-
            V2Reader.recover(
              state.native,
@@ -232,6 +207,8 @@ defmodule Tay.Storage.Writer.Compaction do
       {:ok, recovered.candidate, recovered.current}
     end
   end
+
+  defp replay_source(_state), do: {:error, :store_v2_required}
 
   if @test do
     defp with_hook(source, %{options: %{on_transition: fun}, native: native})

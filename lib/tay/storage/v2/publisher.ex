@@ -13,14 +13,14 @@ defmodule Tay.Storage.V2.Publisher do
   alias Tay.Event.V2
   alias Tay.State.Auxiliary
   alias Tay.Storage.{BufferedRead, CRC32C, Native, Reader, Record, Segment}
-  alias Tay.Storage.V2.{Authority, Codec, Reducer, Retention, Snapshot}
+  alias Tay.Storage.V2.{Authority, Codec, CompactionLimits, Reducer, Retention, Snapshot}
   alias Tay.Storage.V2.Reader, as: V2Reader
 
   @max 18_446_744_073_709_551_615
   @minimum_headroom 67_108_864
-  @catch_up_target_events 1_024
-  @catch_up_target_bytes 1_048_576
-  @catch_up_max_rounds 64
+  @catch_up_target_events CompactionLimits.catch_up_target_events()
+  @catch_up_target_bytes CompactionLimits.catch_up_target_bytes()
+  @catch_up_max_rounds CompactionLimits.catch_up_max_rounds()
 
   def publish(native, source) do
     started = System.monotonic_time(:millisecond)
@@ -33,9 +33,7 @@ defmodule Tay.Storage.V2.Publisher do
       |> Map.put_new_lazy(:captured_at, fn -> System.system_time(:millisecond) end)
 
     with true <- V2.id?(source.store_id) || {:error, :store_id},
-         true <-
-           (is_nil(source.epoch_id) or V2.id?(source.epoch_id)) ||
-             {:error, :source_epoch},
+         true <- valid_source_epoch?(source) || {:error, :source_epoch},
          {:ok, source} <- load_source_jobs(native, source, limits, value_limits),
          {:ok, normalized, ids, retention_stats} <- prepare_snapshot(source),
          auxiliary <- auxiliary_candidate(source, normalized),
@@ -119,7 +117,7 @@ defmodule Tay.Storage.V2.Publisher do
           candidate_bytes:
             base_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
               byte_size(current_bytes) +
-              if(is_nil(source.epoch_id), do: 56, else: 0),
+              authority_bytes(source),
           peak_writer_process_bytes: peak_memory,
           started: started,
           switch_started: switch_started,
@@ -162,10 +160,6 @@ defmodule Tay.Storage.V2.Publisher do
        when is_map(jobs),
        do: {:ok, source |> Map.put_new(:schedules, %{}) |> Map.put_new(:results, %{})}
 
-  defp load_source_jobs(_native, %{jobs_table: _table} = source, _limits, _value_limits) do
-    {:ok, source |> Map.put_new(:schedules, %{}) |> Map.put_new(:results, %{})}
-  end
-
   defp load_source_jobs(
          native,
          %{epoch_id: epoch_id, exclude_segment_id: exclude, frontier: frontier} = source,
@@ -199,21 +193,15 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp source_inventory(native, _store_id, %{live_snapshot: true} = source) do
-    with {:ok, entries} <- Native.list(native, :segments),
-         {:ok, classified} <- Reader.classify_entries(entries, :segments),
-         true <- classified.canonical != [] || {:error, :source_segments_missing} do
-      {:ok,
-       %{
-         frontier: source.frontier,
-         sealed: [],
-         total_bytes: Enum.sum(Enum.map(classified.canonical, fn {_, entry} -> entry.size end)),
-         segment_count: length(classified.canonical)
-       }}
+  defp source_inventory(native, store_id, source) do
+    if Map.get(source, :initializing, false) do
+      {:ok, %{frontier: 0, sealed: [], total_bytes: 0, segment_count: 0}}
+    else
+      source_inventory_existing(native, store_id, source)
     end
   end
 
-  defp source_inventory(native, store_id, source) do
+  defp source_inventory_existing(native, store_id, source) do
     with {:ok, entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(entries, :segments),
          true <- classified.canonical != [] || {:error, :source_segments_missing},
@@ -533,19 +521,6 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp prepare_snapshot(%{
-         jobs_table: table,
-         terminal_retention: retention,
-         captured_at: captured_at,
-         snapshot_loaded: loaded
-       }) do
-    with {:ok, _, _, _} = prepared <-
-           Snapshot.prepare_online_table(table, retention, captured_at),
-         :ok <- loaded.() do
-      prepared
-    end
-  end
-
   defp prepare_snapshot(%{jobs: jobs} = source) do
     if Map.has_key?(source, :online_catch_up),
       do: Snapshot.prepare_online(jobs, source.terminal_retention, source.captured_at),
@@ -820,20 +795,8 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp before_current(native, %{epoch_id: nil} = source, _epoch_id) do
-    legacy = new_id()
-
-    with {:ok, intent} <- Authority.encode_adoption(legacy),
-         nonce <- new_id(),
-         intent_stage <- ".tay-adoption-" <> Base.encode16(nonce, case: :lower) <> ".tmp",
-         {:ok, intent_identity} <- Native.create_stage(native, :root, intent_stage),
-         {:ok, _} <- Native.write(native, 0, intent),
-         :ok <- Native.sync(native),
-         :ok <- Native.close_write(native),
-         :ok <- Native.publish(native, :root, intent_stage, "ADOPTION", intent_identity),
-         :ok <- Native.sync_dir(native, :root),
-         :ok <- Native.v2_adopt_v1(native, legacy),
-         {:ok, marker} <- Authority.encode_marker(source.store_id),
+  defp before_current(native, %{initializing: true} = source, _epoch_id) do
+    with {:ok, marker} <- Authority.encode_marker(source.store_id),
          nonce <- new_id(),
          stage <- ".tay-v2-marker-" <> Base.encode16(nonce, case: :lower) <> ".tmp",
          {:ok, identity} <- Native.create_stage(native, :root, stage),
@@ -866,7 +829,7 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
-  defp previous_current(entries, %{epoch_id: nil}) do
+  defp previous_current(entries, %{initializing: true}) do
     if Enum.any?(entries, &(&1.name == "CURRENT")),
       do: {:error, :unexpected_current},
       else: {:ok, nil}
@@ -930,7 +893,9 @@ defmodule Tay.Storage.V2.Publisher do
            admitted_candidate_bytes: publication.admitted_candidate_bytes,
            peak_writer_process_bytes:
              max(publication.peak_writer_process_bytes, process_memory()),
+           preparation_ms: publication.switch_started - publication.started,
            pause_ms: System.monotonic_time(:millisecond) - publication.switch_started,
+           total_ms: System.monotonic_time(:millisecond) - publication.started,
            catch_up_rounds: publication.catch_up_rounds,
            catch_up_events: publication.catch_up_events,
            catch_up_bytes: publication.catch_up_bytes,
@@ -988,6 +953,12 @@ defmodule Tay.Storage.V2.Publisher do
       _ -> 0
     end
   end
+
+  defp authority_bytes(%{initializing: true}), do: 28
+  defp authority_bytes(_), do: 0
+
+  defp valid_source_epoch?(%{initializing: true, epoch_id: nil}), do: true
+  defp valid_source_epoch?(%{epoch_id: epoch_id}), do: V2.id?(epoch_id)
 
   if Mix.env() == :test do
     defp boundary(%{on_boundary: fun}, tag), do: fun.(tag)

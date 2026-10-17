@@ -9,6 +9,7 @@ defmodule Tay.Storage.ColdCopy do
   """
 
   alias Tay.Storage.Native
+  alias Tay.Storage.V2.{Reader, Reducer}
 
   @chunk_bytes 1_048_576
   @catalog_bytes 64 * 1_048_576
@@ -86,19 +87,22 @@ defmodule Tay.Storage.ColdCopy do
   def format(result) when is_map(result), do: json(result)
 
   defp copy_source(operation, source, config) do
-    with :ok <- native(Native.cold_source(source)),
-         {:ok, entries} <- inventory(source, config),
+    with {:ok, recovered} <- native(Reader.recover(source, Reducer.candidate())),
+         epoch = "e-" <> Base.encode16(recovered.epoch_id, case: :lower),
+         :ok <- native(Native.cold_source(source)),
+         {:ok, entries} <- inventory(source, epoch, config),
          {:ok, expected} <- hashes(source, entries),
          {:ok, source_info} <- native(Native.info(source)),
          {:ok, target} <- open_target(source_info, config) do
       try do
         with :ok <- verify_catalog(operation, target, expected, config),
-             :ok <- inventory_matches(source, entries, config),
+             :ok <- inventory_matches(source, epoch, entries, config),
              :ok <- test_hook(config, :after_hash),
-             :ok <- native(Native.cold_create_stage(target, staging_name(config.destination))),
+             :ok <-
+               native(Native.cold_create_stage(target, staging_name(config.destination), epoch)),
              :ok <- test_hook(config, :after_stage),
              {:ok, synced} <- copy_entries(source, target, entries, expected, config),
-             :ok <- inventory_matches(source, entries, config),
+             :ok <- inventory_matches(source, epoch, entries, config),
              :ok <- native(Native.check(source)),
              :ok <- native(Native.cold_check(target)),
              :ok <- sync_staging(target, config),
@@ -250,22 +254,27 @@ defmodule Tay.Storage.ColdCopy do
     |> native(:destination)
   end
 
-  defp inventory(source, config) do
+  defp inventory(source, epoch, config) do
     with {:ok, root} <- native(Native.cold_list(source, :root, config.max_files)),
          {:ok, root_entries, seen, bytes, true} <- inventory_root(root, config),
          remaining = config.max_files - seen,
          true <- remaining > 0 or {:error, :file_budget},
          {:ok, segments} <- native(Native.cold_list(source, :segments, remaining)),
+         {:ok, epoch_entries} <- native(Native.cold_list(source, :epoch, remaining)),
+         {:ok, entries, seen, bytes} <-
+           inventory_epoch(epoch_entries, epoch, root_entries, seen, bytes, config),
          {:ok, entries, _seen, _bytes} <-
-           inventory_segments(segments, root_entries, seen, bytes, config),
+           inventory_segments(segments, epoch, entries, seen, bytes, config),
          true <-
-           (Map.has_key?(entries, "STORE") and Map.has_key?(entries, ".tay-owner.lock")) or
+           (Map.has_key?(entries, "STORE-V2") and Map.has_key?(entries, "CURRENT") and
+              Map.has_key?(entries, ".tay-owner.lock") and
+              Map.has_key?(entries, "epochs/" <> epoch <> "/MANIFEST")) or
              {:error, :missing_metadata},
          true <-
-           (Enum.any?(Map.keys(entries), &String.starts_with?(&1, "segments/")) and
+           (Enum.any?(Map.keys(entries), &String.contains?(&1, "/segments/")) and
               Enum.any?(
                 Map.keys(entries),
-                &(String.starts_with?(&1, "segments/") and String.ends_with?(&1, ".tay"))
+                &(String.contains?(&1, "/segments/") and String.ends_with?(&1, ".tay"))
               )) or
              {:error, :missing_history} do
       {:ok, entries}
@@ -290,10 +299,10 @@ defmodule Tay.Storage.ColdCopy do
     end)
   end
 
-  defp root_entry(%{name: "segments", type: :directory}, acc, bytes, _segments?, _config),
+  defp root_entry(%{name: "epochs", type: :directory}, acc, bytes, _segments?, _config),
     do: {:ok, acc, bytes, true}
 
-  defp root_entry(%{name: "segments"}, _acc, _bytes, _segments?, _config),
+  defp root_entry(%{name: "epochs"}, _acc, _bytes, _segments?, _config),
     do: {:error, :missing_segments}
 
   defp root_entry(entry, acc, bytes, segments?, config) do
@@ -303,14 +312,33 @@ defmodule Tay.Storage.ColdCopy do
     end
   end
 
-  defp inventory_segments(entries, acc, seen, bytes, config) do
+  defp inventory_epoch(entries, epoch, acc, seen, bytes, config) do
+    Enum.reduce_while(entries, {:ok, acc, seen, bytes}, fn
+      %{name: "segments", type: :directory}, result ->
+        {:cont, result}
+
+      entry, {:ok, current, count, byte_count} ->
+        with :ok <- name(entry.name),
+             {:ok, next_count} <- count(count, config.max_files),
+             :ok <- regular(entry),
+             {:ok, next_bytes} <- bytes(byte_count, entry.size, config.max_bytes) do
+          relative = "epochs/" <> epoch <> "/" <> entry.name
+          {:cont, {:ok, Map.put(current, relative, entry), next_count, next_bytes}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+    end)
+  end
+
+  defp inventory_segments(entries, epoch, acc, seen, bytes, config) do
     Enum.reduce_while(entries, {:ok, acc, seen, bytes}, fn entry,
                                                            {:ok, current, count, byte_count} ->
       with :ok <- name(entry.name),
            {:ok, next_count} <- count(count, config.max_files),
            :ok <- regular(entry),
            {:ok, next_bytes} <- bytes(byte_count, entry.size, config.max_bytes) do
-        {:cont, {:ok, Map.put(current, "segments/" <> entry.name, entry), next_count, next_bytes}}
+        relative = "epochs/" <> epoch <> "/segments/" <> entry.name
+        {:cont, {:ok, Map.put(current, relative, entry), next_count, next_bytes}}
       else
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -421,8 +449,8 @@ defmodule Tay.Storage.ColdCopy do
     end
   end
 
-  defp inventory_matches(source, expected, config) do
-    with {:ok, actual} <- inventory(source, config),
+  defp inventory_matches(source, epoch, expected, config) do
+    with {:ok, actual} <- inventory(source, epoch, config),
          true <- exact_inventory?(actual, expected) or {:error, :source_changed} do
       :ok
     else
@@ -655,11 +683,15 @@ defmodule Tay.Storage.ColdCopy do
   defp sync_catalog(target, %{durability: :sync}),
     do: Native.cold_sync_catalog(target) |> native()
 
-  defp scope(relative),
-    do: if(String.starts_with?(relative, "segments/"), do: :segments, else: :root)
+  defp scope(relative) do
+    cond do
+      String.contains?(relative, "/segments/") -> :segments
+      String.starts_with?(relative, "epochs/") -> :epoch
+      true -> :root
+    end
+  end
 
-  defp target_scope(relative),
-    do: if(String.starts_with?(relative, "segments/"), do: :segments, else: :root)
+  defp target_scope(relative), do: scope(relative)
 
   defp basename(relative), do: Path.basename(relative)
 

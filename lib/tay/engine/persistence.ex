@@ -7,7 +7,7 @@ defmodule Tay.Engine.Persistence do
   alias Tay.State.Transition
   alias Tay.State.Auxiliary
   alias Tay.Storage.{Segment, Writer}
-  alias Tay.Storage.V2.{Codec, V1Migration}
+  alias Tay.Storage.V2.{Codec, Mutation}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
 
   @memory_reclaim_idle_ms 1_000
@@ -134,7 +134,7 @@ defmodule Tay.Engine.Persistence do
     ensure_generation_live!(state)
 
     with {:ok, mutation} <-
-           V1Migration.translate_event(event, previous, state.next_availability_order),
+           Mutation.from_event(event, previous, state.next_availability_order),
          {:ok, payload} <- Codec.encode_mutation(mutation, state.config.value_limits),
          {:ok, predicted, next_order} <-
            V2Reducer.apply_one(
@@ -147,7 +147,7 @@ defmodule Tay.Engine.Persistence do
          reserve = reservation_after(state, previous, event.record_type),
          :ok <- headroom(state, byte_size(payload), reserve),
          {:ok, job, budget} <- ProjectionState.account_active(state, previous, predicted) do
-      hook(state.config, {:execution, 8, :pre_append})
+      hook(state.config, {:execution, event.record_type, :pre_append})
       hook(state.config, :pre_append)
       {writer_result, state} = append_record(state, 8, 1, payload)
 
@@ -155,7 +155,7 @@ defmodule Tay.Engine.Persistence do
         {:ok, receipt} ->
           validate_receipt!(state, receipt, byte_size(payload))
           hook(state.config, :post_append)
-          hook(state.config, {:execution, 8, :post_append})
+          hook(state.config, {:execution, event.record_type, :post_append})
 
           finish_commit(
             state,
@@ -227,7 +227,7 @@ defmodule Tay.Engine.Persistence do
 
     hook(
       state.config,
-      {:execution, if(is_binary(state.epoch_id), do: 8, else: operation), :post_projection}
+      {:execution, operation, :post_projection}
     )
 
     {:ok, job, next}

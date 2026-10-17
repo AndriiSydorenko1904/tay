@@ -45,7 +45,7 @@ defmodule Tay.Storage.AppendTest do
   test "short append leaves exact evidence and a permanently poisoned writer", %{path: path} do
     {:ok, w} = start(path)
     {:ok, _} = Writer.append(w, 1, 1, "acknowledged")
-    file = Path.join([path, "segments", canonical(1)])
+    file = Path.join([Tay.Test.RecoveryHelpers.segment_directory(path), canonical(1)])
     before = File.read!(file)
     :ok = Writer.inject_fault(w, :write, 1, :short, 28, 12)
     assert {:error, {:uncertain, %{bytes_written: 12}}} = Writer.append(w, 1, 1, "torn")

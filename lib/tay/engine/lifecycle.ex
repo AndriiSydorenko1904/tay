@@ -635,7 +635,7 @@ defmodule Tay.Engine.Lifecycle do
         {:compaction_result, engine, token, {:error, reason}},
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
       ) do
-    # A pre-CURRENT failure may leave a candidate or first-adoption rollback
+    # A pre-CURRENT failure may leave a candidate
     # intent, but it does not justify retiring the authoritative source. Close
     # this Writer and restart through the same locked recovery/rollback gate.
     # If that recovery fails, the normal restart failure path remains closed.

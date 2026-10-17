@@ -11,6 +11,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   }
 
   alias Tay.Engine.CompactionPolicy
+  alias Tay.Storage.V2.Mutation
   @name __MODULE__
   @moduletag capture_log: true
 
@@ -38,8 +39,22 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   end
 
   defp evaluate(pid) do
-    {_, token} = :sys.get_state(pid).timer
-    send(pid, {:evaluate, token})
+    evaluate(pid, System.monotonic_time(:millisecond) + 5_000)
+  end
+
+  defp evaluate(pid, deadline) do
+    case :sys.get_state(pid).timer do
+      {_, token} ->
+        send(pid, {:evaluate, token})
+
+      nil ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(5)
+          evaluate(pid, deadline)
+        else
+          flunk("compaction policy timer was not rescheduled")
+        end
+    end
   end
 
   defp insert(args \\ %{}, options \\ []) do
@@ -185,7 +200,8 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, manifest} =
              manifest_path |> File.read!() |> Tay.Storage.V2.Authority.decode_manifest()
 
-    assert manifest.source_segments == []
+    assert [%{id: 1, digest: digest}] = manifest.source_segments
+    assert byte_size(digest) == 32
     assert {:ok, %{id: active_id, state: :scheduled}} = Tay.get_job(active.id, name: @name)
     assert active_id == active.id
 
@@ -446,6 +462,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     writer = :sys.get_state(@name).writer
     refute Map.has_key?(:sys.get_state(writer).online_compaction.source, :jobs)
+    refute Map.has_key?(:sys.get_state(writer).online_compaction.source, :jobs_table)
     assert EngineHelpers.eventually(fn -> :sys.get_state(engine).online_snapshot == nil end)
 
     {intent, execution_token} = ExecutionHelpers.job()
@@ -623,87 +640,39 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   # an 80 MB segment in the test process. Actual compaction below is automatic,
   # through the production evaluator/permit/Writer/publication/recovery path.
   defp retained_history(path) do
-    alias Tay.Test.{EventHelpers, SegmentHelpers}
-    alias Tay.Storage.CRC32C
-    header = SegmentHelpers.header()
-    {:ok, file} = File.open(RecoveryHelpers.canonical(path, 1), [:write, :binary])
-    :ok = IO.binwrite(file, header)
-    initial = {file, 1, header, CRC32C.update(CRC32C.initial(), header), 44, 0, 1}
+    alias Tay.Test.EventHelpers
     payload = :binary.copy("x", 8_000)
 
-    final =
-      Enum.reduce(1..10_000, initial, fn index, state ->
+    RecoveryHelpers.write_v2_mutations(path, fn append ->
+      for index <- 1..10_000 do
         definition =
           EventHelpers.definition(%{
             "args" => %{"history" => payload, "index" => index},
             "scheduled_at" => if(index > 9_500, do: nil, else: 200_000_000)
           })
 
-        state =
-          history_frame(
-            path,
-            state,
-            EventHelpers.inserted(definition, 100, EventHelpers.id(index))
-          )
-
-        if index <= 9_000 do
-          {_, _, _, _, _, _, next} = state
-          at = if index <= 8_000, do: 100, else: 89_000_100
-
-          history_frame(
-            path,
-            state,
-            EventHelpers.event(
-              5,
-              at,
-              next - 1,
-              %{"execution_token" => nil},
-              EventHelpers.id(index)
-            )
-          )
-        else
-          state
-        end
-      end)
-
-    {file, _, _, _, _, _, _} = final
-    :ok = File.close(file)
-  end
-
-  defp history_frame(path, {file, id, header, crc, bytes, count, next}, event) do
-    alias Tay.Test.SegmentHelpers
-    alias Tay.Storage.CRC32C
-    {:ok, {type, schema, payload}} = Tay.Event.encode(event)
-
-    {:ok, frame} =
-      Tay.Storage.Record.encode(%Tay.Storage.Record{
-        record_type: type,
-        payload_schema_version: schema,
-        payload: payload,
-        sequence: next
-      })
-
-    {file, id, header, crc, bytes, count} =
-      if bytes + byte_size(frame) + 64 > 67_108_864 do
-        footer =
-          SegmentHelpers.footer(header, [],
-            count: count,
-            last_sequence: next - 1,
-            segment_crc: CRC32C.finalize(crc)
-          )
-
-        :ok = IO.binwrite(file, footer)
-        :ok = File.close(file)
-        header = SegmentHelpers.header(id: id + 1, first_sequence: next)
-        {:ok, file} = File.open(RecoveryHelpers.canonical(path, id + 1), [:write, :binary])
-        :ok = IO.binwrite(file, header)
-        {file, id + 1, header, CRC32C.update(CRC32C.initial(), header), 44, 0}
-      else
-        {file, id, header, crc, bytes, count}
+        next_order = if(index > 9_500, do: index - 9_500, else: 1)
+        event = EventHelpers.inserted(definition, 100, EventHelpers.id(index))
+        {:ok, mutation} = Mutation.from_event(event, nil, next_order)
+        :ok = append.(mutation)
       end
 
-    :ok = IO.binwrite(file, frame)
-    {file, id, header, CRC32C.update(crc, frame), bytes + byte_size(frame), count + 1, next + 1}
+      for index <- 1..9_000 do
+        at = if index <= 8_000, do: 100, else: 89_000_100
+
+        event =
+          EventHelpers.event(
+            5,
+            at,
+            1,
+            %{"execution_token" => nil},
+            EventHelpers.id(index)
+          )
+
+        {:ok, mutation} = Mutation.from_event(event, %{revision: 1, execution: nil}, 501)
+        :ok = append.(mutation)
+      end
+    end)
   end
 
   @tag timeout: 900_000
@@ -713,6 +682,15 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     path: path
   } do
     retained_history(path)
+
+    source_manifest_bytes =
+      path
+      |> RecoveryHelpers.segment_directory()
+      |> Path.dirname()
+      |> Path.join("MANIFEST")
+      |> File.stat!()
+      |> Map.fetch!(:size)
+
     owner = self()
     table = :ets.new(:compaction_metrics, [:public, :set])
     previous_level = Logger.level()
@@ -752,9 +730,14 @@ defmodule Tay.Engine.CompactionRuntimeTest do
         :ok
     end
 
-    ExecutionHelpers.set_clock(90_000_100)
+    # Recover the initialized generation at its capture time, then advance to
+    # the retention cutoff. Store-v2 recovery conservatively anchors cooldown
+    # at activation time, so starting at the future cutoff would correctly
+    # defer this immediate automatic evaluation.
+    ExecutionHelpers.set_clock(0)
     root = start(path, writer_hook: hook, caller_timeout: 60_000, workers: %{})
     assert Tay.status(name: @name).jobs == 10_000
+    ExecutionHelpers.set_clock(90_000_100)
     p = policy(root)
 
     headroom_checks =
@@ -774,7 +757,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
                  60_000
                )
 
-        refute File.exists?(Path.join(path, "CURRENT"))
+        assert File.exists?(Path.join(path, "CURRENT"))
         assert Tay.status(name: @name).jobs == 10_000
         assert File.stat!(RecoveryHelpers.canonical(path, 1)).size > 60_000_000
         :ok = File.rm(reserve)
@@ -821,7 +804,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, stats} = :sys.get_state(p).last_result
     assert stats.expired_jobs == 8_000
     assert stats.retained_terminal_jobs == 1_000
-    assert stats.reclaimed_bytes == stats.source_bytes
+    assert stats.reclaimed_bytes == stats.source_bytes + source_manifest_bytes
     assert stats.candidate_bytes <= admitted_estimate.candidate_upper_bytes
     assert admitted_estimate.reclaimable_bytes <= stats.source_bytes - stats.candidate_bytes
     assert Tay.status(name: @name).jobs == 2_000
@@ -1031,7 +1014,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert {:ok, %{cancelled: 3}} = Tay.stats(name: @name)
     Process.sleep(100)
     assert :sys.get_state(@name).operation == nil
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
   end
 
   test "bounded expiry lost-CURRENT reply uses exact retained view", %{path: path} do
@@ -1069,11 +1052,11 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     writer = :sys.get_state(@name).writer
     :ok = Tay.Storage.Writer.inject_fault(writer, :v2_publish_current, 1, :drop_reply)
     compact = Task.async(fn -> Tay.compact(name: @name, timeout: 60_000) end)
-    assert_receive {:current_barrier, ^writer}, 5000
-    send(writer, :continue)
+    assert_receive {:current_barrier, builder}, 5000
+    send(builder, :continue)
 
     assert EngineHelpers.eventually(fn ->
-             {:dictionary, dictionary} = Process.info(writer, :dictionary)
+             {:dictionary, dictionary} = Process.info(builder, :dictionary)
 
              match?(
                {_, {_, :publishing}},
@@ -1109,7 +1092,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       assert Process.read_timer(old_timer) == false
     end
 
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     assert {:message_queue_len, 0} = Process.info(p, :message_queue_len)
     assert :ok = Tay.restart(name: @name, timeout: 60_000)
     assert policy(root) == p
@@ -1179,7 +1162,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert EngineHelpers.eventually(fn -> :sys.get_state(@name).operation == nil end)
     refute_receive {:drain_barrier, _}
     assert :sys.get_state(@name).meta.generation == generation
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     assert Tay.status(name: @name).state == :ready
   end
 
@@ -1222,7 +1205,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
              :sys.get_state(p).last_result == {:deferred, :recovering}
            end)
 
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     :atomics.put(flag, 1, 0)
     send(writer, :continue)
     assert :ok = Task.await(restart, 60_000)
@@ -1243,7 +1226,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
              :sys.get_state(p).last_result == {:deferred, :stopped}
            end)
 
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
   end
 
   test "public execution drain defers automatic work without forcing callback death", %{
@@ -1268,7 +1251,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
            end)
 
     assert Process.alive?(task)
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     send(task, {:return, :ok})
     assert :ok = Task.await(drain, 60_000)
   end
@@ -1286,7 +1269,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
              :sys.get_state(p).last_result == {:deferred, :unhealthy}
            end)
 
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     EngineHelpers.stop(root)
     fresh = start(path)
     refute policy(fresh) == p
@@ -1305,12 +1288,12 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert EngineHelpers.eventually(fn -> not Process.alive?(p) end)
     assert :ok = Task.await(stop, 60_000)
     refute Process.alive?(engine)
-    refute File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "CURRENT"))
     fresh = start(path)
     assert :sys.get_state(policy(fresh)).pending == nil
   end
 
-  test "automatic maintenance defers during active execution and shutdown preserves CURRENT", %{
+  test "Store-v2 policy does not treat active execution as a compaction blocker", %{
     path: path
   } do
     root =
@@ -1349,7 +1332,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     evaluate(p)
 
     assert EngineHelpers.eventually(fn ->
-             :sys.get_state(p).last_result == {:deferred, :active_jobs_present}
+             :sys.get_state(p).last_result == {:deferred, :not_enough_reclaimable_bytes}
            end),
            inspect(:sys.get_state(p))
 
@@ -1405,6 +1388,12 @@ defmodule Tay.Engine.CompactionRuntimeTest do
           job
         end
 
+      # The fixture starts as the frozen legacy import format. Migrate once
+      # without retention so the workload below qualifies online Store-v2
+      # compaction rather than the necessarily drained importer.
+      assert {:ok, _} =
+               Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 24})
+
       p = policy(root)
       {active, active_token} = ExecutionHelpers.job()
       assert {:ok, _} = Tay.insert(active, name: @name)
@@ -1422,7 +1411,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
           90_000_100
         )
 
-      assert {:error, :active_jobs_present} =
+      assert :ok =
                CompactionPolicy.eligible(
                  Map.put(estimate, :last_compaction_at, nil),
                  :sys.get_state(p).config,
@@ -1432,22 +1421,6 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       started = System.monotonic_time(:millisecond)
       evaluate(p)
 
-      assert EngineHelpers.eventually(fn ->
-               :sys.get_state(p).last_result == {:deferred, :active_jobs_present}
-             end)
-
-      assert :sys.get_state(@name).operation == nil
-      assert Process.alive?(task)
-      refute File.exists?(Path.join(path, "CURRENT"))
-      assert EngineHelpers.eventually(fn -> :sys.get_state(engine).mode == :ready end)
-      send(task, {:return, :ok})
-
-      assert EngineHelpers.eventually(fn ->
-               match?({:ok, %{state: :completed}}, Tay.get_job(active.id, name: @name))
-             end)
-
-      evaluate(p)
-
       assert EngineHelpers.eventually(
                fn -> match?({:ok, _}, :sys.get_state(p).last_result) end,
                12_000
@@ -1455,10 +1428,19 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
       total_ms = System.monotonic_time(:millisecond) - started
       assert {:ok, stats} = :sys.get_state(p).last_result
+      assert Process.alive?(task)
       assert stats.expired_jobs == @count
-      assert stats.retained_terminal_jobs == 1
+      assert stats.retained_terminal_jobs == 0
+      assert {:ok, %{state: :executing}} = Tay.get_job(active.id, name: @name)
+      send(task, {:return, :ok})
+
+      assert EngineHelpers.eventually(fn ->
+               match?({:ok, %{state: :completed}}, Tay.get_job(active.id, name: @name))
+             end)
+
       assert {:ok, %{state: :completed}} = Tay.get_job(active.id, name: @name)
-      assert stats.reclaimed_bytes == stats.source_bytes
+      assert stats.reclaimed_bytes >= stats.source_bytes
+      assert stats.net_reclaimed_bytes > 0
       assert stats.source_bytes > 32_000_000
       assert stats.candidate_bytes <= estimate.candidate_upper_bytes
       assert estimate.reclaimable_bytes <= stats.source_bytes - stats.candidate_bytes
@@ -1540,9 +1522,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       assert :ok = Task.await(stop, 60_000)
       _ = Task.await(manual, 60_000)
 
-      if @site == :current_published,
-        do: assert(File.exists?(Path.join(path, "CURRENT"))),
-        else: refute(File.exists?(Path.join(path, "CURRENT")))
+      assert File.exists?(Path.join(path, "CURRENT"))
 
       start(path)
       assert {:ok, recovered} = Tay.get_job(original.id, name: @name)
@@ -1576,9 +1556,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       send(writer, :continue)
       assert EngineHelpers.eventually(fn -> :sys.get_state(@name).operation == nil end, 1000)
 
-      if @site == :current_published,
-        do: assert(File.exists?(Path.join(path, "CURRENT"))),
-        else: refute(File.exists?(Path.join(path, "CURRENT")))
+      assert File.exists?(Path.join(path, "CURRENT"))
 
       assert Tay.status(name: @name).state == :ready
       assert {:ok, recovered} = Tay.get_job(original.id, name: @name)

@@ -3,69 +3,23 @@ defmodule Tay.Engine.OnlineCheckpoint do
 
   alias Tay.Engine.CompactionEstimate
   alias Tay.Execution.Clock
-  alias Tay.State.{JobIndex, TerminalStore}
+  alias Tay.State.TerminalStore
 
   @segment_catalog_limit 128
   @terminal_states [:completed, :cancelled, :discarded]
 
   def create(state) do
-    table =
-      :ets.new(Tay.Engine.OnlineSnapshot, [
-        :set,
-        :protected,
-        read_concurrency: true
-      ])
-
-    try do
-      :ok =
-        JobIndex.fold(
-          state.projection.jobs,
-          fn job, :ok ->
-            true = :ets.insert(table, {job.id, job})
-            :ok
-          end,
-          :ok
-        )
-
-      :ok =
-        TerminalStore.fold(
-          state.terminal_store,
-          fn job, :ok ->
-            true = :ets.insert(table, {job.id, job})
-            :ok
-          end,
-          :ok
-        )
-
-      {:ok,
-       %{
-         table: table,
-         frontier: state.next_sequence - 1,
-         next_availability_order: state.next_availability_order,
-         schedules: state.schedules,
-         results: state.results
-       }}
-    catch
-      kind, reason ->
-        delete_table(table)
-        {:error, {:snapshot_capture_failed, {kind, reason}}}
-    end
+    %{
+      frontier: state.next_sequence - 1,
+      next_availability_order: state.next_availability_order
+    }
   end
 
-  @type snapshot_ref :: %{required(:table) => term(), optional(term()) => term()}
+  @type snapshot_ref :: map()
 
   @spec delete(nil | snapshot_ref()) :: :ok
   def delete(nil), do: :ok
-  def delete(%{table: table}), do: delete_table(table)
-
-  defp delete_table(table) do
-    try do
-      :ets.delete(table)
-      :ok
-    catch
-      :error, :badarg -> :ok
-    end
-  end
+  def delete(%{}), do: :ok
 
   def recovered_config(config, summary) do
     case Map.get(summary, :compaction_terminal_retention) do

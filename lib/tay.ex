@@ -312,9 +312,8 @@ defmodule Tay do
 
   @doc """
   Builds a Store-v2 replacement in the background while ordinary admission and
-  execution continue, then performs a fenced epoch switch. The one-time Store-v1
-  migration still drains and recovers because the frozen v1 format has no online
-  catch-up boundary. Uses the Engine's bounded terminal retention by default. Administrative
+  execution continue, then performs a fenced epoch switch. Uses the Engine's
+  bounded terminal retention by default. Administrative
   `terminal_retention: :infinity` retains all jobs; `{:minutes, n}` or
   `{:hours, n}` overrides the bounded duration. Zero removes every terminal job
   while preserving all active jobs. No override bypasses the

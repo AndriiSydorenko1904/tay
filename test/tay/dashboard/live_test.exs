@@ -172,7 +172,7 @@ defmodule Tay.Dashboard.LiveTest do
     |> render_click()
 
     assert has_element?(view, "#segment-records-1")
-    assert render(view) =~ "job inserted"
+    assert render(view) =~ "job mutation"
     assert render(view) =~ job.id
     assert render(view) =~ "revision"
     assert has_element?(view, "a[href='/tay/jobs/#{job.id}']")

@@ -1,10 +1,10 @@
 # Storage and recovery contract
 
-Tay v1.0.0 has one authoritative append-only store per Engine. Runtime ETS
+Tay has one authoritative append-only Store-v2 generation per Engine. Runtime ETS
 indexes and the disk-backed terminal inspection index are disposable
-projections, not a second source of truth. Record v1,
-STORE v1, Segment v1, and Event v1 are frozen compatibility contracts: changing
-their bytes or meanings requires an explicitly versioned migration. The
+projections, not a second source of truth. Record v1, Segment v1, and Event v1
+are frozen framing and semantic contracts inside Store v2: changing their bytes
+or meanings requires an explicitly versioned migration. The
 committed binary fixtures under `test/fixtures/storage/` and the Event literals
 and `SHA256SUMS` under `test/fixtures/events/v1/` are independent compatibility
 anchors. Tests use those fixtures directly and never parse this page.
@@ -22,13 +22,17 @@ assignable even when their Event meanings are unknown. Zero or 255 type, zero
 schema, nonzero flags, broken CRC, and invalid lengths are refused as specified
 by the v1 codec. Physical decoding never authorizes semantic replay or repair.
 
-`data_dir/STORE` is an immutable 28-byte genesis marker: `TAYI`, version 1,
-zero flags/reserved bytes, a random nonzero 16-byte STORE_ID, and CRC32C over
-the first 24 bytes. It is neither a manifest nor a tail checkpoint. All segment
-headers and footers must carry that same STORE_ID; a missing or replaced marker
-is never regenerated during recovery.
+New initialization publishes a `STORE-V2` authority marker, an empty immutable
+generation, and an atomic `CURRENT` pointer before reporting success. It never
+creates `data_dir/STORE` or `data_dir/segments`. The STORE_ID is carried by the
+V2 marker, manifest, CURRENT pointer, and every segment header/footer.
 
-Canonical segments live under `data_dir/segments/` and are named exactly 20
+Store-v1 roots with `data_dir/STORE` and a root `segments` directory are not
+supported by Tay 1.5.0. They must be opened and migrated by Tay 1.4.x before
+upgrading. Tay 1.5.0 never creates, imports, adopts, or repairs Store v1.
+
+Store-v2 canonical segments live below the CURRENT epoch's `segments/`
+directory and are named exactly 20
 zero-padded decimal ID digits plus `.tay`, starting at ID 1 without gaps. A
 segment has a 44-byte `TAYS` v1 header containing ID, first sequence,
 STORE_ID, and CRC32C. A sealed segment ends with a 64-byte `TAYF` v1 footer
@@ -57,9 +61,11 @@ literal fixtures, not an optional field in schema 1.
 
 Recovery acquires the existing store and lock, validates every canonical byte
 and sequence, then replays every complete understood event into a private
-candidate. Unknown semantics, invalid transitions, missing history, corruption,
-or an incomplete tail stop the attempt without publishing a partial candidate
-or mutating the source. A recovered writer may activate only while retaining
+candidate. For Store v2 this is the canonical semantic snapshot followed by its
+ordered tail, not all superseded journal history. Unknown semantics, invalid
+transitions, missing history, corruption, or an incomplete tail stop the attempt
+without publishing a partial candidate or mutating the source. A recovered
+writer may activate only while retaining
 the same ownership session and after full revalidation. There is no scan-ahead,
 automatic torn-tail truncation, stage deletion, or writable-prefix salvage.
 Inspection and copy catalogs do not grant activation authority.

@@ -2,10 +2,12 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
   @moduledoc false
 
   alias Tay.Storage.{Native, Segment}
-  alias Tay.Storage.V2.{CompactionControl, Publisher, Reclaimer, Retention}
+  alias Tay.Storage.V2.{CompactionControl, Publisher, Reader, Reclaimer, Reducer, Retention}
   alias Tay.Storage.Writer.{OnlineCompaction, SegmentOps, State}
 
   @maintenance_io_timeout_ms 120_000
+  @reacquire_timeout_ms 5_000
+  @reacquire_poll_ms 10
   @test Mix.env() == :test
 
   def native_request(state, native, deadline, cancel_flag, operation, body) do
@@ -20,11 +22,20 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
         true ->
           timeout =
             min(
-              @maintenance_io_timeout_ms,
+              min(@maintenance_io_timeout_ms, state.native.timeout),
               max(deadline - System.monotonic_time(:millisecond), 1)
             )
 
           Native.request_owned(%{native | timeout: timeout}, operation, body)
+      end
+
+    state =
+      case result do
+        {:error, %{kind: :uncertain}} ->
+          %{state | retired_ports: MapSet.put(state.retired_ports, state.native.port)}
+
+        _ ->
+          state
       end
 
     {:reply, result, state}
@@ -89,13 +100,17 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
     Process.demonitor(online.monitor, [:flush])
     native = %{state.native | deadline: nil}
 
-    reclaimed =
-      case Reclaimer.predecessor(native, recovered) do
-        {:ok, details} -> details
-        _ -> %{reclamation: :deferred, reclaimed_bytes: 0}
-      end
+    {:ok, reclaimed} = Reclaimer.predecessor(native, recovered)
 
-    stats = Map.merge(stats, reclaimed)
+    stats =
+      stats
+      |> Map.merge(reclaimed)
+      |> Map.merge(%{
+        peak_delta_events: online.peak_delta_events,
+        peak_delta_bytes: online.peak_delta_bytes,
+        net_reclaimed_bytes:
+          max(Map.get(reclaimed, :reclaimed_bytes, 0) - Map.get(stats, :candidate_bytes, 0), 0)
+      })
 
     case Native.open_active(native, canonical(recovered.highest.id), recovered.highest.identity) do
       {:ok, _} ->
@@ -126,28 +141,139 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
 
   def fail(state, online, reason, mutate) do
     Process.demonitor(online.monitor, [:flush])
+    reason = online.abort_reason || reason
 
     cond do
+      match?({:unknown_publication_outcome, _}, reason) ->
+        reconcile_unknown_publication(state, online, reason, mutate)
+
       not online.freezing and not online.frozen ->
         abort_preparation(state, online, reason)
 
-      safe_to_resume_source?(reason) ->
-        resume_source(state, online, reason, mutate)
-
       true ->
-        send(online.notify, {:compact_online_result, self(), online.token, {:error, reason}})
-        {:noreply, State.poison(state, reason)}
+        resume_source(state, online, reason, mutate)
+    end
+  end
+
+  defp reconcile_unknown_publication(
+         state,
+         online,
+         {:unknown_publication_outcome, publication} = reason,
+         mutate
+       ) do
+    Native.close_and_await(state.native)
+
+    options = [
+      durability: state.options.durability,
+      validated_filesystem: state.options.validated_filesystem,
+      test_helper: state.options.test_helper,
+      timeout: state.options.timeout
+    ]
+
+    case reacquire(state.options.data_dir, options) do
+      {:ok, native} ->
+        candidate = Reducer.candidate(state.candidate_limits, state.value_limits)
+
+        case Reader.recover(native, candidate) do
+          {:ok, %{epoch_id: epoch_id, current: current} = recovered}
+          when epoch_id == publication.epoch_id and current == publication.current ->
+            case Native.enable_mutations(native) do
+              :ok ->
+                stats = reconciled_stats(publication, recovered)
+
+                complete(
+                  %{
+                    state
+                    | native: native,
+                      retired_ports: MapSet.put(state.retired_ports, state.native.port)
+                  },
+                  online,
+                  recovered,
+                  stats,
+                  mutate
+                )
+
+              error ->
+                reconciliation_failed(state, online, native, reason, error)
+            end
+
+          {:ok, %{epoch_id: epoch_id, current: current}}
+          when epoch_id == state.epoch_id and current == state.v2_current ->
+            case Native.enable_mutations(native) do
+              :ok ->
+                resume_source(
+                  %{
+                    state
+                    | native: native,
+                      retired_ports: MapSet.put(state.retired_ports, state.native.port)
+                  },
+                  online,
+                  reason,
+                  mutate
+                )
+
+              error ->
+                reconciliation_failed(state, online, native, reason, error)
+            end
+
+          recovery_error ->
+            reconciliation_failed(state, online, native, reason, recovery_error)
+        end
+
+      reacquire_error ->
+        reconciliation_failed(state, online, nil, reason, reacquire_error)
+    end
+  end
+
+  defp reconciled_stats(publication, recovered) do
+    publication
+    |> Map.drop([:current, :started, :switch_started, :reason])
+    |> Map.merge(%{
+      recovered: recovered,
+      preparation_ms: publication.switch_started - publication.started,
+      pause_ms: System.monotonic_time(:millisecond) - publication.switch_started,
+      total_ms: System.monotonic_time(:millisecond) - publication.started,
+      reclamation: :deferred,
+      reclaimed_bytes: 0,
+      publication_reconciled: true
+    })
+  end
+
+  defp reconciliation_failed(state, online, native, reason, reconciliation_error) do
+    if native, do: Native.shutdown(native)
+    error = {:compaction_reconciliation_failed, reason, reconciliation_error}
+    send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
+    {:noreply, State.poison(state, error)}
+  end
+
+  defp reacquire(path, options) do
+    deadline = System.monotonic_time(:millisecond) + @reacquire_timeout_ms
+    do_reacquire(path, options, deadline)
+  end
+
+  defp do_reacquire(path, options, deadline) do
+    case Native.open_existing(path, options) do
+      {:error, %{reason: "store_busy"}} = busy ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@reacquire_poll_ms)
+          do_reacquire(path, options, deadline)
+        else
+          busy
+        end
+
+      result ->
+        result
     end
   end
 
   def builder_down(state, online, reason) do
-    error = {:builder_exit, reason}
+    error = online.abort_reason || {:builder_exit, reason}
 
     if not online.freezing and not online.frozen do
       abort_preparation(state, online, error)
     else
       send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-      {:noreply, State.poison(state, {:compaction_builder_exit, reason})}
+      {:noreply, State.poison(state, error)}
     end
   end
 
@@ -158,7 +284,6 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
       caller == recovery.caller and reference == recovery.admission_ref and
       is_nil(Map.get(state, :online_compaction)) and is_integer(deadline) and
       deadline > System.monotonic_time(:millisecond) and is_map(snapshot) and
-      ets_table?(Map.get(snapshot, :table)) and
       Map.get(snapshot, :frontier) == state.next_sequence - 1 and
       is_integer(Map.get(snapshot, :next_availability_order)) and
       Retention.validate(retention) == :ok
@@ -183,15 +308,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
             value_limits: rotated.value_limits,
             terminal_retention: retention,
             captured_at: captured_at,
-            jobs_table: snapshot.table,
-            schedules: snapshot.schedules,
-            results: snapshot.results,
             next_availability_order: snapshot.next_availability_order,
-            snapshot_loaded: fn ->
-              send(notify, {:compact_online_snapshot_loaded, owner, token})
-              :ok
-            end,
-            live_snapshot: true,
             online_catch_up: fn action ->
               GenServer.call(owner, {:compact_online_catch_up, ref, action}, :infinity)
             end
@@ -291,9 +408,6 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
 
   defp tagged_reply(reply, _stats, _delivered), do: reply
 
-  defp safe_to_resume_source?({:unknown_publication_outcome, _}), do: false
-  defp safe_to_resume_source?(_reason), do: true
-
   if @test do
     defp with_hook(source, %{options: %{on_transition: fun}, native: native})
          when is_function(fun, 2),
@@ -304,6 +418,5 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
     defp with_hook(source, _state), do: source
   end
 
-  defp ets_table?(table), do: is_atom(table) or is_reference(table)
   defp canonical(id), do: elem(Segment.filename(id), 1)
 end

@@ -128,7 +128,7 @@ permanently removes terminal jobs that have expired under the configured
 retention policy, so the UI requires an explicit confirmation. Store-v2
 candidate preparation keeps admission and execution live and is shown as
 storage maintenance; only the short fenced epoch switch is unavailable. The
-one-time Store-v1 migration is shown separately as `migrating`. Cursor pages are
+the short publication fence is shown as `compacting / switching`. Cursor pages are
 weakly consistent under concurrent job changes; refresh to reconcile a changing
 result set.
 

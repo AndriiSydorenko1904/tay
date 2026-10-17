@@ -13,8 +13,9 @@ defmodule Tay.Storage.Writer do
   Engine alone withholds all external acknowledgements until that succeeds.
   """
   use GenServer, restart: :temporary
-  alias Tay.Storage.{Native, Reader, Recovery, SegmentInspection}
+  alias Tay.Storage.{Native, Recovery, SegmentInspection}
   alias Tay.Storage.Recovery.Error
+  alias Tay.Storage.V2.Publisher
 
   alias Tay.Storage.Writer.{
     Compaction,
@@ -220,9 +221,28 @@ defmodule Tay.Storage.Writer do
   defp init_opened(native, options, initialize_only) do
     state = State.physical(native, options, initialize_only)
 
-    case State.prepare(state) do
+    prepare =
+      if initialize_only,
+        do: State.prepare_initialization(state),
+        else: State.prepare(state)
+
+    case prepare do
       {:ok, state} ->
         {:ok, state}
+
+      {:initialize, state} ->
+        case publish_initial_generation(state) do
+          {:ok, state, _stats} ->
+            {:ok, state}
+
+          {:error, reason} ->
+            Native.shutdown(native)
+            {:stop, reason}
+        end
+
+      {:error, %{reason: :store_v2_requires_v2_recovery}} when initialize_only ->
+        Native.shutdown(native)
+        {:stop, :already_initialized}
 
       {:error, reason} ->
         Native.shutdown(native)
@@ -347,19 +367,7 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_call(:finish_initialization, _, %{initialize_only: true} = state) do
-    result =
-      case Native.shutdown(state.native) do
-        :ok ->
-          {:ok,
-           %{
-             store_id: state.store_id,
-             segment_id: state.segment.id,
-             durability: state.options.durability
-           }}
-
-        _ ->
-          {:error, :uncertain_initialization}
-      end
+    {result, state} = finish_v2_initialization(state)
 
     {:stop, :normal, result, state}
   end
@@ -450,7 +458,7 @@ defmodule Tay.Storage.Writer do
     do: mutate(request, from, state)
 
   def handle_call({:reduce, accumulator, reducer}, _from, state) do
-    case Reader.reduce(state.native, accumulator, reducer) do
+    case Tay.Storage.V2.Reader.reduce_physical(state.native, accumulator, reducer) do
       {:ok, _} = result -> {:reply, result, state}
       {:error, reason} = result -> {:reply, result, poison(state, reason)}
     end
@@ -534,6 +542,69 @@ defmodule Tay.Storage.Writer do
 
   defp journal_compaction(state, _record), do: state
 
+  defp finish_v2_initialization(state) do
+    result = publish_initial_generation(state)
+
+    case result do
+      {:ok, state, stats} ->
+        reply =
+          case Native.shutdown(state.native) do
+            :ok ->
+              {:ok,
+               %{
+                 store_id: state.store_id,
+                 epoch_id: state.epoch_id,
+                 segment_id: state.segment.id,
+                 durability: state.options.durability,
+                 reclamation: stats.reclamation
+               }}
+
+            _ ->
+              {:error, :uncertain_initialization}
+          end
+
+        {reply, state}
+
+      {:error, _} ->
+        _ = Native.shutdown(state.native)
+        {{:error, :uncertain_initialization}, state}
+    end
+  end
+
+  defp publish_initial_generation(state) do
+    source = %{
+      initializing: true,
+      store_id: state.store_id,
+      epoch_id: nil,
+      jobs: %{},
+      schedules: %{},
+      results: %{},
+      frontier: 0,
+      captured_at: 0,
+      rotation_target_bytes: state.options.rotation_target_bytes,
+      candidate_limits: state.candidate_limits,
+      value_limits: state.value_limits
+    }
+
+    case Publisher.publish(state.native, source) do
+      {:ok, %{recovered: recovered} = stats} ->
+        state = %{
+          state
+          | epoch_id: recovered.epoch_id,
+            v2_current: recovered.current,
+            segment: recovered.highest,
+            next_sequence: recovered.next_sequence
+        }
+
+        with {:ok, state} <- SegmentOps.open_ready(state, recovered.store) do
+          {:ok, state, Map.put(stats, :reclamation, :complete)}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @impl true
   def handle_info(
         {:recovery_expired, reference},
@@ -610,7 +681,11 @@ defmodule Tay.Storage.Writer do
       do: {:noreply, state}
 
   def handle_info({port, {:exit_status, code}}, %{native: %{port: port}} = state),
-    do: {:noreply, poison(state, {:helper_exit, code})}
+    do:
+      if(Native.closed_by_owner?(port) and not is_nil(state.online_compaction),
+        do: {:noreply, state},
+        else: {:noreply, poison(state, {:helper_exit, code})}
+      )
 
   def handle_info({port, {:exit_status, _}}, %{retired_ports: ports} = state) do
     if MapSet.member?(ports, port) or Native.closed_by_owner?(port),
@@ -619,7 +694,11 @@ defmodule Tay.Storage.Writer do
   end
 
   def handle_info({:EXIT, port, reason}, %{native: %{port: port}} = state),
-    do: {:noreply, poison(state, {:port_exit, reason})}
+    do:
+      if(Native.closed_by_owner?(port) and not is_nil(state.online_compaction),
+        do: {:noreply, state},
+        else: {:noreply, poison(state, {:port_exit, reason})}
+      )
 
   def handle_info({:EXIT, port, _}, %{retired_ports: ports} = state) when is_port(port) do
     if MapSet.member?(ports, port) or Native.closed_by_owner?(port),

@@ -1,9 +1,9 @@
 defmodule Tay.DiagnosticsTest do
   use ExUnit.Case, async: false
   @moduletag capture_log: true
-  alias Tay.Test.{EventHelpers, NativeHelpers}
+  alias Tay.Test.NativeHelpers
   alias Tay.Test.RecoveryHelpers, as: R
-  alias Tay.Storage.{Native, Record}
+  alias Tay.Storage.Native
 
   setup do
     path = NativeHelpers.path()
@@ -20,12 +20,11 @@ defmodule Tay.DiagnosticsTest do
   test "full semantic inspection returns bounded aggregates without activation or jobs", %{
     path: path
   } do
-    frames = Enum.map(~w(E1 E2 E3 E4 E6 E5), &EventHelpers.fixture/1)
-    R.store(path, [R.segment(1, 1, frames, true)])
+    R.store(path)
     before = R.snapshot(path)
     assert {:ok, result} = inspect_store(path)
-    assert result.record_count == 6 and result.segment_count == 1
-    assert result.jobs == 1 and result.states.cancelled == 1
+    assert result.record_count == 0 and result.segment_count == 1
+    assert result.jobs == 0
     assert result.activation == :not_attempted and result.mutation == :none
     refute Map.has_key?(result, :candidate)
     refute Map.has_key?(result, :segments)
@@ -52,52 +51,15 @@ defmodule Tay.DiagnosticsTest do
     Native.shutdown(native)
   end
 
-  test "unknown semantic capabilities and torn tails stop without exposing bytes or partial counts",
-       %{path: path} do
-    for {type, schema, payload} <- [{47, 1, "never-print-secret"}, {1, 2, "never-print-secret"}] do
-      {:ok, frame} =
-        Record.encode(%Record{
-          record_type: type,
-          payload_schema_version: schema,
-          sequence: 1,
-          payload: payload
-        })
-
-      R.store(path, [R.segment(1, 1, [frame], true)])
-      before = R.snapshot(path)
-      assert {:error, %{kind: :unsupported_semantics} = error} = inspect_store(path)
-      refute Tay.Diagnostics.format(error) =~ "never-print-secret"
-      refute Map.has_key?(error, :jobs)
-      assert R.snapshot(path) == before
-    end
-
-    frame = EventHelpers.fixture("E1")
-    R.store(path, [R.segment(1, 1, [binary_part(frame, 0, byte_size(frame) - 1)])])
-    before = R.snapshot(path)
-    assert {:error, %{kind: :incomplete_tail, action: :preserve_and_stop}} = inspect_store(path)
-    assert R.snapshot(path) == before
-  end
-
-  test "operational replay budgets can be raised without changing source bytes", %{path: path} do
-    R.store(path, [R.segment(1, 1, [EventHelpers.fixture("E1")])])
-    before = R.snapshot(path)
-
-    assert {:error, %{kind: :resource_limit}} =
-             inspect_store(path, recovery: [max_replay_records: 0])
-
-    assert {:ok, %{jobs: 1}} = inspect_store(path)
-    assert R.snapshot(path) == before
-  end
-
   test "large accepted recovery deadlines do not overflow the isolation receive timer", %{
     path: path
   } do
     options = [recovery: [deadline_ms: 4_294_967_296_000]]
     assert {:error, %{stage: :ownership}} = inspect_store(path, options)
     refute File.exists?(path)
-    R.store(path, [R.segment(1, 1, [EventHelpers.fixture("E1")])])
+    R.store(path)
     before = R.snapshot(path)
-    assert {:ok, %{jobs: 1, mutation: :none}} = inspect_store(path, options)
+    assert {:ok, %{jobs: 0, mutation: :none}} = inspect_store(path, options)
     assert R.snapshot(path) == before
   end
 

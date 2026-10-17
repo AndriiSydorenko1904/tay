@@ -111,7 +111,6 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
     state = initial_state(native, options, spec)
 
     with :ok <- hook(state, :recovery_acquired),
-         :ok <- V2Reader.reconcile_adoption(native),
          {:ok, result, candidate, view, identity} <- prepare(native, spec),
          true <-
            Process.alive?(caller) ||
@@ -219,7 +218,11 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
             store_id: store.store_id,
             epoch_id: view.epoch_id,
             compaction_captured_at: view.manifest.captured_at,
-            compaction_terminal_retention: view.manifest.terminal_retention,
+            compaction_terminal_retention:
+              if(view.manifest.source_frontier == 0 and view.manifest.source_segments == [],
+                do: nil,
+                else: view.manifest.terminal_retention
+              ),
             checkpoint_tail_events: view.next_sequence - view.manifest.tail_first_sequence,
             segments: store.segments,
             highest: store.highest,
@@ -237,7 +240,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
           {:ok, summary, view.candidate, view, :store_v2}
         end
       else
-        Recovery.prepare(native, spec.codec, spec.initial_acc, spec.reducer, spec.options)
+        {:error, Error.new(:discovery, :store_v2_required, :preflight)}
       end
     end
   end
@@ -252,9 +255,6 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
          true <- actual == view || {:error, :v2_frozen_view_changed},
          do: :ok
   end
-
-  defp revalidate(native, recovery),
-    do: Recovery.revalidate(native, recovery.view, recovery.provider, recovery.options)
 
   defp activate_validated(state, caller) do
     recovery = state.recovery
@@ -318,8 +318,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
   end
 
   defp open_recovered(state, %{exhausted: true}) do
-    with :ok <- SegmentOps.sync_existing(state, :root, "STORE"),
-         :ok <- SegmentOps.sync_v2_authority(state),
+    with :ok <- SegmentOps.sync_v2_authority(state),
          :ok <- Native.sync_dir(state.native, :root),
          :ok <- Native.sync_dir(state.native, :segments),
          :ok <- SegmentOps.sync_existing(state, :segments, canonical(state.segment.id)),
@@ -329,13 +328,9 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
 
   defp open_recovered(state, store), do: SegmentOps.open_ready(state, store)
 
-  defp maybe_reclaim(%{epoch_id: nil}), do: :ok
-
   defp maybe_reclaim(state) do
-    case Reclaimer.predecessor(state.native, state.recovery.view) do
-      {:ok, _} -> Native.check(state.native)
-      {:error, _} -> Native.check(state.native)
-    end
+    {:ok, _} = Reclaimer.predecessor(state.native, state.recovery.view)
+    Native.check(state.native)
   end
 
   defp segment_catalog_entry(segment),

@@ -107,18 +107,22 @@ defmodule Tay.Engine.CompactionPolicyTest do
     assert summary.active_jobs == 0
   end
 
-  test "automatic maintenance defers while actionable jobs are present" do
+  test "Store-v2 maintenance remains eligible while jobs are active" do
     config = CompactionConfig.defaults()
 
     summary = %{
       active_jobs: 1,
+      running_jobs: 1,
+      source: {<<1::128>>, 10},
       last_compaction_at: nil,
       sealed_segments: config.min_sealed_segments,
       reclaimable_bytes: config.min_reclaimable_bytes,
       ratio: config.dead_ratio_threshold
     }
 
-    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 10)
+    assert :ok = CompactionPolicy.eligible(summary, config, 10)
+
+    assert :ok = CompactionPolicy.eligible(%{summary | source: {nil, 10}}, config, 10)
   end
 
   test "a due Store-v2 checkpoint may run with active jobs and requires new tail events" do
@@ -126,6 +130,8 @@ defmodule Tay.Engine.CompactionPolicyTest do
 
     summary = %{
       active_jobs: 1,
+      running_jobs: 1,
+      source: {<<1::128>>, 10},
       last_compaction_at: 10_000,
       checkpoint_events: 1,
       sealed_segments: 0,
@@ -133,12 +139,12 @@ defmodule Tay.Engine.CompactionPolicyTest do
       ratio: 0
     }
 
-    assert {:error, :active_jobs_present} = CompactionPolicy.eligible(summary, config, 14_999)
+    assert {:error, :cooldown} = CompactionPolicy.eligible(summary, config, 14_999)
     assert :ok = CompactionPolicy.eligible(summary, config, 15_000)
 
     assert :ok = CompactionPolicy.eligible(%{summary | active_jobs: 0}, config, 15_000)
 
-    assert {:error, :active_jobs_present} =
+    assert {:error, :cooldown} =
              CompactionPolicy.eligible(%{summary | checkpoint_events: 0}, config, 15_000)
   end
 

@@ -1,8 +1,7 @@
 defmodule Tay.Storage.OwnershipTest do
   use ExUnit.Case, async: true
-  alias Tay.Storage.{Native, Reader}
+  alias Tay.Storage.Native
   import Tay.Test.NativeHelpers
-  import Tay.Test.SegmentHelpers, only: [fixture: 1]
 
   setup do
     path = path()
@@ -52,28 +51,6 @@ defmodule Tay.Storage.OwnershipTest do
     File.rename!(Path.join(path, ".tay-owner.lock"), Path.join(path, "retired-lock"))
     File.write!(Path.join(path, ".tay-owner.lock"), "")
     assert {:error, %{reason: "path_or_extent_changed"}} = Native.check(n)
-    Native.close(n)
-  end
-
-  test "locked native Reader validates fixed S15 and reads all records in order", %{path: path} do
-    File.mkdir_p!(Path.join(path, "segments"))
-    File.write!(Path.join(path, "STORE"), fixture("STORE"))
-    File.write!(Path.join([path, "segments", canonical(1)]), fixture("s05.tay"))
-    File.write!(Path.join([path, "segments", canonical(2)]), fixture("s13_next.tay"))
-    {:ok, n} = native(path)
-    assert {:ok, %{state: :ready, next_sequence: 4}} = Reader.inspect_store(n)
-    assert {:ok, [3, 2, 1]} = Reader.reduce(n, [], fn r, _, acc -> [r.sequence | acc] end)
-    Native.close(n)
-  end
-
-  test "damaged history is rejected without modifying bytes", %{path: path} do
-    File.mkdir_p!(Path.join(path, "segments"))
-    File.write!(Path.join(path, "STORE"), fixture("STORE"))
-    file = Path.join([path, "segments", canonical(1)])
-    File.write!(file, fixture("s10_36.tay"))
-    {:ok, n} = native(path)
-    assert {:error, %{kind: :incomplete_footer}} = Reader.inspect_store(n)
-    assert File.read!(file) == fixture("s10_36.tay")
     Native.close(n)
   end
 end

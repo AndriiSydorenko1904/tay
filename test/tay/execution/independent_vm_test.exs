@@ -93,7 +93,7 @@ defmodule Tay.Execution.IndependentVMTest do
     defmodule Tay.IndependentVMWorker do
       use Tay.Worker, key: "independent.execution.v1"
       def perform(job) do
-        sequence = elem(job.revision, 4)
+        sequence = elem(job.revision, 5)
         line = job.id <> ":" <> Integer.to_string(job.attempt) <> ":" <> Integer.to_string(sequence) <> "\\n"
         File.write!(job.args["oracle"], line, [:append])
         #{callback}

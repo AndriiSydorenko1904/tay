@@ -1,8 +1,8 @@
 defmodule Tay.Storage.Writer.OnlineCompaction do
   @moduledoc false
 
-  @catch_up_target_events 1_024
-  @catch_up_target_bytes 1_048_576
+  alias Tay.Storage.V2.CompactionLimits
+
   @record_overhead_bytes 28
 
   @enforce_keys [
@@ -25,9 +25,14 @@ defmodule Tay.Storage.Writer.OnlineCompaction do
     :token,
     :source,
     :freeze_from,
+    :abort_reason,
     delta: [],
     delta_events: 0,
     delta_bytes: 0,
+    peak_delta_events: 0,
+    peak_delta_bytes: 0,
+    max_delta_events: CompactionLimits.max_delta_events(),
+    max_delta_bytes: CompactionLimits.max_delta_bytes(),
     freezing: false,
     frozen: false,
     pending: []
@@ -44,9 +49,14 @@ defmodule Tay.Storage.Writer.OnlineCompaction do
           token: term(),
           source: map(),
           freeze_from: GenServer.from() | nil,
+          abort_reason: term() | nil,
           delta: [physical_record()],
           delta_events: non_neg_integer(),
           delta_bytes: non_neg_integer(),
+          peak_delta_events: non_neg_integer(),
+          peak_delta_bytes: non_neg_integer(),
+          max_delta_events: pos_integer(),
+          max_delta_bytes: pos_integer(),
           freezing: boolean(),
           frozen: boolean(),
           pending: [{GenServer.from(), term()}]
@@ -62,8 +72,8 @@ defmodule Tay.Storage.Writer.OnlineCompaction do
 
   @spec freeze(t(), GenServer.from()) :: {:catch_up, [physical_record()], t()} | {:freeze, t()}
   def freeze(%__MODULE__{} = online, from) do
-    if online.delta_events > @catch_up_target_events or
-         online.delta_bytes > @catch_up_target_bytes do
+    if online.delta_events > CompactionLimits.catch_up_target_events() or
+         online.delta_bytes > CompactionLimits.catch_up_target_bytes() do
       {records, next} = drain(online)
       {:catch_up, records, next}
     else
@@ -89,14 +99,36 @@ defmodule Tay.Storage.Writer.OnlineCompaction do
   end
 
   @spec journal(t(), physical_record()) :: t()
-  def journal(%__MODULE__{frozen: false} = online, {_, _, payload} = record) do
-    %{
+  def journal(%__MODULE__{frozen: false, abort_reason: nil} = online, {_, _, payload} = record) do
+    next = %{
       online
       | delta: [record | online.delta],
         delta_events: online.delta_events + 1,
-        delta_bytes: online.delta_bytes + byte_size(payload) + @record_overhead_bytes
+        delta_bytes: online.delta_bytes + byte_size(payload) + @record_overhead_bytes,
+        peak_delta_events: max(online.peak_delta_events, online.delta_events + 1),
+        peak_delta_bytes:
+          max(
+            online.peak_delta_bytes,
+            online.delta_bytes + byte_size(payload) + @record_overhead_bytes
+          )
     }
+
+    if next.delta_events > next.max_delta_events or next.delta_bytes > next.max_delta_bytes do
+      :atomics.put(next.cancel_flag, 1, 1)
+
+      %{
+        next
+        | abort_reason: :checkpoint_delta_overloaded,
+          delta: [],
+          delta_events: 0,
+          delta_bytes: 0
+      }
+    else
+      next
+    end
   end
+
+  def journal(%__MODULE__{} = online, _record), do: online
 
   @spec queue(t(), GenServer.from(), term()) :: t()
   def queue(%__MODULE__{} = online, from, request) do

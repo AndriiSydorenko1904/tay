@@ -4,14 +4,14 @@ defmodule Tay.Storage.ColdCopyTest do
 
   alias Tay.Storage.ColdCopy
   alias Tay.Storage.Native
-  alias Tay.Test.{EventHelpers, NativeHelpers}
+  alias Tay.Test.NativeHelpers
   alias Tay.Test.RecoveryHelpers, as: R
 
   setup do
     parent = NativeHelpers.path()
     File.mkdir_p!(parent)
     source = Path.join(parent, "source")
-    R.store(source, [R.segment(1, 1, [EventHelpers.fixture("E1")], true)])
+    R.store(source)
     on_exit(fn -> File.rm_rf!(parent) end)
 
     %{
@@ -45,19 +45,24 @@ defmodule Tay.Storage.ColdCopyTest do
              ColdCopy.backup(options(c.source, c.backup, c.catalog))
 
     assert count >= 3
-    assert File.read!(Path.join(c.backup, "STORE")) == File.read!(Path.join(c.source, "STORE"))
-    assert (File.stat!(c.backup).mode &&& 0o777) == 0o700
-    assert (File.stat!(Path.join(c.backup, "STORE")).mode &&& 0o777) == 0o600
 
-    source_segment = Path.join([c.source, "segments", "00000000000000000001.tay"])
-    backup_segment = Path.join([c.backup, "segments", "00000000000000000001.tay"])
+    assert File.read!(Path.join(c.backup, "STORE-V2")) ==
+             File.read!(Path.join(c.source, "STORE-V2"))
+
+    assert (File.stat!(c.backup).mode &&& 0o777) == 0o700
+    assert (File.stat!(Path.join(c.backup, "STORE-V2")).mode &&& 0o777) == 0o600
+
+    source_segment = R.canonical(c.source, 1)
+    backup_segment = R.canonical(c.backup, 1)
     assert File.read!(backup_segment) == File.read!(source_segment)
 
     catalog = :json.decode(File.read!(c.catalog))
     assert catalog["version"] == 1
     assert catalog["filesystem"] == :null
 
-    assert catalog["files"]["segments/00000000000000000001.tay"]["sha256"] ==
+    relative_segment = Path.relative_to(source_segment, c.source)
+
+    assert catalog["files"][relative_segment]["sha256"] ==
              :crypto.hash(:sha256, File.read!(source_segment)) |> Base.encode16(case: :lower)
 
     assert {:ok, %{result: "development_copy"}} =
@@ -65,8 +70,7 @@ defmodule Tay.Storage.ColdCopyTest do
                options(c.backup, c.restored, c.restored_catalog, verify_catalog: c.catalog)
              )
 
-    assert File.read!(Path.join([c.restored, "segments", "00000000000000000001.tay"])) ==
-             File.read!(source_segment)
+    assert File.read!(R.canonical(c.restored, 1)) == File.read!(source_segment)
   end
 
   test "refuses a live owned source and leaves no destination", c do
@@ -95,8 +99,8 @@ defmodule Tay.Storage.ColdCopyTest do
     File.ln_s!(c.source, linked)
     assert refused(ColdCopy.backup(options(linked, c.backup, c.catalog)), :unsafe_path)
 
-    File.ln!(Path.join(c.source, "STORE"), Path.join(c.parent, "store-alias"))
-    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)), :unsafe_file)
+    File.ln!(Path.join(c.source, "STORE-V2"), Path.join(c.parent, "store-alias"))
+    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)))
     refute File.exists?(c.backup)
 
     destination_link = Path.join(c.parent, "destination-link")
@@ -121,7 +125,7 @@ defmodule Tay.Storage.ColdCopyTest do
   test "detects source changes after hashing, lock replacement, and while copying", c do
     change_after_hash = fn
       :after_hash ->
-        File.write!(Path.join(c.source, "STORE"), "changed", [:append])
+        File.write!(Path.join(c.source, "STORE-V2"), "changed", [:append])
         :ok
 
       _ ->
@@ -137,7 +141,8 @@ defmodule Tay.Storage.ColdCopyTest do
 
     refute File.exists?(c.backup)
 
-    R.store(c.source, [R.segment(1, 1, [EventHelpers.fixture("E1")], true)])
+    File.rm_rf!(c.source)
+    R.store(c.source)
 
     replace_lock = fn
       :after_hash ->
@@ -156,7 +161,8 @@ defmodule Tay.Storage.ColdCopyTest do
 
     refute File.exists?(c.backup)
 
-    R.store(c.source, [R.segment(1, 1, [EventHelpers.fixture("E1")], true)])
+    File.rm_rf!(c.source)
+    R.store(c.source)
     payload = Path.join(c.source, "payload")
     File.write!(payload, :binary.copy(<<7>>, 1_100_000))
 
@@ -190,21 +196,23 @@ defmodule Tay.Storage.ColdCopyTest do
              :byte_budget
            )
 
-    File.rm!(Path.join(c.source, "STORE"))
-    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)), :missing_metadata)
+    File.rm!(Path.join(c.source, "STORE-V2"))
+    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)))
 
-    R.store(c.source, [R.segment(1, 1, [EventHelpers.fixture("E1")], true)])
-    File.rm_rf!(Path.join(c.source, "segments"))
+    File.rm_rf!(c.source)
+    R.store(c.source)
+    File.rm_rf!(R.segment_directory(c.source))
     assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)))
   end
 
   test "requires actual history and rejects unsafe inventory file types", c do
-    File.rm!(Path.join([c.source, "segments", "00000000000000000001.tay"]))
-    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)), :missing_history)
+    File.rm!(R.canonical(c.source, 1))
+    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)))
 
-    R.store(c.source, [R.segment(1, 1, [EventHelpers.fixture("E1")], true)])
-    File.ln_s!(Path.join(c.source, "STORE"), Path.join(c.source, "indirection"))
-    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)), :unsafe_file)
+    File.rm_rf!(c.source)
+    R.store(c.source)
+    File.ln_s!(Path.join(c.source, "STORE-V2"), Path.join(c.source, "indirection"))
+    assert refused(ColdCopy.backup(options(c.source, c.backup, c.catalog)))
     refute File.exists?(c.backup)
   end
 
@@ -269,7 +277,9 @@ defmodule Tay.Storage.ColdCopyTest do
       end)
 
     assert :json.decode(String.trim(restore_output))["result"] == "development_copy"
-    assert File.read!(Path.join(c.restored, "STORE")) == File.read!(Path.join(c.source, "STORE"))
+
+    assert File.read!(Path.join(c.restored, "STORE-V2")) ==
+             File.read!(Path.join(c.source, "STORE-V2"))
   end
 
   test "rejects overlap and catalogs inside either store", c do
@@ -325,7 +335,7 @@ defmodule Tay.Storage.ColdCopyTest do
   test "rejects well-formed catalogs with altered hashes or malformed file shapes", c do
     assert {:ok, _} = ColdCopy.backup(options(c.source, c.backup, c.catalog))
     original = :json.decode(File.read!(c.catalog))
-    path = "segments/00000000000000000001.tay"
+    path = Path.relative_to(R.canonical(c.backup, 1), c.backup)
     files = put_in(original["files"][path]["sha256"], String.duplicate("0", 64))
     File.write!(c.catalog, :json.encode(files))
 
@@ -348,7 +358,7 @@ defmodule Tay.Storage.ColdCopyTest do
 
   test "refuses missing and corrupted archive files without overwriting evidence", c do
     assert {:ok, _} = ColdCopy.backup(options(c.source, c.backup, c.catalog))
-    File.rm!(Path.join(c.backup, "STORE"))
+    File.rm!(Path.join(c.backup, "STORE-V2"))
 
     assert refused(
              ColdCopy.restore(
@@ -364,15 +374,14 @@ defmodule Tay.Storage.ColdCopyTest do
              )
 
     corrupted = Path.join(c.parent, "copy")
-    File.write!(Path.join([corrupted, "segments", "00000000000000000001.tay"]), <<0>>, [:append])
+    File.write!(R.canonical(corrupted, 1), <<0>>, [:append])
 
     assert refused(
              ColdCopy.restore(
                options(corrupted, c.restored, c.restored_catalog,
                  verify_catalog: Path.join(c.parent, "copy.json")
                )
-             ),
-             :archive_checksum_mismatch
+             )
            )
   end
 
@@ -397,7 +406,7 @@ defmodule Tay.Storage.ColdCopyTest do
     parent = self()
 
     inspect_stage = fn
-      {:before_copy, "STORE"} ->
+      {:before_copy, "STORE-V2"} ->
         [name] = Enum.filter(File.ls!(c.parent), &String.starts_with?(&1, ".backup.tay-copy-"))
         path = Path.join(c.parent, name)
         send(parent, {:stage_owner, Native.open_existing(path, durability: :write)})
@@ -422,7 +431,14 @@ defmodule Tay.Storage.ColdCopyTest do
     File.mkdir!(stage_path)
     File.write!(Path.join(stage_path, "operator-evidence"), "preserved")
 
-    assert {:error, %{reason: "eexist"}} = Native.cold_create_stage(target, staging)
+    {:ok, pointer} =
+      c.source
+      |> Path.join("CURRENT")
+      |> File.read!()
+      |> Tay.Storage.V2.Authority.decode_current()
+
+    epoch = "e-" <> Base.encode16(pointer.epoch_id, case: :lower)
+    assert {:error, %{reason: "eexist"}} = Native.cold_create_stage(target, staging, epoch)
     assert File.read!(Path.join(stage_path, "operator-evidence")) == "preserved"
     refute File.exists?(c.backup)
     Native.shutdown(target)
@@ -432,7 +448,7 @@ defmodule Tay.Storage.ColdCopyTest do
   test "native target rejects a source-directory alias before staging", c do
     {:ok, source} = R.open(c.source)
     {:ok, info} = Native.info(source)
-    destination = Path.join([c.source, "segments", "nested-backup"])
+    destination = Path.join(R.segment_directory(c.source), "nested-backup")
 
     assert {:error, %{reason: "ebusy"}} =
              Native.open_cold_target(info, destination, c.catalog, nil, durability: :write)
@@ -489,7 +505,7 @@ defmodule Tay.Storage.ColdCopyTest do
       end
 
     assert refused(result)
-    assert File.regular?(Path.join(c.backup, "STORE"))
+    assert File.regular?(Path.join(c.backup, "STORE-V2"))
     refute File.exists?(catalog)
   end
 

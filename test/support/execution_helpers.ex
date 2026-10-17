@@ -192,7 +192,7 @@ defmodule Tay.Test.ExecutionHelpers do
   # existing-only ownership; this independent oracle validates every segment and
   # frame before reconstructing the same pure lifecycle from captured bytes.
   def history(path) do
-    directory = Path.join(path, "segments")
+    directory = Tay.Test.RecoveryHelpers.segment_directory(path)
 
     files =
       File.ls!(directory)
@@ -206,13 +206,7 @@ defmodule Tay.Test.ExecutionHelpers do
 
         assert {:ok, _, events} =
                  Segment.reduce(read, byte_size(bytes), [], fn record, _offset, acc ->
-                   assert {:ok, event, consumed} =
-                            Event.decode_payload(
-                              record.record_type,
-                              record.payload_schema_version,
-                              record.payload,
-                              Tay.Event.Value.defaults()
-                            )
+                   assert {:ok, event, consumed} = decode_history_event(record)
 
                    assert consumed == byte_size(record.payload)
                    [%{sequence: record.sequence, event: event} | acc]
@@ -227,12 +221,43 @@ defmodule Tay.Test.ExecutionHelpers do
     history
   end
 
-  def replay(path) do
-    Enum.reduce(history(path), Transition.candidate(), fn item, candidate ->
-      assert {:ok, candidate} =
-               Transition.reduce(item.event, %{sequence: item.sequence}, candidate)
+  defp decode_history_event(%{record_type: 8, payload_schema_version: 1, payload: payload}) do
+    with {:ok, mutation} <- Tay.Storage.V2.Codec.decode_mutation(payload) do
+      {:ok, Tay.Storage.V2.Codec.event(mutation), byte_size(payload)}
+    end
+  end
 
-      candidate
-    end)
+  defp decode_history_event(record) do
+    Event.decode_payload(
+      record.record_type,
+      record.payload_schema_version,
+      record.payload,
+      Tay.Event.Value.defaults()
+    )
+  end
+
+  def replay(path) do
+    if File.regular?(Path.join(path, "CURRENT")) do
+      {:ok, native} =
+        Tay.Test.RecoveryHelpers.after_release(fn ->
+          Tay.Storage.Native.open_existing(path, durability: :write, test_helper: true)
+        end)
+
+      try do
+        assert {:ok, recovered} =
+                 Tay.Storage.V2.Reader.recover(native, Tay.Storage.V2.Reducer.candidate())
+
+        recovered.candidate
+      after
+        Tay.Storage.Native.shutdown(native)
+      end
+    else
+      Enum.reduce(history(path), Transition.candidate(), fn item, candidate ->
+        assert {:ok, candidate} =
+                 Transition.reduce(item.event, %{sequence: item.sequence}, candidate)
+
+        candidate
+      end)
+    end
   end
 end

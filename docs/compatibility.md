@@ -9,10 +9,10 @@ one hour directly. Framing versions, keys, CRC32C, and CURRENT's manifest
 digest are unchanged. Readers that predate bounded retention may fail closed on
 the map representation; do not use an older binary to open an epoch published
 with bounded retention. Unknown forms are never converted to infinity or
-repaired. Store-v1 and released fixtures remain unchanged.
+repaired.
 
-Tay v1.0.0 is a stable single-node release. Record v1, STORE v1,
-Segment v1, and the six Event-v1 job lifecycle semantics are fixed compatibility contracts described in
+Record v1, Segment v1, and the six Event-v1 job lifecycle semantics remain fixed
+compatibility contracts within Store v2, as described in
 [storage](storage.md).
 The committed record, segment, and Event literal fixtures are permanent test
 anchors; they are not generated from the current encoder or parsed from public
@@ -59,8 +59,8 @@ restart-durable, while job completion remains durable.
   backup, automatic torn-tail repair, or multi-host executor protocol. Durable
   successful results are bounded JSON values retained with completed jobs, not
   an authoritative business ledger. Store-v2 compaction is online during candidate
-  preparation and uses a fenced publication switch; initial Store-v1 adoption
-  still drains. The local Unix socket is a same-host trust boundary.
+  preparation and uses a fenced publication switch. The local Unix socket is a
+  same-host trust boundary.
 
 ## Finite reference profile
 

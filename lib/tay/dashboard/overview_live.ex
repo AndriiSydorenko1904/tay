@@ -771,7 +771,7 @@ defmodule Tay.Dashboard.OverviewLive do
   defp compacted(stats, retention_hours) do
     expired = Map.get(stats, :expired_jobs, 0)
     retained = Map.get(stats, :retained_terminal_jobs, 0)
-    reclaimed = Map.get(stats, :reclaimed_bytes, 0)
+    reclaimed = Map.get(stats, :net_reclaimed_bytes, Map.get(stats, :reclaimed_bytes, 0))
 
     if retention_hours == 0 do
       "Compaction completed: full terminal-history purge removed #{expired} terminal jobs, reclaimed #{format_bytes(reclaimed)}, and retained #{retained}. Future finished-job retention is 1 h."
@@ -818,17 +818,13 @@ defmodule Tay.Dashboard.OverviewLive do
     do:
       "Engine state: compacting (switching). A validated atomic epoch switch is in progress; admission resumes automatically."
 
-  defp lifecycle_message(:migrating, _),
-    do:
-      "Engine state: migrating. The one-time Store-v1 migration is draining and will recover automatically."
-
   defp lifecycle_message(state, phase) do
     suffix = if phase, do: " (#{phase})", else: ""
 
     "Engine state: #{state}#{suffix}. Capacity and storage values are unavailable until recovery completes."
   end
 
-  defp lifecycle_error(%{state: state}, _error) when state in [:compacting, :migrating], do: nil
+  defp lifecycle_error(%{state: :compacting}, _error), do: nil
   defp lifecycle_error(_status, error), do: Live.error_message(error)
 
   defp terminal_count(stats),

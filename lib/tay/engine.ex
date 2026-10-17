@@ -33,7 +33,7 @@ defmodule Tay.Engine do
   alias Tay.Executor.Server
   alias Tay.HTTP.Listener, as: HTTPListener
   alias Tay.Storage.Writer
-  alias Tay.Storage.V2.{Codec, V1Migration}
+  alias Tay.Storage.V2.{Codec, Mutation}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
   @memory_reclaim_idle_ms 1_000
   @segment_catalog_limit 128
@@ -320,33 +320,26 @@ defmodule Tay.Engine do
         {:noreply, s}
 
       true ->
-        case OnlineCheckpoint.create(s) do
-          {:ok, snapshot} ->
-            case Writer.compact_online(
-                   s.writer,
-                   s.admission,
-                   deadline,
-                   retention,
-                   Clock.wall(s.config.clock),
-                   cancel_flag,
-                   self(),
-                   token,
-                   snapshot
-                 ) do
-              {:ok, rotation} ->
-                case OnlineCheckpoint.adopt_rotation(s, rotation) do
-                  {:ok, next} ->
-                    {:noreply, %{next | online_compaction: token, online_snapshot: snapshot}}
+        snapshot = OnlineCheckpoint.create(s)
 
-                  {:error, reason} ->
-                    OnlineCheckpoint.delete(snapshot)
-                    exit({:invalid_online_compaction_rotation, reason})
-                end
+        case Writer.compact_online(
+               s.writer,
+               s.admission,
+               deadline,
+               retention,
+               Clock.wall(s.config.clock),
+               cancel_flag,
+               self(),
+               token,
+               snapshot
+             ) do
+          {:ok, rotation} ->
+            case OnlineCheckpoint.adopt_rotation(s, rotation) do
+              {:ok, next} ->
+                {:noreply, %{next | online_compaction: token, online_snapshot: nil}}
 
               {:error, reason} ->
-                OnlineCheckpoint.delete(snapshot)
-                send(guardian, {:online_compaction_result, self(), token, {:error, reason}})
-                {:noreply, s}
+                exit({:invalid_online_compaction_rotation, reason})
             end
 
           {:error, reason} ->
@@ -363,14 +356,6 @@ defmodule Tay.Engine do
     s = flush_group_commit(s)
     send(s.guardian, {:online_compaction_switch_requested, self(), token})
     {:noreply, s}
-  end
-
-  def handle_info(
-        {:compact_online_snapshot_loaded, writer, token},
-        %{writer: writer, online_compaction: token} = s
-      ) do
-    OnlineCheckpoint.delete(s.online_snapshot)
-    {:noreply, %{s | online_snapshot: nil}}
   end
 
   def handle_info(
@@ -971,7 +956,7 @@ defmodule Tay.Engine do
   end
 
   defp execution_encoding(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
-    with {:ok, mutation} <- V1Migration.translate_event(event, job, s.next_availability_order),
+    with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
          {:ok, payload} <- Codec.encode_mutation(mutation, s.config.value_limits),
          do: {:ok, {8, 1, payload}}
   end
@@ -979,7 +964,7 @@ defmodule Tay.Engine do
   defp execution_encoding(s, _job, event), do: Persistence.encoded_event(s, event, nil)
 
   defp prepare_settlement(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
-    with {:ok, mutation} <- V1Migration.translate_event(event, job, s.next_availability_order),
+    with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
          {:ok, predicted, _} <-
            V2Reducer.apply_one(
              job,

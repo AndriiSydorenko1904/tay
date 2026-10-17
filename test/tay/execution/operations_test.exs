@@ -134,12 +134,14 @@ defmodule Tay.Execution.OperationsTest do
     assert snapshot.compaction_terminal_retention == {:hours, 24}
     H.stop(root)
     # Canonical filenames are resolved through the frozen segment parser.
+    segment_directory = Tay.Test.RecoveryHelpers.segment_directory(path)
+
     files =
-      File.ls!(Path.join(path, "segments"))
+      File.ls!(segment_directory)
       |> Enum.filter(&match?({:ok, _}, Tay.Storage.Segment.filename_id(&1)))
 
     assert snapshot.canonical_history_bytes ==
-             Enum.sum(Enum.map(files, &File.stat!(Path.join([path, "segments", &1])).size))
+             Enum.sum(Enum.map(files, &File.stat!(Path.join(segment_directory, &1)).size))
 
     definitions =
       H.history(path)

@@ -100,8 +100,11 @@ defmodule Tay.Engine.CoreTest do
     assert {:error, _} = H.start(missing, @name)
     refute File.exists?(missing)
 
+    tail = R.canonical(path, 1)
+    original = File.read!(tail)
+
     for suffix <- [<<1>>, Tay.Test.EventHelpers.fixture("N7")] do
-      File.write!(R.canonical(path, 1), R.segment(1, 1, [suffix]))
+      File.write!(tail, original <> suffix)
       before = R.snapshot(path)
       assert {:error, _} = H.restart(path, @name)
       assert R.snapshot(path) == before

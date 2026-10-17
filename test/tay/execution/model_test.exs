@@ -103,7 +103,7 @@ defmodule Tay.Execution.ModelTest do
         assert recovered.attempt == live.attempt
         assert recovered.definition == live.definition
         assert recovered.diagnostic == List.first(live.errors)
-        assert elem(live.revision, 4) == recovered.revision
+        assert elem(live.revision, 5) == recovered.revision
       after
         H.stop(Process.get(:model_root))
         File.rm_rf!(path)

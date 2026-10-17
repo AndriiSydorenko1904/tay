@@ -22,7 +22,7 @@ MIX_ENV=prod mix tay.storage.inspect --data-dir /srv/tay/jobs --durability sync 
 ```
 
 Initialization is not an idempotent “ensure” or repair command. Normal startup
-is existing-only; a missing lock, STORE marker, or required history is an error.
+is existing-only; missing V2 authority metadata or required history is an error.
 Only an explicitly intended empty pre-existing root permits
 `--bootstrap-existing`. Never delete or replace a lock to bypass contention.
 Offline inspection acquires the existing lock and performs complete physical
@@ -98,11 +98,12 @@ never serialize private ETS implementation details. Store-v2 candidate
 construction runs online; only the final fenced publication switch closes
 admission internally. Calls arriving during that short switch wait for the new
 generation within their configured caller timeout instead of receiving an
-immediate `unavailable`. Initial Store-v1 adoption still drains and
-recovers because that format has no safe online catch-up boundary. Reclaim-policy
-thresholds are conjunctive. Retention compaction is deferred while active jobs
-exist. A due periodic checkpoint may run with active jobs and additionally
-requires at least one new durable tail event. Cooldown uses the later
+immediate `unavailable`. New stores are initialized directly with an empty
+Store-v2 generation. Store-v1 roots are refused and must be migrated with a
+Tay 1.4.x release before upgrading to 1.5.0.
+Reclaim-policy thresholds are conjunctive. Store-v2 retention compaction may run
+with active jobs. A due periodic checkpoint additionally requires at least one new
+durable tail event. Cooldown uses the later
 of the verified manifest capture time and post-publication recovered activation
 time. Restart conservatively extends cooldown rather than shortening it by
 construction time. Backward clocks conservatively defer.
@@ -125,24 +126,23 @@ compaction: [
 `checkpoint_interval: 0` disables periodic checkpoints. A positive millisecond
 value checkpoints only after at least one new durable tail event. The evaluator
 runs at the smaller of `check_interval` and `checkpoint_interval`. Automatic
-checkpoints capture the Engine's active ETS projection and disposable terminal
-projection at an exact durable sequence frontier; they do not reconstruct that
-state by replaying the old journal. Concurrent mutations that arrive after the
-capture are appended to the candidate tail. The temporary ETS snapshot is
-consumed directly into one retained map and released without first materializing
-a full ETS list and a second full map. The publisher performs repeated ordered
-catch-up rounds while admission remains open. It requests the final fence only
-when the pending tail is at most 1,024 events and 1 MB; a new burst above that
-limit becomes another online round. A builder that cannot converge within the
-bounded round limit abandons the candidate and leaves the source epoch writable.
+checkpoints first flush the current group commit and rotate at an exact durable
+sequence frontier. The background publisher reconstructs the candidate from the
+sealed immutable Store-v2 generation on disk; it never scans, mutates, or copies
+the Engine's ETS projections. Concurrent mutations after that frontier are
+appended to an ordered candidate tail. The publisher performs repeated catch-up
+rounds while admission remains open. It requests the final fence only when the
+pending tail is at most 1,024 events and 1 MB; a new burst above that limit
+becomes another online round. The in-memory delta is independently capped at
+65,536 events and 64 MB. Exceeding that cap abandons the candidate, releases the
+buffer, and leaves the source generation authoritative and writable. A builder
+that cannot converge within the bounded round limit behaves the same way.
 The new `CURRENT` is published only after the candidate and its incremental tail
 are validated and synced. The post-publication authority check is bounded;
 restart still performs the full replay of the canonical snapshot followed by
 its tail. The durable sequence frontier—not a wall-clock timestamp—decides which
 mutations are already covered.
-The first checkpoint of a Store-v1 root performs the existing safe migration
-path, which briefly drains execution because Store v1 has no online catch-up
-boundary; subsequent Store-v2 checkpoints prepare online.
+All checkpoints operate on Store-v2 generations and prepare online.
 
 Unknown/duplicate keys, unbounded/nonpositive timers or byte/count limits and
 invalid ratios fail configuration. Timers/counts fit unsigned 32 bits; bytes fit
@@ -206,8 +206,9 @@ verification/reconciliation before retiring Engine and defers reclamation.
 No source bytes are deleted to obtain candidate headroom. Payload-free aggregate
 events are structured Logger debug metadata under `:tay_compaction`; enable
 debug logging to observe evaluation/gate/defer/start/completion/failure events.
-Successful checkpoint measurements include catch-up rounds/events/bytes, final
-delta events/bytes, and fenced `pause_ms`.
+Successful checkpoint measurements include catch-up rounds/events/bytes, peak
+delta events/bytes, preparation/total time, final delta events/bytes, fenced
+`pause_ms`, gross predecessor bytes, and net reclaimed bytes.
 
 On Store v2, candidate construction runs in the background. The public status
 is `state: :compacting, phase: :preparing`; admission, dispatch, and execution
@@ -216,10 +217,8 @@ final fenced publication reports `phase: :switching` and closes admission while
 the old tail is synchronized, the bounded final delta is appended, and CURRENT
 is atomically replaced and authority-checked. Full candidate replay is kept out
 of this fence, so switch duration is independent of retained-history replay.
-The Engine process is retained. The first Store-v1 to
-Store-v2 adoption instead reports `state: :migrating` and uses the existing
-drain/recovery path because Store v1 has no safe online catch-up boundary.
-The qualification suite covers finite workload measurements and the documented
+The Engine process is retained. The qualification suite covers finite workload
+measurements and the documented
 operational limits.
 
 ## Cold backup and restore

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.0 — 2026-10-17
+
+### Changed
+
+- Removed Store-v1 startup, recovery, migration, adoption, rollback, and native
+  helper support. Tay 1.5.0 opens Store-v2 storage only; upgrade older stores
+  with a 1.4.x release before installing 1.5.0.
+- Initialized new storage directly with an empty Store-v2 generation and no
+  transient Store-v1 `STORE` marker or root segment directory.
+- Reworked online compaction to reconstruct its checkpoint from the sealed
+  immutable Store-v2 generation at an exact durable frontier instead of copying
+  Engine ETS and terminal projections.
+- Allowed Store-v2 automatic retention compaction to run with active execution.
+- Centralized catch-up limits, capped the in-memory online delta at 65,536 events
+  and 64 MB, and exposed peak-delta, preparation, total, and net-reclamation
+  measurements.
+
+### Fixed
+
+- Aligned the 10,000-job automatic-retention qualification with the online
+  compaction policy so active scheduled and available jobs cannot indefinitely
+  starve expired-history reclamation.
+
 ## 1.4.8 — 2026-10-17
 
 ### Security

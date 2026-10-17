@@ -83,23 +83,6 @@ defmodule Tay.Storage.V2.Authority do
 
   def manifest_digest(bytes) when is_binary(bytes), do: :crypto.hash(:sha256, bytes)
 
-  @doc "A durable first-adoption rollback intent; it names exactly one preserved V1 directory."
-  def encode_adoption(nonce) do
-    if V2.id?(nonce),
-      do: {:ok, checked(<<"TAYA", 1, 0::24, nonce::binary>>)},
-      else: {:error, :adoption_nonce}
-  end
-
-  def decode_adoption(bytes) do
-    with {:ok, <<"TAYA", 1, 0::24, nonce::binary-size(16)>>} <- checked_body(bytes, 24),
-         true <- V2.id?(nonce) || {:error, :adoption_nonce},
-         do: {:ok, nonce},
-         else: (
-           {:ok, _} -> {:error, :adoption_format}
-           error -> error
-         )
-  end
-
   def verify_selection(marker, current, manifest_bytes) do
     with {:ok, store_id} <- decode_marker(marker),
          {:ok, pointer} <- decode_current(current),

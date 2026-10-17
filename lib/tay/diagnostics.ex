@@ -8,7 +8,8 @@ defmodule Tay.Diagnostics do
   """
   alias Tay.Storage.{Native, Recovery}
   alias Tay.Storage.Recovery.Error
-  alias Tay.State.Transition
+  alias Tay.Storage.V2.Reader, as: V2Reader
+  alias Tay.Storage.V2.Reducer, as: V2Reducer
   @states [:available, :scheduled, :executing, :retryable, :completed, :discarded, :cancelled]
 
   def inspect(options) do
@@ -114,15 +115,7 @@ defmodule Tay.Diagnostics do
     case Native.open_existing(config.data_dir, native_options) do
       {:ok, native} ->
         try do
-          candidate = Transition.candidate(config.candidate, config.recovery.event_limits)
-
-          case Recovery.replay(
-                 native,
-                 Tay.Event,
-                 candidate,
-                 &Transition.reduce/3,
-                 Map.to_list(config.recovery)
-               ) do
+          case inspect_replay(native, config) do
             {:ok, summary, candidate} ->
               counts =
                 Enum.reduce(candidate.jobs, Map.new(@states, &{&1, 0}), fn {_, job}, acc ->
@@ -156,6 +149,28 @@ defmodule Tay.Diagnostics do
 
       {:error, error} ->
         diagnostic(Error.wrap(error, :ownership))
+    end
+  end
+
+  defp inspect_replay(native, config) do
+    with {:ok, root} <- Native.list(native, :root),
+         true <-
+           Enum.any?(root, &(&1.name in ["CURRENT", "STORE-V2"])) ||
+             {:error, Error.new(:discovery, :store_v2_required, :preflight)},
+         candidate = V2Reducer.candidate(config.candidate, config.recovery.event_limits),
+         {:ok, recovered} <- V2Reader.recover(native, candidate) do
+      store = recovered.store
+
+      {:ok,
+       %{
+         store_id: recovered.store_id,
+         record_count: Enum.sum(Enum.map(store.segments, & &1.count)),
+         segment_count: length(store.segments),
+         total_segment_bytes: recovered.total_segment_bytes,
+         next_sequence: recovered.next_sequence,
+         staging_count: recovered.staging_count,
+         ignored_count: recovered.ignored_count
+       }, recovered.candidate}
     end
   end
 

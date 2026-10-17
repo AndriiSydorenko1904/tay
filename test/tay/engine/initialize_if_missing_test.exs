@@ -20,12 +20,15 @@ defmodule Tay.Engine.InitializeIfMissingTest do
   test "if_missing initializes a new store and restart preserves history", %{path: path} do
     assert {:ok, root} = EngineHelpers.start(path, @name, initialize: :if_missing)
     assert Tay.status(name: @name).state == :ready
+    assert File.exists?(Path.join(path, "CURRENT"))
+    assert File.exists?(Path.join(path, "STORE-V2"))
+    refute File.exists?(Path.join(path, "STORE"))
     assert {:ok, job} = Tay.insert(EngineWorker.new(%{"created" => true}), name: @name)
-    store = File.read!(Path.join(path, "STORE"))
+    store = File.read!(Path.join(path, "STORE-V2"))
     EngineHelpers.stop(root)
 
     assert {:ok, root} = EngineHelpers.restart(path, @name, initialize: :if_missing)
-    assert File.read!(Path.join(path, "STORE")) == store
+    assert File.read!(Path.join(path, "STORE-V2")) == store
     assert {:ok, recovered} = Tay.get_job(job.id, name: @name)
     assert recovered.id == job.id
     EngineHelpers.stop(root)
@@ -53,7 +56,7 @@ defmodule Tay.Engine.InitializeIfMissingTest do
       R.store(path)
 
       case corruption do
-        :marker -> File.write!(Path.join(path, "STORE"), <<0, 1, 2>>)
+        :marker -> File.write!(Path.join(path, "STORE-V2"), <<0, 1, 2>>)
         :tail -> File.write!(R.canonical(path, 1), <<1>>, [:append])
       end
 

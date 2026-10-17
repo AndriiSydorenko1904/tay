@@ -6,6 +6,7 @@ defmodule Tay.Engine.LargeRecoveryTest do
   alias Tay.Test.{NativeHelpers, EventHelpers}
   alias Tay.Test.RecoveryHelpers, as: R
   alias Tay.Test.EngineHelpers, as: H
+  alias Tay.Storage.V2.Mutation
 
   test "10,000 production definitions rebuild, compact and recover bounded state" do
     Process.flag(:trap_exit, true)
@@ -13,24 +14,14 @@ defmodule Tay.Engine.LargeRecoveryTest do
     R.store(path)
 
     try do
-      {:ok, file} = File.open(R.canonical(path, 1), [:append, :binary])
+      R.write_v2_mutations(path, fn append ->
+        for seq <- 1..10_000 do
+          event = EventHelpers.inserted(EventHelpers.definition(), 0, EventHelpers.id(seq))
+          {:ok, mutation} = Mutation.from_event(event, nil, 1)
+          :ok = append.(mutation)
+        end
+      end)
 
-      for seq <- 1..10_000 do
-        event = EventHelpers.inserted(EventHelpers.definition(), 0, EventHelpers.id(seq))
-        {:ok, {1, 1, payload}} = Tay.Event.encode(event)
-
-        {:ok, frame} =
-          Tay.Storage.Record.encode(%Tay.Storage.Record{
-            record_type: 1,
-            payload_schema_version: 1,
-            payload: payload,
-            sequence: seq
-          })
-
-        :ok = IO.binwrite(file, frame)
-      end
-
-      File.close(file)
       {:ok, root} = H.restart(path, __MODULE__, workers: %{})
       assert Tay.status(name: __MODULE__).jobs == 10_000
       assert Tay.status(name: __MODULE__).blocked_jobs == 10_000

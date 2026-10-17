@@ -105,10 +105,10 @@ defmodule Tay.System.IndependentCrashMatrixTest do
 
       cond do
         @operation in [:finish, :cancel] ->
-          assert effects == ["EFFECT:" <> target_id <> ":1:3"]
+          assert effects == ["EFFECT:" <> target_id <> ":1:2"]
 
         @point == {:execution, :released} ->
-          assert effects in [[], ["EFFECT:" <> target_id <> ":1:3"]]
+          assert effects in [[], ["EFFECT:" <> target_id <> ":1:2"]]
 
         true ->
           assert effects == []
@@ -116,11 +116,11 @@ defmodule Tay.System.IndependentCrashMatrixTest do
 
       # An observed external effect alone does not fabricate completion. Every
       # pre-finish/pre-cancel append retains the executing state and exact token.
-      if @state == :executing, do: assert(candidate.jobs[raw_target].execution == 3)
+      if @state == :executing, do: assert(candidate.jobs[raw_target].execution == 2)
 
       if @state in [:completed, :cancelled] do
         last = List.last(history)
-        assert last.event.data["execution_token"] == 3
+        assert last.event.data["execution_token"] == 2
 
         if @state == :completed do
           assert last.event.data["outcome"] == 0
@@ -215,7 +215,7 @@ defmodule Tay.System.IndependentCrashMatrixTest do
     defmodule Tay.CrashMatrixWorker do
       use Tay.Worker, key: "worker.v1"
       def perform(job) do
-        token = elem(job.revision, 4)
+        token = elem(job.revision, 5)
         Tay.CrashMatrixOracle.append(job.args["effect"],
           "EFFECT:" <> job.id <> ":" <> Integer.to_string(job.attempt) <> ":" <> Integer.to_string(token) <> "\\n")
         send(Process.whereis(:tay_crash_matrix_controller), :effect_observed)

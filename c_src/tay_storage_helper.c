@@ -65,10 +65,8 @@
 #define TEMP_NONCE_BYTES (HEX_ID_DIGITS + sizeof(TEMP_FILE_SUFFIX) - 1u)
 #define SEGMENT_EXTENSION ".tay"
 #define STRING_BYTES(value) (sizeof(value) - 1u)
-#define STORE_STAGE_PREFIX ".tay-store-"
 #define V2_MARKER_STAGE_PREFIX ".tay-v2-marker-"
 #define CURRENT_STAGE_PREFIX ".tay-current-"
-#define ADOPTION_STAGE_PREFIX ".tay-adoption-"
 #define SEGMENT_STAGE_PREFIX ".tay-new-"
 #define NANOSECONDS_PER_SECOND 1000000000ull
 #define READBACK_VERIFY_CHUNK_BYTES 1048576u
@@ -88,9 +86,9 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   COLD_TARGET_OPEN=20, COLD_STAGE_CREATE=21, COLD_OPEN_WRITE=22,
   COLD_SYNC_STAGING=23, COLD_PUBLISH=24, COLD_SYNC_CATALOG=25,
   COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
-  V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31, V2_ADOPT_V1=32,
-  V2_PUBLISH_CURRENT=33, V2_SPACE=34, V2_RESTORE_V1=35,
-  V2_CLEAR_ADOPTION=36, V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39,
+  V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31,
+  V2_PUBLISH_CURRENT=33, V2_SPACE=34,
+  V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39,
   FAULT=240 };
 
 /* Fault-site values are part of the test protocol. Keep their numeric values
@@ -106,13 +104,7 @@ enum fault_site {
   FAULT_CANDIDATE_SEGMENTS_SYNC=248,
   FAULT_CANDIDATE_SYNC=249,
   FAULT_EPOCH_PUBLISH_SYNC=250,
-  FAULT_V1_ROOT_SYNC=251,
-  FAULT_V1_EPOCHS_SYNC=252,
   FAULT_CURRENT_SYNC=253,
-  FAULT_V1_RESTORE_EPOCHS_SYNC=254,
-  FAULT_V1_RESTORE_ROOT_SYNC=255,
-  FAULT_MARKER_REMOVAL_SYNC=256,
-  FAULT_ADOPTION_CLEAR_SYNC=257,
   FAULT_SEGMENT_UNLINK=258,
   FAULT_SEGMENT_UNLINK_SYNC=259,
   FAULT_SEGMENTS_RMDIR=260,
@@ -120,11 +112,7 @@ enum fault_site {
   FAULT_MANIFEST_UNLINK=262,
   FAULT_MANIFEST_UNLINK_SYNC=263,
   FAULT_EPOCH_RMDIR=264,
-  FAULT_EPOCH_RMDIR_SYNC=265,
-  FAULT_ADOPTION_UNLINK=266,
-  FAULT_ADOPTION_UNLINK_SYNC=267,
-  FAULT_MARKER_UNLINK=268,
-  FAULT_ADOPTION_CLEAR_UNLINK=269
+  FAULT_EPOCH_RMDIR_SYNC=265
 };
 
 /* Frozen test-protocol values shared with Tay.Storage.Native. */
@@ -146,11 +134,9 @@ enum write_kind {
   WRITE_NONE=0,
   WRITE_SEGMENT=1,
   WRITE_SEGMENT_HEADER_STAGE=2,
-  WRITE_STORE_STAGE=3,
   WRITE_COLD_COPY=4,
   WRITE_CURRENT_STAGE=5,
-  WRITE_STORE_V2_STAGE=6,
-  WRITE_ADOPTION_STAGE=7
+  WRITE_STORE_V2_STAGE=6
 };
 
 enum storage_scope {
@@ -205,12 +191,16 @@ static int cold_target, cold_source;
 /* These parent descriptors alias the last entries in their respective chains.
  * cold_chain_close() is their sole owner/closer. */
 static int cold_parent_fd=-1, cold_catalog_parent_fd=-1, cold_verify_parent_fd=-1;
-static int cold_stage_fd=-1, cold_stage_segments_fd=-1, cold_lock_fd=-1;
+static int cold_stage_fd=-1, cold_stage_epochs_fd=-1, cold_stage_epoch_fd=-1;
+static int cold_stage_segments_fd=-1, cold_lock_fd=-1;
 static struct cold_chain cold_parent_chain, cold_catalog_chain, cold_verify_chain;
 static char cold_parent_path[PATH_MAX], cold_catalog_parent_path[PATH_MAX];
 static char cold_verify_parent_path[PATH_MAX];
-static char cold_target_name[256], cold_staging_name[256], cold_catalog_name[256], cold_verify_name[256];
-static struct stat cold_source_root, cold_source_segments, cold_stage_identity, cold_stage_segments_identity, cold_lock_identity;
+static char cold_target_name[256], cold_staging_name[256], cold_epoch_name[256];
+static char cold_catalog_name[256], cold_verify_name[256];
+static struct stat cold_source_root, cold_source_segments, cold_stage_identity;
+static struct stat cold_stage_epochs_identity, cold_stage_epoch_identity;
+static struct stat cold_stage_segments_identity, cold_lock_identity;
 static int cold_has_verify, cold_stage_created, cold_published;
 static const unsigned char *input;
 static size_t input_n, pos;
@@ -490,8 +480,14 @@ static int cold_check_paths(void) {
     if (fstat(cold_stage_fd,&opened)<0) return errno;
     if (fstatat(cold_parent_fd,cold_published?cold_target_name:cold_staging_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
     if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold_stage_epochs_fd,&opened)<0) return errno;
+    if (fstatat(cold_stage_fd,"epochs",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_epochs_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold_stage_epoch_fd,&opened)<0) return errno;
+    if (fstatat(cold_stage_epochs_fd,cold_epoch_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_epoch_identity) || !same(&opened,&named)) return ESTALE;
     if (fstat(cold_stage_segments_fd,&opened)<0) return errno;
-    if (fstatat(cold_stage_fd,"segments",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (fstatat(cold_stage_epoch_fd,"segments",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
     if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_segments_identity) || !same(&opened,&named)) return ESTALE;
     if (cold_lock_fd>=0) {
       e=checked_regular(cold_lock_fd,cold_stage_fd,".tay-owner.lock",&opened);
@@ -620,16 +616,10 @@ static int hex32(const char *s) {
   return 1;
 }
 static int epoch_name_ok(const char *s) { return !strncmp(s,"e-",2) && hex32(s+2); }
-static int legacy_name_ok(const char *s) { return !strncmp(s,"legacy-",7) && hex32(s+7); }
 static int candidate_name_ok(const char *s) {
   return !strncmp(s,".tay-candidate-",15) && nonce(s+15);
 }
 static int stage_kind(int scope,const char *name) {
-  if (scope==SCOPE_ROOT &&
-      strlen(name)==STRING_BYTES(STORE_STAGE_PREFIX)+TEMP_NONCE_BYTES &&
-      !strncmp(name,STORE_STAGE_PREFIX,STRING_BYTES(STORE_STAGE_PREFIX)) &&
-      nonce(name+STRING_BYTES(STORE_STAGE_PREFIX)))
-    return WRITE_STORE_STAGE;
   if (scope==SCOPE_ROOT &&
       !strncmp(name,V2_MARKER_STAGE_PREFIX,STRING_BYTES(V2_MARKER_STAGE_PREFIX)) &&
       nonce(name+STRING_BYTES(V2_MARKER_STAGE_PREFIX)))
@@ -638,10 +628,6 @@ static int stage_kind(int scope,const char *name) {
       !strncmp(name,CURRENT_STAGE_PREFIX,STRING_BYTES(CURRENT_STAGE_PREFIX)) &&
       nonce(name+STRING_BYTES(CURRENT_STAGE_PREFIX)))
     return WRITE_CURRENT_STAGE;
-  if (scope==SCOPE_ROOT &&
-      !strncmp(name,ADOPTION_STAGE_PREFIX,STRING_BYTES(ADOPTION_STAGE_PREFIX)) &&
-      nonce(name+STRING_BYTES(ADOPTION_STAGE_PREFIX)))
-    return WRITE_ADOPTION_STAGE;
   size_t segment_stage_separator=STRING_BYTES(SEGMENT_STAGE_PREFIX)+SEGMENT_ID_DIGITS;
   if (scope==SCOPE_SEGMENTS &&
       strlen(name)==segment_stage_separator+1u+TEMP_NONCE_BYTES &&
@@ -661,9 +647,7 @@ static size_t staged_write_size(int kind) {
   switch (kind) {
     case WRITE_SEGMENT_HEADER_STAGE: return SEGMENT_HEADER_BYTES;
     case WRITE_CURRENT_STAGE: return CURRENT_METADATA_BYTES;
-    case WRITE_STORE_STAGE:
-    case WRITE_STORE_V2_STAGE:
-    case WRITE_ADOPTION_STAGE: return AUTHORITY_METADATA_BYTES;
+    case WRITE_STORE_V2_STAGE: return AUTHORITY_METADATA_BYTES;
     default: return 0;
   }
 }
@@ -857,73 +841,6 @@ static int v2_publish_epoch(void) {
   return checked_directory(candidate_fd,epochs_fd,candidate_name);
 }
 
-static int v2_adopt_v1(void) {
-  char name[256];
-  int e=string(name,sizeof(name));
-  if (e || !legacy_name_ok(name) || segments_fd<0 || segments_parent_fd!=root_fd ||
-      candidate_fd<0 || read_fd>=0 || write_fd>=0) return e?e:EINVAL;
-  e=checked_directory(segments_fd,root_fd,"segments"); if (e) return e;
-  struct stat intent;
-  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
-      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
-  e=absent_at(root_fd,"CURRENT"); if (e) return e;
-  if (no_replace_between(root_fd,"segments",epochs_fd,name)<0) return errno;
-  segments_parent_fd=epochs_fd; strcpy(segments_name,name);
-  if (promotion_sync(root_fd,FAULT_V1_ROOT_SYNC)<0 ||
-      promotion_sync(epochs_fd,FAULT_V1_EPOCHS_SYNC)<0) return errno;
-  return check_paths();
-}
-
-static int v2_restore_v1(void) {
-  char name[256];
-  int e=string(name,sizeof(name));
-  if (e || !legacy_name_ok(name) || read_fd>=0 || write_fd>=0) return e?e:EBUSY;
-  struct stat intent,root_segments,legacy;
-  e=absent_at(root_fd,"CURRENT"); if (e) return e;
-  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
-      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
-  e=open_epochs(0); if (e) return e;
-  int root_exists=fstatat(root_fd,"segments",&root_segments,AT_SYMLINK_NOFOLLOW)==0;
-  if (!root_exists && errno!=ENOENT) return errno;
-  int legacy_exists=fstatat(epochs_fd,name,&legacy,AT_SYMLINK_NOFOLLOW)==0;
-  if (!legacy_exists && errno!=ENOENT) return errno;
-  if (root_exists && legacy_exists) return EEXIST;
-  if (!root_exists && !legacy_exists) return ENOENT;
-  if (!root_exists) {
-    if (!S_ISDIR(legacy.st_mode)) return EINVAL;
-    if (no_replace_between(epochs_fd,name,root_fd,"segments")<0) return errno;
-    if (segments_fd>=0) {
-      segments_parent_fd=root_fd; strcpy(segments_name,"segments");
-    }
-    if (promotion_sync(epochs_fd,FAULT_V1_RESTORE_EPOCHS_SYNC)<0 ||
-        promotion_sync(root_fd,FAULT_V1_RESTORE_ROOT_SYNC)<0) return errno;
-  }
-  if (segments_fd<0) { e=open_segments(); if (e) return e; }
-  return check_paths();
-}
-
-static int v2_clear_adoption(void) {
-  struct stat intent,segments,marker;
-  if (read_fd>=0 || write_fd>=0) return EBUSY;
-  int e=absent_at(root_fd,"CURRENT"); if (e) return e;
-  if (fstatat(root_fd,"ADOPTION",&intent,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISREG(intent.st_mode) || intent.st_nlink!=1 ||
-      intent.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
-  if (fstatat(root_fd,"segments",&segments,AT_SYMLINK_NOFOLLOW)<0) return errno;
-  if (!S_ISDIR(segments.st_mode)) return EINVAL;
-  if (fstatat(root_fd,"STORE-V2",&marker,AT_SYMLINK_NOFOLLOW)==0) {
-    if (!S_ISREG(marker.st_mode) || marker.st_nlink!=1 ||
-        marker.st_size!=AUTHORITY_METADATA_BYTES) return EINVAL;
-    if (reclamation_unlink(root_fd,"STORE-V2",0,FAULT_MARKER_UNLINK)<0 ||
-        promotion_sync(root_fd,FAULT_MARKER_REMOVAL_SYNC)<0) return errno;
-  } else if (errno!=ENOENT) return errno;
-  if (reclamation_unlink(root_fd,"ADOPTION",0,FAULT_ADOPTION_CLEAR_UNLINK)<0 ||
-      promotion_sync(root_fd,FAULT_ADOPTION_CLEAR_SYNC)<0) return errno;
-  return check_paths();
-}
-
 static int v2_publish_current(void) {
   char stage[256];
   int e=string(stage,sizeof(stage));
@@ -975,10 +892,10 @@ static int exact_metadata(int directory,const char *name,const unsigned char *ex
   return e;
 }
 
-static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
-  int fd=legacy?dup(directory):openat(directory,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+static int reclaim_segments(int directory,uint64_t *bytes) {
+  int fd=openat(directory,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (fd<0) return errno==ENOENT?0:errno;
-  int e=legacy?0:checked_directory(fd,directory,"segments");
+  int e=checked_directory(fd,directory,"segments");
   if (e) { close(fd); return e; }
   int copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (copy<0) { e=errno; close(fd); return e; }
@@ -1015,9 +932,8 @@ static int reclaim_segments(int directory,int legacy,uint64_t *bytes) {
   if (closedir(dir)<0 && !e) e=errno;
   if (close(fd)<0 && !e) e=errno;
   if (e) return e;
-  if (!legacy &&
-      (reclamation_unlink(directory,"segments",AT_REMOVEDIR,FAULT_SEGMENTS_RMDIR)<0 ||
-       promotion_sync(directory,FAULT_SEGMENTS_RMDIR_SYNC)<0)) return errno;
+  if (reclamation_unlink(directory,"segments",AT_REMOVEDIR,FAULT_SEGMENTS_RMDIR)<0 ||
+      promotion_sync(directory,FAULT_SEGMENTS_RMDIR_SYNC)<0) return errno;
   return 0;
 }
 
@@ -1025,16 +941,10 @@ static int v2_reclaim(void) {
   char target[256];
   int e=string(target,sizeof(target));
   if (e || !need(RECLAIM_BASE_BYTES)) return e?e:EPROTO;
-  int legacy=legacy_name_ok(target);
-  if (!legacy && !epoch_name_ok(target)) return EINVAL;
+  if (!epoch_name_ok(target)) return EINVAL;
   const unsigned char *expected_current=input+pos; pos+=CURRENT_METADATA_BYTES;
   int has_intent=(int)number(1);
-  const unsigned char *expected_intent=NULL;
-  if (has_intent) {
-    if (!need(AUTHORITY_METADATA_BYTES)) return EPROTO;
-    expected_intent=input+pos; pos+=AUTHORITY_METADATA_BYTES;
-  }
-  if (legacy!=has_intent || pos!=input_n) return EINVAL;
+  if (has_intent || pos!=input_n) return EINVAL;
   e=exact_metadata(root_fd,"CURRENT",expected_current,CURRENT_METADATA_BYTES); if (e) return e;
   if (memcmp(expected_current,"TAYC\001\0\0\0",8)) return EINVAL;
   char current_name[35]="e-";
@@ -1045,13 +955,6 @@ static int v2_reclaim(void) {
   }
   current_name[34]=0;
   if (!strcmp(target,current_name)) return EBUSY;
-  if (legacy) {
-    e=exact_metadata(root_fd,"ADOPTION",expected_intent,AUTHORITY_METADATA_BYTES); if (e) return e;
-    if (memcmp(expected_intent,"TAYA\001\0\0\0",8)) return EINVAL;
-    for (int i=0;i<16;i++)
-      if (target[7+i*2]!=hex[expected_intent[8+i]>>4] ||
-          target[8+i*2]!=hex[expected_intent[8+i]&15]) return ESTALE;
-  }
   e=open_epochs(0); if (e) return e;
   int target_fd=openat(epochs_fd,target,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (target_fd<0 && errno!=ENOENT) return errno;
@@ -1067,12 +970,7 @@ static int v2_reclaim(void) {
     while ((ent=readdir(dir))) {
       if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
       if (++count>directory_limit) { e=EFBIG; break; }
-      if (legacy) {
-        struct stat s;
-        if (!canonical(ent->d_name) ||
-            fstatat(target_fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0 ||
-            !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
-      } else if (!strcmp(ent->d_name,"MANIFEST")) {
+      if (!strcmp(ent->d_name,"MANIFEST")) {
         struct stat s;
         if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0 ||
             !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
@@ -1089,10 +987,10 @@ static int v2_reclaim(void) {
     /* A previous attempt may already have unlinked the manifest after all
      * segments, then lost the directory-fsync/rmdir reply. Resume that exact
      * empty predecessor, but never accept segments without its manifest. */
-    if (!legacy && !manifest && segments_present && !e) e=EINVAL;
+    if (!manifest && segments_present && !e) e=EINVAL;
     if (e) { close(target_fd); return e; }
-    e=reclaim_segments(target_fd,legacy,&bytes);
-    if (!e && !legacy && manifest) {
+    e=reclaim_segments(target_fd,&bytes);
+    if (!e && manifest) {
       struct stat s;
       if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0) e=errno;
       else if (reclamation_unlink(target_fd,"MANIFEST",0,FAULT_MANIFEST_UNLINK)<0 ||
@@ -1104,10 +1002,6 @@ static int v2_reclaim(void) {
     if (reclamation_unlink(epochs_fd,target,AT_REMOVEDIR,FAULT_EPOCH_RMDIR)<0 ||
         promotion_sync(epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
   } else if (promotion_sync(epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
-  if (legacy) {
-    if (reclamation_unlink(root_fd,"ADOPTION",0,FAULT_ADOPTION_UNLINK)<0 ||
-        promotion_sync(root_fd,FAULT_ADOPTION_UNLINK_SYNC)<0) return errno;
-  }
   put(bytes,8); return 0;
 }
 
@@ -1163,41 +1057,64 @@ static int cold_stage_create(void) {
   if (!cold_target || cold_stage_created || !need(2)) return EPROTO;
   int e=string(cold_staging_name,sizeof(cold_staging_name));
   if (e || !basename_ok(cold_staging_name)) return e?e:EINVAL;
+  e=string(cold_epoch_name,sizeof(cold_epoch_name));
+  if (e || !epoch_name_ok(cold_epoch_name)) return e?e:EINVAL;
   e=cold_check_paths(); if (e) return e;
   e=absent_at(cold_parent_fd,cold_target_name); if (e) return e;
   e=absent_at(cold_catalog_parent_fd,cold_catalog_name); if (e) return e;
   if (mkdirat(cold_parent_fd,cold_staging_name,0700)<0) return errno;
   int stage=openat(cold_parent_fd,cold_staging_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (stage<0) return errno;
-  int segments=-1;
+  int epochs=-1, epoch=-1, segments=-1;
   if (fstat(stage,&cold_stage_identity)<0) e=errno;
   else if (!S_ISDIR(cold_stage_identity.st_mode)) e=ESTALE;
-  if (!e && mkdirat(stage,"segments",0700)<0) e=errno;
+  if (!e && mkdirat(stage,"epochs",0700)<0) e=errno;
   if (!e) {
-    segments=openat(stage,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    epochs=openat(stage,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (epochs<0) e=errno;
+  }
+  if (!e && mkdirat(epochs,cold_epoch_name,0700)<0) e=errno;
+  if (!e) {
+    epoch=openat(epochs,cold_epoch_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (epoch<0) e=errno;
+  }
+  if (!e && mkdirat(epoch,"segments",0700)<0) e=errno;
+  if (!e) {
+    segments=openat(epoch,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (segments<0) e=errno;
   }
+  if (!e && fstat(epochs,&cold_stage_epochs_identity)<0) e=errno;
+  else if (!e && !S_ISDIR(cold_stage_epochs_identity.st_mode)) e=ESTALE;
+  if (!e && fstat(epoch,&cold_stage_epoch_identity)<0) e=errno;
+  else if (!e && !S_ISDIR(cold_stage_epoch_identity.st_mode)) e=ESTALE;
   if (!e && fstat(segments,&cold_stage_segments_identity)<0) e=errno;
   else if (!e && !S_ISDIR(cold_stage_segments_identity.st_mode)) e=ESTALE;
   if (e) {
     if (segments>=0) close(segments);
+    if (epoch>=0) close(epoch);
+    if (epochs>=0) close(epochs);
     close(stage);
     return e;
   }
   cold_stage_fd=stage;
+  cold_stage_epochs_fd=epochs;
+  cold_stage_epoch_fd=epoch;
   cold_stage_segments_fd=segments;
   cold_stage_created=1;
   e=cold_check_paths();
   if (e) {
     close_owned_fd(&cold_stage_segments_fd);
+    close_owned_fd(&cold_stage_epoch_fd);
+    close_owned_fd(&cold_stage_epochs_fd);
     close_owned_fd(&cold_stage_fd);
     cold_stage_created=0;
   }
   return e;
 }
 static int cold_scope_fd(int scope) {
-  if (scope==COLD_SCOPE_STAGE_ROOT) return cold_stage_fd;
-  if (scope==COLD_SCOPE_STAGE_SEGMENTS) return cold_stage_segments_fd;
+  if (scope==SCOPE_ROOT) return cold_stage_fd;
+  if (scope==SCOPE_SEGMENTS) return cold_stage_segments_fd;
+  if (scope==SCOPE_EPOCH) return cold_stage_epoch_fd;
   if (scope==COLD_SCOPE_CATALOG) return cold_catalog_parent_fd;
   if (scope==COLD_SCOPE_VERIFY) return cold_verify_parent_fd;
   return -1;
@@ -1209,7 +1126,7 @@ static int cold_open_write(void) {
   if (e || !basename_ok(write_name) || fd<0 || lock>1 || scope==COLD_SCOPE_VERIFY)
     return e?e:EINVAL;
   if (scope==COLD_SCOPE_CATALOG && strcmp(write_name,cold_catalog_name)) return EINVAL;
-  if (scope<COLD_SCOPE_CATALOG && !cold_stage_created) return EBADF;
+  if (scope!=COLD_SCOPE_CATALOG && scope!=COLD_SCOPE_VERIFY && !cold_stage_created) return EBADF;
   e=cold_check_paths(); if (e) return e;
   write_scope=scope; write_kind=WRITE_COLD_COPY;
   write_fd=openat(fd,write_name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
@@ -1226,7 +1143,8 @@ static int cold_open_write(void) {
 }
 static int cold_sync_staging(void) {
   int e=cold_check_paths(); if (e) return e;
-  if (!cold_stage_created || fsync(cold_stage_segments_fd)<0) return errno;
+  if (!cold_stage_created || fsync(cold_stage_segments_fd)<0 ||
+      fsync(cold_stage_epoch_fd)<0 || fsync(cold_stage_epochs_fd)<0) return errno;
   return fsync(cold_stage_fd)<0?errno:0;
 }
 static int cold_publish(void) {
@@ -1250,7 +1168,8 @@ static int cold_list_directory(void) {
   if (!need(5)) return EPROTO;
   int scope=(int)number(1), fd=scope_fd(scope);
   uint32_t limit=(uint32_t)number(4);
-  if (!cold_source || !limit || fd<0 || scope>COLD_SCOPE_STAGE_SEGMENTS) return EINVAL;
+  if (!cold_source || !limit || fd<0 ||
+      !(scope==SCOPE_ROOT || scope==SCOPE_SEGMENTS || scope==SCOPE_EPOCH)) return EINVAL;
   /* Reuse the normal listing implementation's wire format, but give the
    * caller its remaining global budget so copy inventory stops incrementally. */
   uint32_t saved=directory_limit; directory_limit=limit;
@@ -1438,9 +1357,7 @@ static int publish(void) {
   int kind=stage_kind(scope,source);
   size_t expected_size=staged_write_size(kind);
   if (fd<0 || !kind || (scope!=SCOPE_ROOT && scope!=SCOPE_SEGMENTS) ||
-      (scope==SCOPE_ROOT && !((kind==WRITE_STORE_STAGE && !strcmp(target,"STORE")) ||
-                     (kind==WRITE_STORE_V2_STAGE && !strcmp(target,"STORE-V2")) ||
-                     (kind==WRITE_ADOPTION_STAGE && !strcmp(target,"ADOPTION")))) ||
+      (scope==SCOPE_ROOT && !(kind==WRITE_STORE_V2_STAGE && !strcmp(target,"STORE-V2"))) ||
       (scope==SCOPE_SEGMENTS &&
        (!canonical(target) ||
         strncmp(source+STRING_BYTES(SEGMENT_STAGE_PREFIX),target,SEGMENT_ID_DIGITS))))
@@ -1457,7 +1374,7 @@ static int publish(void) {
 static int inspection_opcode_allowed(unsigned op) {
   switch (op) {
     case LIST: case OPEN_READ: case READ_AT: case CLOSE_READ: case CHECK: case INFO:
-    case V2_SELECT: case V2_SPACE: case V2_RESTORE_V1: case V2_CLEAR_ADOPTION:
+    case V2_SELECT: case V2_SPACE:
       return 1;
     default:
       return 0;
@@ -1497,13 +1414,14 @@ static int dispatch(unsigned op) {
   }
   if (op==SHUTDOWN) {
     int descriptors[]={write_fd,candidate_write_fd,read_fd,segments_fd,candidate_segments_fd,candidate_fd,
-      epoch_fd,epochs_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_segments_fd,cold_lock_fd};
+      epoch_fd,epochs_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_epochs_fd,cold_stage_epoch_fd,
+      cold_stage_segments_fd,cold_lock_fd};
     for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
       if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(HELPER_EXIT_CLOSE_FAILURE);
     }
     write_fd=candidate_write_fd=read_fd=segments_fd=candidate_segments_fd=candidate_fd=epoch_fd=epochs_fd=root_fd=lock_fd=-1;
     segments_parent_fd=-1; acquired=0;
-    cold_stage_fd=cold_stage_segments_fd=cold_lock_fd=-1;
+    cold_stage_fd=cold_stage_epochs_fd=cold_stage_epoch_fd=cold_stage_segments_fd=cold_lock_fd=-1;
     cold_chain_close(&cold_parent_chain); cold_chain_close(&cold_catalog_chain); cold_chain_close(&cold_verify_chain);
     cold_parent_fd=cold_catalog_parent_fd=cold_verify_parent_fd=-1; cold_target=0;
     return 0;
@@ -1552,13 +1470,10 @@ static int dispatch(unsigned op) {
     case V2_SELECT: return v2_select();
     case V2_BEGIN: return v2_begin();
     case V2_PUBLISH_EPOCH: return v2_publish_epoch();
-    case V2_ADOPT_V1: return v2_adopt_v1();
     case V2_PUBLISH_CURRENT: return v2_publish_current();
     case V2_SPACE: return v2_space();
     case V2_RECLAIM: return v2_reclaim();
     case V2_ABORT: return v2_abort();
-    case V2_RESTORE_V1: return v2_restore_v1();
-    case V2_CLEAR_ADOPTION: return v2_clear_adoption();
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
       if (segments_fd>=0) return EEXIST;
@@ -1623,8 +1538,7 @@ static int validate_request(unsigned op) {
     case OPEN_READ: case CREATE_STAGE:
       if (!need(1)) return EPROTO;
       pos++; e=string(name,256); break;
-    case V2_SELECT: case V2_BEGIN: case V2_PUBLISH_EPOCH: case V2_ADOPT_V1:
-    case V2_RESTORE_V1:
+    case V2_SELECT: case V2_BEGIN: case V2_PUBLISH_EPOCH:
       e=string(name,256); break;
     case V2_PUBLISH_CURRENT:
       e=string(name,256);
@@ -1639,7 +1553,7 @@ static int validate_request(unsigned op) {
       }
       break;
     case COLD_STAGE_CREATE:
-      e=string(name,256); break;
+      e=string(name,256); if (!e) e=string(name,256); break;
     case COLD_OPEN_WRITE:
       if (!need(2)) return EPROTO;
       pos+=2; e=string(name,256); break;
@@ -1681,7 +1595,7 @@ static int validate_request(unsigned op) {
       pos++; break;
     case MKDIR_SEGMENTS: case CLOSE_READ:
     case CHECK: case INFO: case SYNC_READ: case SHUTDOWN: case ENABLE_MUTATIONS: case V2_SPACE:
-    case V2_CLEAR_ADOPTION: case V2_ABORT:
+    case V2_ABORT:
     case COLD_SYNC_STAGING: case COLD_PUBLISH: case COLD_SYNC_CATALOG:
     case COLD_CHECK: case COLD_SOURCE: break;
 #ifdef TAY_TEST_FAULTS

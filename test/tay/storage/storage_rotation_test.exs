@@ -71,12 +71,13 @@ defmodule Tay.Storage.RotationTest do
     {:ok, w} = start(path)
     {:ok, _} = Writer.append(w, 1, 1, "sealed")
     {:ok, _} = Writer.seal(w)
-    old = File.read!(Path.join([path, "segments", canonical(1)]))
+    segments = Tay.Test.RecoveryHelpers.segment_directory(path)
+    old = File.read!(Path.join(segments, canonical(1)))
     GenServer.stop(w)
     {:ok, w} = start(path)
     assert %{segment: %{id: 2, first_sequence: 2, count: 0}} = Writer.status(w)
-    assert File.stat!(Path.join([path, "segments", canonical(2)])).size == 44
-    assert File.read!(Path.join([path, "segments", canonical(1)])) == old
+    assert File.stat!(Path.join(segments, canonical(2))).size == 44
+    assert File.read!(Path.join(segments, canonical(1))) == old
     GenServer.stop(w)
   end
 
@@ -87,7 +88,7 @@ defmodule Tay.Storage.RotationTest do
     assert {:ok, %{segment_id: 1, sequence: 1}} = Writer.append(w, 1, 1, payload)
     assert {:ok, %{segment_id: 2, sequence: 2}} = Writer.append(w, 1, 1, <<>>)
 
-    assert File.stat!(Path.join([path, "segments", canonical(1)])).size ==
+    assert File.stat!(Path.join(Tay.Test.RecoveryHelpers.segment_directory(path), canonical(1))).size ==
              Segment.min_rotation_bytes()
 
     assert Writer.status(w).segment.bytes == 72

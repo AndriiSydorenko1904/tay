@@ -1,135 +1,51 @@
 defmodule Tay.Storage.V2NativeTest do
   use ExUnit.Case, async: true
 
-  alias Tay.Storage.{Native, Reader, Segment, Writer}
-  alias Tay.Storage.V2.{Authority, Codec, Epoch, Publisher, Reducer}
+  alias Tay.Storage.{Native, Segment, Writer}
+  alias Tay.Storage.V2.{Authority, Codec, Publisher, Reclaimer, Reducer}
   alias Tay.Storage.V2.Reader, as: V2Reader
   import Tay.Test.RecoveryHelpers
-
-  @candidate <<1::128>>
-  @epoch <<2::128>>
-  @legacy <<3::128>>
-  @marker_stage ".tay-v2-marker-00000000000000000000000000000004.tmp"
-  @current_stage ".tay-current-00000000000000000000000000000005.tmp"
-  @adoption_stage ".tay-adoption-00000000000000000000000000000006.tmp"
 
   setup do
     path = Tay.Test.NativeHelpers.path()
     on_exit(fn -> File.rm_rf!(path) end)
     store(path)
-    {:ok, store_id} = path |> Path.join("STORE") |> File.read!() |> Segment.decode_store()
-    %{path: path, store_id: store_id}
+    marker = File.read!(Path.join(path, "STORE-V2"))
+    current = File.read!(Path.join(path, "CURRENT"))
+    {:ok, store_id} = Authority.decode_marker(marker)
+    {:ok, pointer} = Authority.decode_current(current)
+    %{path: path, store_id: store_id, epoch_id: pointer.epoch_id, current: current}
   end
 
-  test "native owner publishes a complete empty epoch and old binary topology fails closed", %{
-    path: path,
-    store_id: store_id
-  } do
+  test "native owner selects and recovers the initialized Store v2 epoch", %{path: path} do
     {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-    assert {:ok, free} = Native.v2_space(native)
-    assert free > 0
-    assert :ok = Native.v2_begin(native, @candidate)
 
-    {:ok, epoch} = Epoch.build(%{}, store_id)
-    {:ok, name} = Segment.filename(1)
-    {:ok, _} = Native.create_stage(native, :candidate_segments, name)
-    assert {:ok, %{written: 44}} = Native.write(native, 0, epoch.tail)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.sync_dir(native, :candidate_segments)
-
-    manifest = %{
-      store_id: store_id,
-      epoch_id: @epoch,
-      source_epoch_id: nil,
-      source_frontier: 0,
-      captured_at: 0,
-      terminal_retention: :infinity,
-      source_segments: [],
-      base_segments: [],
-      tail_segment_id: 1,
-      tail_first_sequence: 1
-    }
-
-    {:ok, manifest_bytes} = Authority.encode_manifest(manifest)
-    {:ok, _} = Native.create_stage(native, :candidate, "MANIFEST")
-    assert {:ok, _} = Native.write(native, 0, manifest_bytes)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.sync_dir(native, :candidate)
-
-    assert {:ok, %{candidate: %{jobs: %{}}, manifest_bytes: ^manifest_bytes}} =
-             V2Reader.recover_candidate(native, Reducer.candidate(), manifest)
-
-    assert :ok = Native.v2_publish_epoch(native, @epoch)
-
-    {:ok, intent} = Authority.encode_adoption(@legacy)
-    {:ok, adoption_identity} = Native.create_stage(native, :root, @adoption_stage)
-    assert {:ok, _} = Native.write(native, 0, intent)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.publish(native, :root, @adoption_stage, "ADOPTION", adoption_identity)
-    assert :ok = Native.sync_dir(native, :root)
-    assert :ok = Native.v2_adopt_v1(native, @legacy)
-    {:ok, marker} = Authority.encode_marker(store_id)
-    {:ok, marker_identity} = Native.create_stage(native, :root, @marker_stage)
-    assert {:ok, _} = Native.write(native, 0, marker)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.publish(native, :root, @marker_stage, "STORE-V2", marker_identity)
-    assert :ok = Native.sync_dir(native, :root)
-
-    {:ok, current} =
-      Authority.encode_current(%{
-        store_id: store_id,
-        epoch_id: @epoch,
-        manifest_digest: Authority.manifest_digest(manifest_bytes)
-      })
-
-    {:ok, current_identity} = Native.create_stage(native, :root, @current_stage)
-    assert {:ok, _} = Native.write(native, 0, current)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.v2_publish_current(native, @current_stage, current_identity, nil)
-    assert :ok = Native.v2_select(native, @epoch)
-    assert {:ok, entries} = Native.list(native, :segments)
-    assert Enum.map(entries, & &1.name) == [name]
-    assert :ok = Native.shutdown(native)
-
-    {:ok, reopened} = open(path)
-    assert {:error, %{reason: :store_v2_requires_v2_recovery}} = Reader.preflight(reopened)
-
-    assert {:ok, %{epoch_id: @epoch, candidate: %{jobs: jobs}}} =
-             V2Reader.recover(reopened, Reducer.candidate())
+    assert {:ok, %{epoch_id: epoch_id, candidate: %{jobs: jobs}, current: current}} =
+             V2Reader.recover(native, Reducer.candidate())
 
     assert jobs == %{}
-    assert {:ok, _} = Native.open_read(reopened, :epoch, "MANIFEST")
-    assert {:ok, ^manifest_bytes} = Native.read(reopened, 0, byte_size(manifest_bytes))
-    assert :ok = Native.close_read(reopened)
-    assert :ok = Native.enable_mutations(reopened)
-    assert {:ok, _} = Native.open_read(reopened, :root, "CURRENT")
-    assert {:ok, ^current} = Native.read(reopened, 0, byte_size(current))
-    assert :ok = Native.close_read(reopened)
-    assert :ok = Native.shutdown(reopened)
-
+    assert byte_size(current) == 76
+    assert {:ok, entries} = Native.list(native, :segments)
+    assert length(entries) == 1
+    assert :ok = Native.shutdown(native)
     refute File.exists?(Path.join(path, "segments"))
-
-    assert File.dir?(
-             Path.join([path, "epochs", "legacy-" <> Base.encode16(@legacy, case: :lower)])
-           )
+    assert File.dir?(Path.join([path, "epochs", "e-" <> Base.encode16(epoch_id, case: :lower)]))
   end
 
-  test "streaming publisher adopts V1 and then replaces CURRENT for a second epoch", %{
+  test "streaming publisher replaces CURRENT and reclaims predecessors", %{
     path: path,
-    store_id: store_id
+    store_id: store_id,
+    epoch_id: epoch_id,
+    current: current
   } do
     {:ok, native} = open(path)
+    assert {:ok, recovered} = V2Reader.recover(native, Reducer.candidate())
     assert :ok = Native.enable_mutations(native)
 
     source = %{
       store_id: store_id,
-      epoch_id: nil,
+      epoch_id: epoch_id,
+      current: current,
       jobs: %{},
       frontier: 0,
       rotation_target_bytes: 67_108_864,
@@ -142,18 +58,8 @@ defmodule Tay.Storage.V2NativeTest do
     assert first.source_bytes > 0
     assert first.recovered.candidate.jobs == %{}
 
-    assert {:ok, adoption_entry} = Native.open_read(native, :root, "ADOPTION")
-    assert {:ok, intent} = Native.read(native, 0, adoption_entry.size)
-    assert :ok = Native.close_read(native)
-    assert {:ok, legacy_nonce} = Authority.decode_adoption(intent)
-    legacy_name = "legacy-" <> Base.encode16(legacy_nonce, case: :lower)
-
-    assert {:ok, reclaimed_v1} =
-             Native.v2_reclaim(native, legacy_name, first.recovered.current, intent)
-
-    assert reclaimed_v1 > 0
-    refute File.exists?(Path.join([path, "epochs", legacy_name]))
-    refute File.exists?(Path.join(path, "ADOPTION"))
+    assert first.previous_epoch_id == recovered.epoch_id
+    assert {:ok, %{reclamation: :complete}} = Reclaimer.predecessor(native, first.recovered)
 
     second_source =
       source
@@ -181,62 +87,10 @@ defmodule Tay.Storage.V2NativeTest do
     assert :ok = Native.shutdown(reopened)
   end
 
-  test "pre-CURRENT adoption interruption restores the authoritative V1 source", %{
-    path: path,
-    store_id: store_id
-  } do
-    {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-    assert :ok = Native.v2_begin(native, @candidate)
-
-    {:ok, intent} = Authority.encode_adoption(@legacy)
-    {:ok, identity} = Native.create_stage(native, :root, @adoption_stage)
-    assert {:ok, _} = Native.write(native, 0, intent)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.publish(native, :root, @adoption_stage, "ADOPTION", identity)
-    assert :ok = Native.sync_dir(native, :root)
-    assert :ok = Native.v2_adopt_v1(native, @legacy)
-
-    {:ok, marker} = Authority.encode_marker(store_id)
-    {:ok, marker_identity} = Native.create_stage(native, :root, @marker_stage)
-    assert {:ok, _} = Native.write(native, 0, marker)
-    assert :ok = Native.sync(native)
-    assert :ok = Native.close_write(native)
-    assert :ok = Native.publish(native, :root, @marker_stage, "STORE-V2", marker_identity)
-    assert :ok = Native.sync_dir(native, :root)
-    assert :ok = Native.shutdown(native)
-
-    refute File.exists?(Path.join(path, "segments"))
-    {:ok, reopened} = open(path)
-    assert :ok = V2Reader.reconcile_adoption(reopened)
-    assert {:ok, %{store: %{store_id: ^store_id}}} = Reader.preflight(reopened)
-    assert :ok = Native.shutdown(reopened)
-    assert File.dir?(Path.join(path, "segments"))
-    refute File.exists?(Path.join(path, "ADOPTION"))
-    refute File.exists?(Path.join(path, "STORE-V2"))
-  end
-
   test "Writer replays and activates the selected V2 epoch under its existing lock", %{
     path: path,
-    store_id: store_id
+    epoch_id: epoch_id
   } do
-    {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-
-    assert {:ok, published} =
-             Publisher.publish(native, %{
-               store_id: store_id,
-               epoch_id: nil,
-               jobs: %{},
-               frontier: 0,
-               rotation_target_bytes: 67_108_864,
-               candidate_limits: %{},
-               value_limits: Tay.Event.Value.defaults()
-             })
-
-    assert :ok = Native.shutdown(native)
-
     spec = %{
       codec: Tay.Event,
       initial_acc: Tay.State.Transition.candidate(%{}, Tay.Event.Value.defaults()),
@@ -248,9 +102,9 @@ defmodule Tay.Storage.V2NativeTest do
              Writer.start_recovered_link([data_dir: path, durability: :write], spec)
 
     status = Writer.status(writer)
-    assert status.summary.epoch_id == published.epoch_id
+    assert status.summary.epoch_id == epoch_id
     assert {:ok, summary, candidate} = Writer.activate_recovered(writer, status.session_ref)
-    assert summary.epoch_id == published.epoch_id
+    assert summary.epoch_id == epoch_id
     assert candidate.jobs == %{}
     assert Writer.status(writer).state == :ready
 
@@ -292,7 +146,7 @@ defmodule Tay.Storage.V2NativeTest do
     assert :ok = Native.shutdown(reopened)
   end
 
-  test "sole Writer owner compacts an activated V1 store and fences old admission", %{
+  test "sole Writer owner compacts an activated V2 store and fences old admission", %{
     path: path
   } do
     spec = %{
@@ -328,18 +182,7 @@ defmodule Tay.Storage.V2NativeTest do
     store_id: store_id
   } do
     {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-
-    assert {:ok, published} =
-             Publisher.publish(native, %{
-               store_id: store_id,
-               epoch_id: nil,
-               jobs: %{},
-               frontier: 0,
-               rotation_target_bytes: 67_108_864,
-               candidate_limits: %{},
-               value_limits: Tay.Event.Value.defaults()
-             })
+    assert {:ok, published} = publish_next(native)
 
     assert :ok = Native.shutdown(native)
     name = :tay_v2_engine_native_test
@@ -359,22 +202,10 @@ defmodule Tay.Storage.V2NativeTest do
   end
 
   test "independent BEAM cannot acquire the selected V2 epoch while its Writer owns the lock", %{
-    path: path,
-    store_id: store_id
+    path: path
   } do
     {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-
-    assert {:ok, _} =
-             Publisher.publish(native, %{
-               store_id: store_id,
-               epoch_id: nil,
-               jobs: %{},
-               frontier: 0,
-               rotation_target_bytes: 67_108_864,
-               candidate_limits: %{},
-               value_limits: Tay.Event.Value.defaults()
-             })
+    assert {:ok, _} = publish_next(native)
 
     script =
       "case Tay.Storage.Native.open_existing(hd(System.argv()), durability: :write) do " <>
@@ -387,22 +218,10 @@ defmodule Tay.Storage.V2NativeTest do
   end
 
   test "V2 activation refuses an independently mutated frozen tail without repair", %{
-    path: path,
-    store_id: store_id
+    path: path
   } do
     {:ok, native} = open(path)
-    assert :ok = Native.enable_mutations(native)
-
-    assert {:ok, published} =
-             Publisher.publish(native, %{
-               store_id: store_id,
-               epoch_id: nil,
-               jobs: %{},
-               frontier: 0,
-               rotation_target_bytes: 67_108_864,
-               candidate_limits: %{},
-               value_limits: Tay.Event.Value.defaults()
-             })
+    assert {:ok, published} = publish_next(native)
 
     assert :ok = Native.shutdown(native)
     {:ok, tail_name} = Segment.filename(1)
@@ -455,5 +274,21 @@ defmodule Tay.Storage.V2NativeTest do
 
     assert binary_part(File.read!(tail), 44, 1) == <<0>>
     GenServer.stop(writer)
+  end
+
+  defp publish_next(native) do
+    with {:ok, recovered} <- V2Reader.recover(native, Reducer.candidate()),
+         :ok <- Native.enable_mutations(native) do
+      Publisher.publish(native, %{
+        store_id: recovered.store_id,
+        epoch_id: recovered.epoch_id,
+        current: recovered.current,
+        jobs: recovered.candidate.jobs,
+        frontier: recovered.next_sequence - 1,
+        rotation_target_bytes: 67_108_864,
+        candidate_limits: %{},
+        value_limits: Tay.Event.Value.defaults()
+      })
+    end
   end
 end

@@ -34,6 +34,7 @@ defmodule Tay.Engine.CompactionEvents do
     :unable_to_drain,
     :publication_failed,
     :unknown_outcome,
+    :delta_overloaded,
     :below_minimum_benefit
   ]
   @fields [
@@ -49,12 +50,17 @@ defmodule Tay.Engine.CompactionEvents do
     :candidate_bytes,
     :reclaimed_bytes,
     :pause_ms,
+    :preparation_ms,
+    :total_ms,
     :catch_up_rounds,
     :catch_up_events,
     :catch_up_bytes,
     :final_delta_events,
     :final_delta_bytes,
     :peak_writer_process_bytes,
+    :peak_delta_events,
+    :peak_delta_bytes,
+    :net_reclaimed_bytes,
     :expired_jobs,
     :retained_terminal_jobs
   ]
@@ -96,6 +102,9 @@ defmodule Tay.Engine.CompactionEvents do
 
   def result({:error, %Tay.Error{reason: {:compaction_failed, :compaction_source_changed}}}),
     do: {:deferred, :source_changed}
+
+  def result({:error, %Tay.Error{reason: {:compaction_failed, :checkpoint_delta_overloaded}}}),
+    do: {:deferred, :delta_overloaded}
 
   def result({:error, %Tay.Error{kind: :unknown_outcome}}), do: {:error, :unknown_outcome}
   def result({:error, _}), do: {:error, :publication_failed}

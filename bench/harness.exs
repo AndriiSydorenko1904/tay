@@ -881,9 +881,10 @@ defmodule Tay.Bench.Harness do
           }
         }
 
-        {:ok, {type, schema, payload}} = Tay.Event.encode(event)
+        {:ok, mutation} = Tay.Storage.V2.Mutation.from_event(event, nil, index)
+        {:ok, payload} = Tay.Storage.V2.Codec.encode_mutation(mutation)
         {:ok, prepared} = Tay.State.Transition.prepare(nil, event)
-        {:ok, receipt} = Writer.append(writer, type, schema, payload)
+        {:ok, receipt} = Writer.append(writer, 8, 1, payload)
         {:ok, _} = Tay.State.Transition.apply(prepared, receipt)
         if index < segments, do: {:ok, _} = Writer.rotate(writer)
       end
@@ -1022,7 +1023,7 @@ defmodule Tay.Bench.Harness do
 
   defp canonical_files(path),
     do:
-      File.ls!(Path.join(path, "segments"))
+      File.ls!(segment_directory(path))
       |> Enum.filter(&match?({:ok, _}, Segment.filename_id(&1)))
 
   defp canonical_count(path), do: length(canonical_files(path))
@@ -1031,8 +1032,20 @@ defmodule Tay.Bench.Harness do
     do:
       Enum.sum(
         for file <- canonical_files(path),
-            do: File.stat!(Path.join([path, "segments", file])).size
+            do: File.stat!(Path.join(segment_directory(path), file)).size
       )
+
+  defp segment_directory(path) do
+    current = Path.join(path, "CURRENT")
+
+    if File.regular?(current) do
+      {:ok, pointer} = Tay.Storage.V2.Authority.decode_current(File.read!(current))
+      epoch = "e-" <> Base.encode16(pointer.epoch_id, case: :lower)
+      Path.join([path, "epochs", epoch, "segments"])
+    else
+      Path.join(path, "segments")
+    end
+  end
 
   defp ensure_application(path) do
     if is_nil(Process.whereis(Tay.Supervisor)), do: Application.put_env(:tay, :data_dir, path)

@@ -61,6 +61,10 @@ defmodule Tay.Storage.NativeProtocolTest do
     assert Native.inspection?(native)
     assert {:ok, %{ancestor_syncs: 0, readable: false, writable: 0}} = Native.info(native)
     assert R.snapshot(path) == before
+
+    assert {:ok, _} =
+             Tay.Storage.V2.Reader.recover(native, Tay.Storage.V2.Reducer.candidate())
+
     assert :ok = Native.enable_mutations(native)
     refute Native.inspection?(native)
     assert {:ok, %{ancestor_syncs: count, writable: 0}} = Native.info(native)
@@ -127,6 +131,10 @@ defmodule Tay.Storage.NativeProtocolTest do
     R.store(path)
     before = R.snapshot(path)
     {:ok, native} = R.open(path)
+
+    assert {:ok, _} =
+             Tay.Storage.V2.Reader.recover(native, Tay.Storage.V2.Reducer.candidate())
+
     {:ok, _} = Native.open_read(native, :segments, canonical(1))
     assert {:error, %{reason: "ebusy"}} = Native.enable_mutations(native)
     assert {:error, %{kind: :uncertain}} = Native.info(native)
@@ -181,9 +189,9 @@ defmodule Tay.Storage.NativeProtocolTest do
     {:ok, native} = R.open(path, max_directory_entries: 2)
     assert {:error, %{reason: "resource_limit"}} = Native.list(native, :root)
     Native.shutdown(native)
-    {:ok, native} = R.open(path, max_directory_entries: 3)
+    {:ok, native} = R.open(path, max_directory_entries: 4)
     assert {:ok, entries} = Native.list(native, :root)
-    assert length(entries) == 3
+    assert length(entries) == 4
     Native.shutdown(native)
   end
 

@@ -1,140 +1,30 @@
-defmodule Tay.Test.RecoveryDecoder do
-  @moduledoc false
-  @behaviour Tay.Storage.Recovery.EventDecoder
-  # Artificial test vocabulary, not a production registry or serialization.
-  @impl true
-  def known_type?(type), do: type in [47, 48]
-  @impl true
-  def supported_schema?(_, schema), do: schema == 3
-  @impl true
-  def decode_payload(_, _, payload, limits) do
-    cond do
-      byte_size(payload) > limits.binary_bytes -> {:error, {:resource_limit, :binary_bytes}}
-      limits.depth < 2 -> {:error, {:resource_limit, :depth}}
-      limits.output_nodes < 2 -> {:error, {:resource_limit, :output_nodes}}
-      payload == <<>> -> {:ok, {:value, 0}, 0}
-      byte_size(payload) == 1 -> {:ok, {:value, :binary.first(payload)}, 1}
-      true -> {:error, :invalid_test_payload}
-    end
-  end
-end
-
-defmodule Tay.Test.RecoveryProbeDecoder do
-  @moduledoc false
-  @behaviour Tay.Storage.Recovery.EventDecoder
-  @impl true
-  def known_type?(type) do
-    probe({:known, type})
-
-    case Process.get(:recovery_test_known) do
-      nil -> Tay.Test.RecoveryDecoder.known_type?(type)
-      fun -> fun.(type)
-    end
-  end
-
-  @impl true
-  def supported_schema?(type, schema) do
-    probe({:schema, type, schema})
-    Tay.Test.RecoveryDecoder.supported_schema?(type, schema)
-  end
-
-  @impl true
-  def decode_payload(type, schema, payload, limits) do
-    probe({:decode, payload})
-
-    case Process.get(:recovery_test_decoder) do
-      nil -> Tay.Test.RecoveryDecoder.decode_payload(type, schema, payload, limits)
-      fun -> fun.(type, schema, payload, limits)
-    end
-  end
-
-  defp probe(message) do
-    if pid = Process.get(:recovery_test_observer), do: send(pid, message)
-  end
-end
-
-defmodule Tay.Test.RecoverySizeDecoder do
-  @moduledoc false
-  @behaviour Tay.Storage.Recovery.EventDecoder
-  @impl true
-  def known_type?(type), do: type == 47
-  @impl true
-  def supported_schema?(_, schema), do: schema == 3
-  @impl true
-  def decode_payload(_, _, payload, limits) do
-    cond do
-      limits.depth < 2 -> {:error, {:resource_limit, :depth}}
-      limits.output_nodes < 2 -> {:error, {:resource_limit, :output_nodes}}
-      byte_size(payload) > limits.binary_bytes -> {:error, {:resource_limit, :binary_bytes}}
-      true -> {:ok, {:size, byte_size(payload)}, byte_size(payload)}
-    end
-  end
-end
-
-defmodule Tay.Test.RecoveryReloadDecoder do
-  @moduledoc false
-  @behaviour Tay.Storage.Recovery.EventDecoder
-  @impl true
-  defdelegate known_type?(type), to: Tay.Test.RecoveryDecoder
-  @impl true
-  defdelegate supported_schema?(type, schema), to: Tay.Test.RecoveryDecoder
-  @impl true
-  defdelegate decode_payload(type, schema, payload, limits), to: Tay.Test.RecoveryDecoder
-
-  def replace_for_test do
-    :code.delete(__MODULE__)
-
-    Code.compile_quoted(
-      quote do
-        defmodule Tay.Test.RecoveryReloadDecoder do
-          def known_type?(_), do: false
-          def supported_schema?(_, _), do: false
-          def decode_payload(_, _, _, _), do: {:error, :changed_test_provider}
-        end
-      end
-    )
-  end
-end
-
 defmodule Tay.Test.RecoveryHelpers do
   @moduledoc false
+  alias Tay.State.Transition
   alias Tay.Storage.{Native, Writer}
-  alias Tay.Test.{NativeHelpers, RecordHelpers, SegmentHelpers}
-
-  def spec(options \\ []),
-    do: %{codec: Tay.Test.RecoveryDecoder, initial_acc: [], reducer: &collect/3, options: options}
-
-  def collect({:value, value}, position, acc), do: {:ok, [{position.sequence, value} | acc]}
-
-  def frame(sequence, value \\ 1, fields \\ []),
-    do:
-      RecordHelpers.frame(
-        Keyword.merge(
-          [sequence: sequence, record_type: 47, payload_schema_version: 3, payload: <<value>>],
-          fields
-        )
-      )
-
-  def segment(id, first, records, sealed \\ false) do
-    header = SegmentHelpers.header(id: id, first_sequence: first)
-    footer = if sealed, do: SegmentHelpers.footer(header, records), else: <<>>
-    IO.iodata_to_binary([header, records, footer])
-  end
+  alias Tay.Storage.V2.Codec
+  alias Tay.Test.NativeHelpers
 
   # All direct writes/changes are to disposable test fixtures; Recovery itself
   # must preserve the snapshot, including retained stages and lock identity.
-  def store(path, segments \\ [segment(1, 1, [])]) do
-    File.mkdir_p!(Path.join(path, "segments"))
-    File.write!(Path.join(path, ".tay-owner.lock"), <<>>)
-    File.write!(Path.join(path, "STORE"), SegmentHelpers.fixture("STORE"))
-
-    Enum.with_index(segments, 1)
-    |> Enum.each(fn {bytes, id} -> File.write!(canonical(path, id), bytes) end)
-
+  def store(path) do
+    {:ok, _} = Tay.Storage.initialize(data_dir: path, durability: :write)
     path
   end
 
-  def canonical(path, id), do: Path.join([path, "segments", NativeHelpers.canonical(id)])
+  def canonical(path, id), do: Path.join(segment_directory(path), NativeHelpers.canonical(id))
+
+  def segment_directory(path) do
+    current = Path.join(path, "CURRENT")
+
+    if File.regular?(current) do
+      {:ok, pointer} = Tay.Storage.V2.Authority.decode_current(File.read!(current))
+      epoch = "e-" <> Base.encode16(pointer.epoch_id, case: :lower)
+      Path.join([path, "epochs", epoch, "segments"])
+    else
+      Path.join(path, "segments")
+    end
+  end
 
   def open(path, options \\ []),
     do:
@@ -143,7 +33,7 @@ defmodule Tay.Test.RecoveryHelpers do
         Keyword.merge([durability: :write, test_helper: true], options)
       )
 
-  def start(path, replay_spec \\ spec(), options \\ []),
+  def start(path, replay_spec, options \\ []),
     do:
       Writer.start_recovered_link(
         Keyword.merge([data_dir: path, durability: :write, test_helper: true], options),
@@ -151,6 +41,36 @@ defmodule Tay.Test.RecoveryHelpers do
       )
 
   def activate(writer), do: Writer.activate_recovered(writer, Writer.status(writer).session_ref)
+
+  def write_v2_mutations(path, producer) when is_function(producer, 1) do
+    replay_spec = %{
+      codec: Tay.Event,
+      initial_acc: Transition.candidate(),
+      reducer: &Tay.Engine.CompactionReplay.reduce/3,
+      options: [deadline_ms: 900_000, activation_deadline_ms: 900_000]
+    }
+
+    {:ok, writer} = start(path, replay_spec, timeout: 900_000)
+    Process.unlink(writer)
+
+    try do
+      {:ok, summary, _candidate} = activate(writer)
+
+      append = fn mutation ->
+        {:ok, payload} = Codec.encode_mutation(mutation)
+
+        {:ok, _receipt} =
+          Writer.append(writer, summary.admission_ref, Codec.mutation_type(), 1, payload)
+
+        :ok
+      end
+
+      result = producer.(append)
+      result
+    after
+      if Process.alive?(writer), do: GenServer.stop(writer)
+    end
+  end
 
   # A killed/closed Port's OS process releases flock asynchronously. This is a
   # bounded test assertion about eventual release, never a production retry.

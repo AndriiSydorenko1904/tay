@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
 ```
 
 For a ready-made Tay deployment example:
@@ -87,7 +87,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
 ```
 
 ## Why Tay?
@@ -436,7 +436,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.4.8
+ghcr.io/andriisydorenko1904/tay:1.5.0
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -446,7 +446,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.4.8
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -555,12 +555,14 @@ delayed by this setting.
 
 Store-v2 Engines may also set `compaction: [checkpoint_interval: milliseconds]`
 (`0` disables it). Periodic checkpoints publish a verified semantic snapshot
-after new durable events without waiting for active jobs to drain. They capture
-the live projections at an exact durable sequence frontier, journal concurrent
-mutations into an ordered tail, and repeatedly catch up while admission remains
-open. The final fence is requested only after the remaining tail is bounded; if
-the builder cannot catch up, that checkpoint is abandoned without replacing the
-live epoch. Restart then replays the snapshot and its short tail.
+after new durable events without waiting for active jobs to drain. They rotate
+at an exact durable sequence frontier, reconstruct the candidate from sealed
+Store-v2 segments without scanning or copying ETS, journal concurrent mutations
+into an ordered tail, and repeatedly catch up while admission remains open. The
+final fence is requested only after the remaining tail is bounded; if the
+builder cannot catch up or its bounded delta is overloaded, that checkpoint is
+abandoned without replacing the live epoch. Restart then replays the snapshot
+and its short tail.
 The standalone equivalent is `TAY_CHECKPOINT_INTERVAL_MS`.
 
 Before production use, read:
@@ -585,8 +587,9 @@ macOS supports explicit development `:write` only.
 
 Tay evaluates obsolete history automatically through bounded-retention,
 online Store-v2 compaction. Candidate construction keeps admission and execution
-live; a fenced, validated switch publishes the replacement epoch. Initial Store-v1
-adoption still drains and recovers once.
+live; a fenced, validated switch publishes the replacement epoch. New storage
+initializes directly as Store v2. Tay 1.5.0 refuses Store-v1 roots; migrate them
+with Tay 1.4.x before upgrading.
 
 It has no:
 

@@ -10,6 +10,7 @@ defmodule Tay.Storage.Segment do
   @max_id 18_446_744_073_709_551_615
   @max_bytes 1_073_741_824
   @max_count 38_347_918
+  @min_rotation_bytes 16_777_352
   defstruct [
     :id,
     :first_sequence,
@@ -24,169 +25,50 @@ defmodule Tay.Storage.Segment do
     bytes: 44
   ]
 
-  @spec max_id() :: 18_446_744_073_709_551_615
+  @spec max_id() :: pos_integer()
   def max_id, do: @max_id
 
-  @spec max_bytes() :: 1_073_741_824
+  @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
 
-  @spec min_rotation_bytes() :: 16_777_352
-  def min_rotation_bytes, do: 16_777_352
+  @spec min_rotation_bytes() :: pos_integer()
+  def min_rotation_bytes, do: @min_rotation_bytes
 
-  @spec max_count() :: 38_347_918
+  @spec max_count() :: pos_integer()
   def max_count, do: @max_count
 
   @doc "Halt-aware physical traversal; errors never return a successful prefix accumulator."
   def reduce_while(read, size, accumulator, visitor, options \\ []),
     do: Tay.Storage.Segment.Parser.reduce_while(read, size, accumulator, visitor, options)
 
-  @spec parse(binary()) ::
-          {:error,
-           %{
-             :kind =>
-               :ambiguous_short_tail
-               | :corrupt_footer
-               | :corrupt_segment_header
-               | :id_or_store_mismatch
-               | :incomplete_footer
-               | :incomplete_record
-               | :incomplete_segment_header
-               | :invalid_argument
-               | :io_or_resource_error
-               | :record_or_sequence_error
-               | :sealed_history_error
-               | :segment_crc
-               | :unsupported_segment_flags
-               | :unsupported_segment_version,
-             :offset => non_neg_integer(),
-             :segment_id => any(),
-             optional(:available_bytes) => number(),
-             optional(:expected_bytes) => pos_integer(),
-             optional(:reason) => any()
-           }}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: number(),
-               count: non_neg_integer(),
-               crc_state: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               footer: nil | map(),
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil | pos_integer(),
-               state: :active | :sealed,
-               store_id: <<_::128>>
-             }}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: number(),
-               count: non_neg_integer(),
-               crc_state: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               footer: nil | map(),
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil | pos_integer(),
-               state: :active | :sealed,
-               store_id: <<_::128>>
-             }, any()}
+  @type parse_result ::
+          {:error, map()}
+          | {:ok, %__MODULE__{}}
+          | {:ok, %__MODULE__{}, term()}
+
+  @spec parse(binary()) :: parse_result()
+  @spec parse(binary(), keyword()) :: parse_result()
+
   @doc "Validates a complete in-memory segment without retaining its records."
   def parse(bytes, options \\ []) when is_binary(bytes) do
     read = fn offset, length -> {:ok, binary_part(bytes, offset, length)} end
     scan(read, byte_size(bytes), options)
   end
 
-  @spec scan(any(), any()) ::
-          {:error,
-           %{
-             :kind =>
-               :ambiguous_short_tail
-               | :corrupt_footer
-               | :corrupt_segment_header
-               | :id_or_store_mismatch
-               | :incomplete_footer
-               | :incomplete_record
-               | :incomplete_segment_header
-               | :invalid_argument
-               | :io_or_resource_error
-               | :record_or_sequence_error
-               | :sealed_history_error
-               | :segment_crc
-               | :unsupported_segment_flags
-               | :unsupported_segment_version,
-             :offset => non_neg_integer(),
-             :segment_id => any(),
-             optional(:available_bytes) => number(),
-             optional(:expected_bytes) => pos_integer(),
-             optional(:reason) => any()
-           }}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: number(),
-               count: non_neg_integer(),
-               crc_state: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               footer: nil | map(),
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil | pos_integer(),
-               state: :active | :sealed,
-               store_id: <<_::128>>
-             }}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: number(),
-               count: non_neg_integer(),
-               crc_state: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               footer: nil | map(),
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil | pos_integer(),
-               state: :active | :sealed,
-               store_id: <<_::128>>
-             }, any()}
+  @spec scan(term(), term()) :: parse_result()
+  @spec scan(term(), term(), keyword()) :: parse_result()
+
   @doc "Validates a segment through bounded positional reads. No writes occur."
   def scan(read, size, options \\ []),
     do: Tay.Storage.Segment.Parser.scan(read, size, options)
 
-  @spec reduce(any(), any(), any(), any()) ::
-          {:error,
-           %{
-             :kind =>
-               :ambiguous_short_tail
-               | :corrupt_footer
-               | :corrupt_segment_header
-               | :id_or_store_mismatch
-               | :incomplete_footer
-               | :incomplete_record
-               | :incomplete_segment_header
-               | :invalid_argument
-               | :io_or_resource_error
-               | :record_or_sequence_error
-               | :sealed_history_error
-               | :segment_crc
-               | :unsupported_segment_flags
-               | :unsupported_segment_version,
-             :offset => non_neg_integer(),
-             :segment_id => any(),
-             optional(:available_bytes) => number(),
-             optional(:expected_bytes) => pos_integer(),
-             optional(:reason) => any()
-           }}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: number(),
-               count: non_neg_integer(),
-               crc_state: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               footer: nil | map(),
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil | pos_integer(),
-               state: :active | :sealed,
-               store_id: <<_::128>>
-             }, any()}
+  @type reduce_result(acc) ::
+          {:error, map()}
+          | {:ok, %__MODULE__{}, acc}
+
+  @spec reduce(term(), term(), acc, term()) :: reduce_result(acc) when acc: var
+  @spec reduce(term(), term(), acc, term(), keyword()) :: reduce_result(acc) when acc: var
+
   @doc "Physical reduction; accumulator is returned only on complete success."
   def reduce(read, size, accumulator, reducer, options \\ []),
     do: Tay.Storage.Segment.Parser.reduce(read, size, accumulator, reducer, options)
@@ -219,21 +101,22 @@ defmodule Tay.Storage.Segment do
     end
   end
 
-  @spec decode_store(any()) ::
-          false
-          | <<_::64, _::_*8>>
-          | {:error,
-             :checksum
-             | :invalid_argument
-             | :invalid_magic
-             | :invalid_store_id
-             | :reserved_bytes
-             | :trailing_store_bytes
-             | {:invalid_version, 0}
-             | {:unsupported_flags, byte()}
-             | {:unsupported_version, byte()}}
-          | {:incomplete, 28 | 44 | 64}
-          | {:ok, <<_::128>>}
+  @type store_decode_error ::
+          :checksum
+          | :invalid_argument
+          | :invalid_magic
+          | :invalid_store_id
+          | :reserved_bytes
+          | :trailing_store_bytes
+          | {:invalid_version, 0}
+          | {:unsupported_flags, byte()}
+          | {:unsupported_version, byte()}
+
+  @spec decode_store(term()) ::
+          {:ok, <<_::128>>}
+          | {:incomplete, 28}
+          | {:error, store_decode_error()}
+
   def decode_store(bytes) when is_binary(bytes) do
     with {:ok, body} <- fixed(bytes, "TAYI", 28),
          true <- byte_size(bytes) == 28 || {:error, :trailing_store_bytes},
@@ -260,37 +143,19 @@ defmodule Tay.Storage.Segment do
 
   def encode_header(_), do: {:error, :invalid_argument}
 
-  @spec decode_header(any()) ::
-          false
-          | <<_::64, _::_*8>>
-          | {:error,
-             :checksum
-             | :invalid_argument
-             | :invalid_first_sequence
-             | :invalid_magic
-             | :invalid_segment_id
-             | :invalid_store_id
-             | :reserved_bytes
-             | {:invalid_version, 0}
-             | {:unsupported_flags, byte()}
-             | {:unsupported_version, byte()}
-             | {:mismatch,
-                :count | :first_sequence | :id | :last_sequence | :segment_crc | :store_id, any(),
-                <<_::128>> | non_neg_integer()}}
-          | {:incomplete, 28 | 44 | 64}
-          | {:ok,
-             %Tay.Storage.Segment{
-               bytes: 44,
-               count: 0,
-               crc_state: nil,
-               first_sequence: non_neg_integer(),
-               footer: nil,
-               id: non_neg_integer(),
-               identity: nil,
-               last_sequence: nil,
-               state: nil,
-               store_id: <<_::128>>
-             }}
+  @type header_decode_error ::
+          store_decode_error()
+          | :invalid_first_sequence
+          | :invalid_segment_id
+          | {:mismatch, :id | :store_id, term(), <<_::128>> | pos_integer()}
+
+  @type header_decode_result ::
+          {:ok, %__MODULE__{}}
+          | {:incomplete, 44}
+          | {:error, header_decode_error()}
+
+  @spec decode_header(term()) :: header_decode_result()
+  @spec decode_header(term(), term()) :: header_decode_result()
   def decode_header(bytes, expected \\ %{})
 
   def decode_header(bytes, expected) when is_binary(bytes) and is_map(expected) do
@@ -307,18 +172,19 @@ defmodule Tay.Storage.Segment do
 
   def decode_header(_, _), do: {:error, :invalid_argument}
 
-  @spec encode_footer(any()) ::
-          false
-          | {:error,
-             :count_sequence_relation
-             | :invalid_argument
-             | :invalid_crc
-             | :invalid_first_sequence
-             | :invalid_last_sequence
-             | :invalid_record_count
-             | :invalid_segment_id
-             | :invalid_store_id}
-          | {:ok, <<_::32, _::_*8>>}
+  @type footer_encode_error ::
+          :count_sequence_relation
+          | :invalid_argument
+          | :invalid_crc
+          | :invalid_first_sequence
+          | :invalid_last_sequence
+          | :invalid_record_count
+          | :invalid_segment_id
+          | :invalid_store_id
+
+  @spec encode_footer(term()) ::
+          {:ok, <<_::512>>}
+          | {:error, footer_encode_error()}
   def encode_footer(
         %{
           id: id,
@@ -341,37 +207,40 @@ defmodule Tay.Storage.Segment do
 
   def encode_footer(_), do: {:error, :invalid_argument}
 
-  @spec decode_footer(any()) ::
-          false
-          | {:error,
-             :checksum
-             | :count_sequence_relation
-             | :invalid_argument
-             | :invalid_crc
-             | :invalid_first_sequence
-             | :invalid_last_sequence
-             | :invalid_magic
-             | :invalid_record_count
-             | :invalid_segment_id
-             | :invalid_store_id
-             | :reserved_bytes
-             | :trailing_footer_bytes
-             | {:invalid_version, 0}
-             | {:unsupported_flags, byte()}
-             | {:unsupported_version, byte()}
-             | {:mismatch,
-                :count | :first_sequence | :id | :last_sequence | :segment_crc | :store_id, any(),
-                <<_::128>> | non_neg_integer()}}
-          | {:incomplete, 28 | 44 | 64}
-          | {:ok,
-             %{
-               count: non_neg_integer(),
-               first_sequence: non_neg_integer(),
-               id: non_neg_integer(),
-               last_sequence: non_neg_integer(),
-               segment_crc: non_neg_integer(),
-               store_id: <<_::128>>
-             }}
+  @type footer :: %{
+          required(:id) => pos_integer(),
+          required(:first_sequence) => pos_integer(),
+          required(:last_sequence) => pos_integer(),
+          required(:count) => pos_integer(),
+          required(:store_id) => <<_::128>>,
+          required(:segment_crc) => non_neg_integer()
+        }
+
+  @type footer_decode_error ::
+          :checksum
+          | :count_sequence_relation
+          | :invalid_argument
+          | :invalid_crc
+          | :invalid_first_sequence
+          | :invalid_last_sequence
+          | :invalid_magic
+          | :invalid_record_count
+          | :invalid_segment_id
+          | :invalid_store_id
+          | :reserved_bytes
+          | :trailing_footer_bytes
+          | {:invalid_version, 0}
+          | {:unsupported_flags, byte()}
+          | {:unsupported_version, byte()}
+          | {:mismatch, atom(), term(), term()}
+
+  @type footer_decode_result ::
+          {:ok, footer()}
+          | {:incomplete, 64}
+          | {:error, footer_decode_error()}
+
+  @spec decode_footer(term()) :: footer_decode_result()
+  @spec decode_footer(term(), term()) :: footer_decode_result()
   def decode_footer(bytes, expected \\ %{})
 
   def decode_footer(bytes, expected) when is_binary(bytes) and is_map(expected) do

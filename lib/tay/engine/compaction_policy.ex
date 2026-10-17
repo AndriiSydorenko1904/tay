@@ -35,9 +35,6 @@ defmodule Tay.Engine.CompactionPolicy do
       checkpoint_due?(summary, config, now) ->
         :ok
 
-      Map.get(summary, :active_jobs, 0) > 0 ->
-        {:error, :active_jobs_present}
-
       not is_nil(summary.last_compaction_at) and
           now - summary.last_compaction_at < config.min_interval ->
         {:error, :cooldown}

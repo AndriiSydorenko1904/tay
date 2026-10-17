@@ -11,61 +11,28 @@ defmodule Tay.Storage.V2.Reader do
   @max_metadata 16_777_216
   @digest_chunk 1_048_576
 
-  @doc "Rolls back an interrupted first adoption under the retained ownership lock."
-  def reconcile_adoption(native) do
-    with {:ok, root} <- Native.list(native, :root) do
-      names = Map.new(root, &{&1.name, &1})
-
-      cond do
-        Map.has_key?(names, "CURRENT") ->
-          :ok
-
-        Map.has_key?(names, "ADOPTION") ->
-          with {:ok, bytes} <- metadata(native, :root, root, "ADOPTION", 28),
-               {:ok, nonce} <- Authority.decode_adoption(bytes),
-               :ok <- Native.v2_restore_v1(native, nonce),
-               :ok <- Native.v2_clear_adoption(native),
-               {:ok, after_restore} <- Native.list(native, :root),
-               true <-
-                 Enum.any?(after_restore, &(&1.name == "segments" and &1.type == :directory)) ||
-                   {:error, :v1_restore_missing},
-               do: :ok
-
-        Map.has_key?(names, "STORE-V2") ->
-          {:error, :incomplete_adoption_without_intent}
-
-        true ->
-          :ok
-      end
-    end
-  end
-
   def recover(native, candidate, options \\ []) do
     with :ok <- Native.check(native),
          {:ok, root} <- Native.list(native, :root),
          :ok <- root?(root),
-         {:ok, store_bytes} <- metadata(native, :root, root, "STORE", 28),
-         {:ok, store_id} <- Segment.decode_store(store_bytes),
          {:ok, marker} <- metadata(native, :root, root, "STORE-V2", 28),
          {:ok, current} <- metadata(native, :root, root, "CURRENT", 76),
          {:ok, pointer} <- Authority.decode_current(current),
-         true <- pointer.store_id == store_id || {:error, :store_id_mismatch},
          :ok <- maybe_select(native, pointer.epoch_id, options),
          {:ok, epoch_entries} <- Native.list(native, :epoch),
          :ok <- epoch?(epoch_entries),
          {:ok, manifest_bytes} <-
            metadata(native, :epoch, epoch_entries, "MANIFEST", @max_metadata),
          {:ok, manifest} <- Authority.verify_selection(marker, current, manifest_bytes),
-         true <- manifest.store_id == store_id || {:error, :store_id_mismatch},
          {:ok, segment_entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
          true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
          {:ok, result} <- replay(native, :segments, candidate, classified.canonical, manifest),
-         :ok <- revalidate_root(native, root, store_bytes, marker, current),
+         :ok <- revalidate_root(native, root, marker, current),
          :ok <- Native.check(native) do
       {:ok,
        Map.merge(result, %{
-         store_id: store_id,
+         store_id: manifest.store_id,
          epoch_id: pointer.epoch_id,
          manifest: manifest,
          marker: marker,
@@ -79,24 +46,76 @@ defmodule Tay.Storage.V2.Reader do
   end
 
   @doc false
+  def recover_physical(native, options \\ []) do
+    with :ok <- Native.check(native),
+         {:ok, root} <- Native.list(native, :root),
+         :ok <- root?(root),
+         {:ok, marker} <- metadata(native, :root, root, "STORE-V2", 28),
+         {:ok, current} <- metadata(native, :root, root, "CURRENT", 76),
+         {:ok, pointer} <- Authority.decode_current(current),
+         :ok <- maybe_select(native, pointer.epoch_id, options),
+         {:ok, epoch_entries} <- Native.list(native, :epoch),
+         :ok <- epoch?(epoch_entries),
+         {:ok, manifest_bytes} <-
+           metadata(native, :epoch, epoch_entries, "MANIFEST", @max_metadata),
+         {:ok, manifest} <- Authority.verify_selection(marker, current, manifest_bytes),
+         {:ok, segment_entries} <- Native.list(native, :segments),
+         {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
+         true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
+         {:ok, result} <- physical_replay(native, classified.canonical, manifest),
+         :ok <- revalidate_root(native, root, marker, current),
+         :ok <- Native.check(native) do
+      {:ok,
+       Map.merge(result, %{
+         store_id: manifest.store_id,
+         epoch_id: pointer.epoch_id,
+         manifest: manifest,
+         current: current
+       })}
+    end
+  end
+
+  @doc false
+  def reduce_physical(native, accumulator, reducer) when is_function(reducer, 3) do
+    with {:ok, recovered} <- recover_physical(native, selected: true) do
+      Enum.reduce_while(recovered.store.segments, {:ok, accumulator}, fn segment, {:ok, acc} ->
+        {:ok, name} = Segment.filename(segment.id)
+        entry = Map.put(segment.identity, :name, name)
+
+        result =
+          with_file(native, :segments, entry, fn ->
+            BufferedRead.with_reader(&Native.read(native, &1, &2), entry.size, fn read ->
+              Segment.reduce(read, entry.size, acc, reducer,
+                id: segment.id,
+                store_id: recovered.store_id,
+                highest: segment.id == recovered.highest.id
+              )
+            end)
+          end)
+
+        case result do
+          {:ok, _, next} -> {:cont, {:ok, next}}
+          error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  @doc false
   def recover_frozen(native, candidate, epoch_id, exclude_segment_id)
       when is_binary(epoch_id) and is_integer(exclude_segment_id) and exclude_segment_id > 0 do
     with :ok <- Native.check(native),
          {:ok, root} <- Native.list(native, :root),
          :ok <- root?(root),
-         {:ok, store_bytes} <- metadata(native, :root, root, "STORE", 28),
-         {:ok, store_id} <- Segment.decode_store(store_bytes),
          {:ok, marker} <- metadata(native, :root, root, "STORE-V2", 28),
          {:ok, current} <- metadata(native, :root, root, "CURRENT", 76),
          {:ok, pointer} <- Authority.decode_current(current),
-         true <- pointer.store_id == store_id || {:error, :store_id_mismatch},
          true <- pointer.epoch_id == epoch_id || {:error, :source_epoch_changed},
          {:ok, epoch_entries} <- Native.list(native, :epoch),
          :ok <- epoch?(epoch_entries),
          {:ok, manifest_bytes} <-
            metadata(native, :epoch, epoch_entries, "MANIFEST", @max_metadata),
          {:ok, manifest} <- Authority.verify_selection(marker, current, manifest_bytes),
-         true <- manifest.store_id == store_id || {:error, :store_id_mismatch},
          {:ok, segment_entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
          true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
@@ -106,11 +125,11 @@ defmodule Tay.Storage.V2.Reader do
            end),
          {:ok, result} <-
            replay_frozen(native, candidate, frozen, manifest, exclude_segment_id),
-         :ok <- revalidate_root(native, root, store_bytes, marker, current),
+         :ok <- revalidate_root(native, root, marker, current),
          :ok <- Native.check(native) do
       {:ok,
        Map.merge(result, %{
-         store_id: store_id,
+         store_id: manifest.store_id,
          epoch_id: epoch_id,
          manifest: manifest,
          current: current
@@ -188,13 +207,16 @@ defmodule Tay.Storage.V2.Reader do
 
     cond do
       Map.has_key?(names, "segments") ->
-        {:error, :v2_root_has_v1_segments}
+        {:error, :unexpected_root_segments}
+
+      Map.has_key?(names, "ADOPTION") ->
+        {:error, :store_v1_metadata_unsupported}
 
       not match?(%{type: :directory}, names["epochs"]) ->
         {:error, :epochs_missing}
 
       not Enum.all?(
-        ["STORE", "STORE-V2", "CURRENT"],
+        ["STORE-V2", "CURRENT"],
         &match?(%{type: :regular, links: 1}, names[&1])
       ) ->
         {:error, :authority_metadata_missing}
@@ -238,10 +260,9 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
-  defp revalidate_root(native, root, store_bytes, marker, current) do
+  defp revalidate_root(native, root, marker, current) do
     with {:ok, actual} <- Native.list(native, :root),
          true <- actual == root || {:error, :root_changed},
-         {:ok, ^store_bytes} <- metadata(native, :root, actual, "STORE", 28),
          {:ok, ^marker} <- metadata(native, :root, actual, "STORE-V2", 28),
          {:ok, ^current} <- metadata(native, :root, actual, "CURRENT", 76) do
       :ok
@@ -275,6 +296,66 @@ defmodule Tay.Storage.V2.Reader do
          record_count: Enum.sum(Enum.map(summaries, & &1.count)),
          segment_count: length(summaries)
        }}
+    end
+  end
+
+  defp physical_replay(native, canonical, manifest) do
+    total = length(canonical)
+    base_count = length(manifest.base_segments)
+
+    with true <- length(canonical) >= base_count + 1 || {:error, :tail_missing},
+         true <- manifest.tail_segment_id == base_count + 1 || {:error, :tail_id},
+         true <-
+           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..total) ||
+             {:error, :segment_ids},
+         {:ok, summaries} <- physical_scan_all(native, canonical, manifest),
+         {:ok, topology} <- Reader.validate_topology(summaries),
+         true <-
+           Enum.at(summaries, base_count).first_sequence == manifest.tail_first_sequence ||
+             {:error, :tail_frontier} do
+      {:ok,
+       %{
+         store: topology,
+         highest: List.last(summaries),
+         next_sequence: topology.next_sequence,
+         total_segment_bytes: Enum.sum(Enum.map(summaries, & &1.bytes)),
+         record_count: Enum.sum(Enum.map(summaries, & &1.count)),
+         segment_count: length(summaries)
+       }}
+    end
+  end
+
+  defp physical_scan_all(native, canonical, manifest) do
+    total = length(canonical)
+    base_count = length(manifest.base_segments)
+
+    canonical
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {{id, entry}, ordinal}, {:ok, summaries} ->
+      result =
+        with_file(native, :segments, entry, fn ->
+          with :ok <- maybe_digest(native, entry, manifest, ordinal),
+               {:ok, summary} <-
+                 BufferedRead.with_reader(&Native.read(native, &1, &2), entry.size, fn read ->
+                   Segment.scan(read, entry.size,
+                     id: id,
+                     store_id: manifest.store_id,
+                     highest: ordinal == total
+                   )
+                 end),
+               :ok <- segment_profile(summary, manifest, ordinal, ordinal <= base_count) do
+            {:ok, Map.put(summary, :identity, entry)}
+          end
+        end)
+
+      case result do
+        {:ok, summary} -> {:cont, {:ok, [summary | summaries]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, summaries} -> {:ok, Enum.reverse(summaries)}
+      error -> error
     end
   end
 

@@ -6,8 +6,6 @@ defmodule Tay.State.GeneratedModelTest do
   alias Tay.Event.Value
   alias Tay.Storage.Record
   alias Tay.Test.EventHelpers, as: E
-  alias Tay.Test.RecoveryHelpers, as: R
-  alias Tay.Test.NativeHelpers
 
   @fields ~w(id state attempt next_attempt cycle execution eligible_at available_sequence revision)a
 
@@ -16,7 +14,7 @@ defmodule Tay.State.GeneratedModelTest do
       Process.flag(:trap_exit, true)
       projection = Projection.new(%{"w" => __MODULE__}, %{"q" => :q})
 
-      {candidate, models, frames, _} =
+      {candidate, models, _frames, _} =
         Enum.reduce(choices, {Transition.candidate(), %{}, [], nil}, fn choice,
                                                                         {candidate, models,
                                                                          frames, current} ->
@@ -67,26 +65,9 @@ defmodule Tay.State.GeneratedModelTest do
         end)
 
       assert Enum.all?(candidate.jobs, fn {id, job} -> Map.take(job, @fields) == models[id] end)
-      path = NativeHelpers.path()
-      R.store(path, [R.segment(1, 1, Enum.reverse(frames))])
 
-      try do
-        spec = %{
-          codec: Event,
-          initial_acc: Transition.candidate(),
-          reducer: &Transition.reduce/3,
-          options: []
-        }
-
-        {:ok, writer} = R.start(path, spec)
-        assert {:ok, _, ^candidate} = R.activate(writer)
-        GenServer.stop(writer)
-      after
-        File.rm_rf!(path)
-
-        for table <- [projection.jobs, projection.queue, projection.schedule],
-            do: :ets.delete(table)
-      end
+      for table <- [projection.jobs, projection.queue, projection.schedule],
+          do: :ets.delete(table)
     end
   end
 

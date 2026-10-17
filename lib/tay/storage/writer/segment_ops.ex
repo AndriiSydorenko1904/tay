@@ -1,7 +1,7 @@
 defmodule Tay.Storage.Writer.SegmentOps do
   @moduledoc false
 
-  alias Tay.Storage.{CRC32C, Native, Reader, Record, Segment}
+  alias Tay.Storage.{CRC32C, Native, Record, Segment}
   alias Tay.Storage.Writer.GroupCommit
 
   @test Mix.env() == :test
@@ -86,47 +86,6 @@ defmodule Tay.Storage.Writer.SegmentOps do
     end
   end
 
-  def bootstrap(state, store) do
-    if state.native.facts.created or state.options.bootstrap do
-      state = %{state | store_id: new_store_id()}
-
-      with :ok <- ensure_segments(state, store.segments_directory),
-           {:ok, header} <-
-             Segment.encode_header(%{id: 1, first_sequence: 1, store_id: state.store_id}),
-           :ok <-
-             publish_file(
-               state,
-               :segments,
-               stage_name(1),
-               canonical(1),
-               header,
-               :bootstrap_header
-             ) do
-        complete_genesis(state)
-      end
-    else
-      {:error, :explicit_bootstrap_required}
-    end
-  end
-
-  def complete_genesis(state) do
-    with {:ok, marker} <- Segment.encode_store(state.store_id),
-         :ok <- sync_existing(state, :segments, canonical(1)),
-         :ok <- Native.sync_dir(state.native, :segments),
-         :ok <-
-           publish_file(
-             state,
-             :root,
-             ".tay-store-" <> nonce() <> ".tmp",
-             "STORE",
-             marker,
-             :bootstrap_store
-           ),
-         {:ok, store} <- Reader.inspect_store(state.native) do
-      open_ready(state, store)
-    end
-  end
-
   def open_ready(state, store) do
     state = %{
       state
@@ -135,8 +94,7 @@ defmodule Tay.Storage.Writer.SegmentOps do
         next_sequence: store.next_sequence
     }
 
-    with :ok <- sync_existing(state, :root, "STORE"),
-         :ok <- sync_v2_authority(state),
+    with :ok <- sync_v2_authority(state),
          :ok <- Native.sync_dir(state.native, :root),
          :ok <- Native.sync_dir(state.native, :segments) do
       case store.highest.state do
@@ -167,8 +125,6 @@ defmodule Tay.Storage.Writer.SegmentOps do
       if result == :ok, do: close, else: result
     end
   end
-
-  def sync_v2_authority(%{epoch_id: nil}), do: :ok
 
   def sync_v2_authority(state) do
     with :ok <- sync_existing(state, :root, "STORE-V2"),
@@ -268,33 +224,6 @@ defmodule Tay.Storage.Writer.SegmentOps do
   defp check_append(state) when is_map_key(state, :group_commit), do: :ok
   defp check_append(state), do: Native.check(state.native)
 
-  defp ensure_segments(_state, true), do: :ok
-
-  defp ensure_segments(state, false) do
-    with :ok <- step(state, {:bootstrap, :mkdir}, fn -> Native.mkdir_segments(state.native) end),
-         :ok <-
-           step(state, {:bootstrap, :sync_root}, fn -> Native.sync_dir(state.native, :root) end),
-         do: :ok
-  end
-
-  defp publish_file(state, scope, source, target, bytes, context) do
-    with {:ok, identity} <-
-           step(state, {context, :create}, fn ->
-             Native.create_stage(state.native, scope, source)
-           end),
-         {:ok, _} <-
-           step(state, {context, :write}, fn -> Native.write(state.native, 0, bytes) end),
-         :ok <- step(state, {context, :sync}, fn -> Native.sync(state.native) end),
-         :ok <- step(state, {context, :close}, fn -> Native.close_write(state.native) end),
-         :ok <-
-           step(state, {context, :publish}, fn ->
-             Native.publish(state.native, scope, source, target, identity)
-           end),
-         :ok <- step(state, {context, :sync_dir}, fn -> Native.sync_dir(state.native, scope) end),
-         :ok <- Native.check(state.native),
-         do: :ok
-  end
-
   if @test do
     defp step(state, tag, operation) do
       case operation.() do
@@ -323,11 +252,4 @@ defmodule Tay.Storage.Writer.SegmentOps do
 
   defp nonce, do: Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
   defp canonical(id), do: elem(Segment.filename(id), 1)
-
-  defp new_store_id do
-    case :crypto.strong_rand_bytes(16) do
-      <<0::128>> -> new_store_id()
-      id -> id
-    end
-  end
 end

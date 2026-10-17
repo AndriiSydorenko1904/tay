@@ -113,59 +113,6 @@ defmodule Tay.Storage.V2.Snapshot do
 
   def prepare_online(_, _, _), do: {:error, :invalid_jobs}
 
-  @doc false
-  @spec prepare_online_table(:ets.table(), term(), term()) :: term()
-  def prepare_online_table(table, retention, captured_at) do
-    with :ok <- Retention.validate(retention),
-         true <-
-           Tay.Event.V2.time?(captured_at) || {:error, :retention_timestamp_unavailable} do
-      try do
-        :ets.foldl(
-          fn
-            {id, job}, {:ok, kept, expired, terminals, orders} ->
-              order = if is_map(job), do: Map.get(job, :availability_order)
-
-              with true <- is_map(job) || {:error, :invalid_snapshot},
-                   true <- Map.get(job, :id) == id || {:error, :job_id_mismatch},
-                   true <-
-                     (is_nil(order) or not MapSet.member?(orders, order)) ||
-                       {:error, :duplicate_availability_order},
-                   :ok <- Codec.snapshot?(job),
-                   {:ok, disposition} <- classify(job, retention, captured_at) do
-                orders = if is_nil(order), do: orders, else: MapSet.put(orders, order)
-
-                case disposition do
-                  :expire ->
-                    {:ok, kept, expired + 1, terminals, orders}
-
-                  :retain ->
-                    terminal = if job.state in @terminal, do: 1, else: 0
-                    {:ok, Map.put(kept, id, job), expired, terminals + terminal, orders}
-                end
-              else
-                error -> error
-              end
-
-            _, error ->
-              error
-          end,
-          {:ok, %{}, 0, 0, MapSet.new()},
-          table
-        )
-        |> case do
-          {:ok, kept, expired, terminals, _orders} ->
-            {:ok, kept, Enum.sort(Map.keys(kept)),
-             %{expired_jobs: expired, retained_terminal_jobs: terminals}}
-
-          error ->
-            error
-        end
-      catch
-        :error, :badarg -> {:error, :source_snapshot_unavailable}
-      end
-    end
-  end
-
   defp plan_validated(jobs, retention, now) do
     jobs
     |> Enum.sort_by(fn {id, _} -> id end)

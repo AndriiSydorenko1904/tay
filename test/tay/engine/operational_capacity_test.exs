@@ -1,6 +1,6 @@
 defmodule Tay.Engine.OperationalCapacityTest do
   use ExUnit.Case, async: false
-  alias Tay.Test.{EventHelpers, NativeHelpers, EngineWorker}
+  alias Tay.Test.{NativeHelpers, EngineWorker}
   alias Tay.Test.RecoveryHelpers, as: R
   alias Tay.Test.EngineHelpers, as: H
   @name __MODULE__
@@ -18,25 +18,6 @@ defmodule Tay.Engine.OperationalCapacityTest do
     Process.unlink(root)
     on_exit(fn -> H.stop(root) end)
     root
-  end
-
-  test "recovery accounts for a newly activated successor and never double charges it", %{
-    path: path
-  } do
-    sealed = R.segment(1, 1, [EventHelpers.fixture("E1")], true)
-    R.store(path, [sealed])
-    root = start(path)
-    status = Tay.status(name: @name)
-    assert status.segment_count == 2
-    assert status.canonical_history_bytes == byte_size(sealed) + 44
-    assert status.retained_definition_bytes > 0
-    H.stop(root)
-    root = start(path)
-    again = Tay.status(name: @name)
-    assert again.segment_count == status.segment_count
-    assert again.canonical_history_bytes == status.canonical_history_bytes
-    assert again.retained_definition_bytes == status.retained_definition_bytes
-    H.stop(root)
   end
 
   test "lower live caps do not invalidate history or same-ID reconciliation", %{path: path} do

@@ -45,7 +45,7 @@ read or write operation.
 
 Diagnostic `write_kind` values use `enum write_kind`: none=0, appendable
 segment=1, segment-header stage=2, STORE stage=3, unrestricted cold-copy file=4,
-CURRENT stage=5, STORE-V2 stage=6, and ADOPTION stage=7. The named values are
+CURRENT stage=5, and STORE-V2 stage=6. The named values are
 wire-stable; their numeric ordering is not used to classify behavior.
 
 | Opcode | Request body | Success body |
