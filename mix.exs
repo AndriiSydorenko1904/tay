@@ -54,7 +54,7 @@ end
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.5.2"
+  @version "1.5.3"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do

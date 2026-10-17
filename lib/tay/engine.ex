@@ -341,7 +341,7 @@ defmodule Tay.Engine do
           {:ok, rotation} ->
             case OnlineCheckpoint.adopt_rotation(s, rotation) do
               {:ok, next} ->
-                {:noreply, %{next | online_compaction: token, online_snapshot: nil}}
+                {:noreply, %{next | online_compaction: {token, retention}, online_snapshot: nil}}
 
               {:error, reason} ->
                 exit({:invalid_online_compaction_rotation, reason})
@@ -356,7 +356,7 @@ defmodule Tay.Engine do
 
   def handle_info(
         {:compact_online_switch_requested, writer, token},
-        %{writer: writer, online_compaction: token} = s
+        %{writer: writer, online_compaction: {token, _retention}} = s
       ) do
     s = flush_group_commit(s)
     send(s.guardian, {:online_compaction_switch_requested, self(), token})
@@ -365,7 +365,7 @@ defmodule Tay.Engine do
 
   def handle_info(
         {:online_compaction_switch_ack, guardian, token},
-        %{guardian: guardian, online_compaction: token} = s
+        %{guardian: guardian, online_compaction: {token, _retention}} = s
       ) do
     case Writer.finish_online_freeze(s.writer, s.admission, token) do
       :ok -> {:noreply, s}
@@ -375,17 +375,17 @@ defmodule Tay.Engine do
 
   def handle_info(
         {:compact_online_result, writer, token, {:ok, stats, false}},
-        %{writer: writer, online_compaction: token} = s
+        %{writer: writer, online_compaction: {token, retention}} = s
       ) do
     OnlineCheckpoint.delete(s.online_snapshot)
-    next = %{OnlineCheckpoint.adopt(s, stats) | online_snapshot: nil}
+    next = %{OnlineCheckpoint.adopt(s, stats, retention) | online_snapshot: nil}
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
     {:noreply, publish(wake_queues(next)), {:continue, :release_transient_heap}}
   end
 
   def handle_info(
         {:compact_online_result, writer, token, {:ok, stats, true}},
-        %{writer: writer, online_compaction: {:switched, token}} = s
+        %{writer: writer, online_compaction: {:switched, {token, _retention}}} = s
       ) do
     OnlineCheckpoint.delete(s.online_snapshot)
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
@@ -396,7 +396,7 @@ defmodule Tay.Engine do
 
   def handle_info(
         {:compact_online_result, writer, token, {:error, reason}},
-        %{writer: writer, online_compaction: token} = s
+        %{writer: writer, online_compaction: {token, _retention}} = s
       ) do
     OnlineCheckpoint.delete(s.online_snapshot)
     send(s.guardian, {:online_compaction_result, self(), token, {:error, reason}})

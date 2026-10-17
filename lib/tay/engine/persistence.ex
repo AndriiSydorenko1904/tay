@@ -142,7 +142,8 @@ defmodule Tay.Engine.Persistence do
   defp append_record(state, type, schema, payload) do
     case Writer.append(state.writer, state.admission, type, schema, payload) do
       {:ok, receipt, {:online_compaction, stats}} ->
-        adopted = OnlineCheckpoint.adopt(state, stats)
+        {_token, retention} = state.online_compaction
+        adopted = OnlineCheckpoint.adopt(state, stats, retention)
         {{:ok, receipt}, %{adopted | online_compaction: {:switched, state.online_compaction}}}
 
       result ->

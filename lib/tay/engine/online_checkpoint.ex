@@ -3,7 +3,8 @@ defmodule Tay.Engine.OnlineCheckpoint do
 
   alias Tay.Engine.CompactionEstimate
   alias Tay.Execution.Clock
-  alias Tay.State.TerminalStore
+  alias Tay.State.{JobIndex, Projection, TerminalStore}
+  alias Tay.Storage.V2.Retention
 
   @segment_catalog_limit 128
   @terminal_states [:completed, :cancelled, :discarded]
@@ -38,7 +39,8 @@ defmodule Tay.Engine.OnlineCheckpoint do
     }
   end
 
-  def adopt(state, %{recovered: recovered} = stats) do
+  def adopt(state, %{recovered: recovered} = stats, retention) do
+    state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
     jobs = recovered.candidate.jobs
     retained = MapSet.new(Map.keys(jobs))
 
@@ -188,4 +190,36 @@ defmodule Tay.Engine.OnlineCheckpoint do
     do: Map.new(@terminal_states ++ [:available, :scheduled, :executing, :retryable], &{&1, 0})
 
   defp terminal?(%{state: state}), do: state in @terminal_states
+
+  defp purge_expired_volatile_terminals(state, retention, captured_at) do
+    expired =
+      JobIndex.fold(
+        state.projection.jobs,
+        fn job, jobs ->
+          if MapSet.member?(state.volatile_ids, job.id) and terminal?(job) do
+            {:ok, expired?} = Retention.expired?(job.terminal_at, retention, captured_at)
+            if expired?, do: [job | jobs], else: jobs
+          else
+            jobs
+          end
+        end,
+        []
+      )
+
+    Enum.reduce(expired, state, fn job, current ->
+      :ok = Projection.delete(current.projection, job)
+
+      %{
+        current
+        | volatile_ids: MapSet.delete(current.volatile_ids, job.id),
+          results: Map.delete(current.results, job.id),
+          budget: subtract_charge(current.budget, job),
+          active_budget: subtract_charge(current.active_budget, job),
+          volatile_terminal_budget: subtract_charge(current.volatile_terminal_budget, job)
+      }
+    end)
+  end
+
+  defp subtract_charge(budget, job),
+    do: %{count: budget.count - 1, bytes: budget.bytes - job.charge.bytes}
 end

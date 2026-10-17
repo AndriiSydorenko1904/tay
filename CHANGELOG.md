@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.3 — 2026-10-18
+
+### Fixed
+
+- Applied terminal-retention compaction to finished volatile jobs in the live
+  ETS projection, keeping dashboard history and in-memory accounting in sync.
+
 ## 1.5.2 — 2026-10-17
 
 ### Changed

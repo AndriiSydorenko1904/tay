@@ -179,6 +179,49 @@ defmodule Tay.Engine.SelectiveDurabilityTest do
     EngineHelpers.stop(root)
   end
 
+  test "zero-retention compaction removes finished volatile jobs from ETS", %{path: path} do
+    {:ok, root} = EngineHelpers.start(path, @name)
+
+    assert {:ok, finished} =
+             Tay.insert(EngineWorker, %{"kind" => "finished volatile"},
+               name: @name,
+               durability: :volatile
+             )
+
+    assert {:ok, %{state: :cancelled}} =
+             Tay.cancel(finished.id, name: @name, expected_revision: finished.revision)
+
+    assert {:ok, active} =
+             Tay.insert(EngineWorker, %{"kind" => "active volatile"},
+               name: @name,
+               durability: :volatile,
+               scheduled_at: 5_000_000
+             )
+
+    assert %{jobs: 2, active_jobs: 1, terminal_jobs: 1, volatile_jobs: 2} =
+             Tay.status(name: @name)
+
+    assert {:ok, _} =
+             Tay.compact(name: @name, timeout: 60_000, terminal_retention: {:hours, 0})
+
+    assert {:error, :not_found} = Tay.get_job(finished.id, name: @name)
+
+    assert {:ok, %{state: active_state, durability: :volatile}} =
+             Tay.get_job(active.id, name: @name)
+
+    assert active_state in [:available, :scheduled]
+
+    assert %{jobs: 1, active_jobs: 1, terminal_jobs: 0, volatile_jobs: 1} =
+             Tay.status(name: @name)
+
+    assert {:ok, %{completed: 0, cancelled: 0, discarded: 0}} = Tay.stats(name: @name)
+
+    state = :sys.get_state(EngineHelpers.engine(root))
+    assert Tay.State.JobIndex.count(state.projection.jobs) == 1
+    assert state.volatile_terminal_budget == %{count: 0, bytes: 0}
+    EngineHelpers.stop(root)
+  end
+
   test "volatile execution and retry use the shared state machine without journal writes", %{
     path: path
   } do
