@@ -111,6 +111,8 @@ defmodule Tay.Engine.Config do
       {:ok,
        Map.merge(config, %{
          data_dir: base.data_dir,
+         job_durability: base.durability,
+         journal_batch: journal_batch(base.journal, options, config),
          queues: queues,
          queue_limits: queue_limits,
          execution: execution_enabled(config),
@@ -130,6 +132,18 @@ defmodule Tay.Engine.Config do
 
   defp legacy_job_limit?(value), do: is_integer(value) and value >= 0
   defp legacy_state_node_limit?(value), do: is_integer(value) and value >= 0
+
+  defp journal_batch(journal, options, config) do
+    if Keyword.has_key?(options, :group_commit_interval_ms) do
+      %{
+        max_events: config.client_slots,
+        interval_ms: config.group_commit_interval_ms
+      }
+    else
+      batch = Keyword.fetch!(journal, :batch)
+      %{max_events: batch[:max_events], interval_ms: batch[:interval_ms]}
+    end
+  end
 
   def storage(config) do
     [

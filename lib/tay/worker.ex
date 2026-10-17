@@ -18,7 +18,10 @@ defmodule Tay.Worker do
   defmacro __using__(options) do
     unless Keyword.keyword?(options) and Keyword.has_key?(options, :key) and
              length(options) == length(Enum.uniq(Keyword.keys(options))) and
-             Enum.all?(Keyword.keys(options), &(&1 in [:key, :queue, :max_attempts, :timeout_ms])) do
+             Enum.all?(
+               Keyword.keys(options),
+               &(&1 in [:key, :queue, :max_attempts, :timeout_ms, :durability])
+             ) and Keyword.get(options, :durability, :persistent) in [:persistent, :volatile] do
       raise ArgumentError, "Tay.Worker requires an explicit key and recognized builder options"
     end
 

@@ -76,14 +76,16 @@ effects require idempotency or reconciliation.
 
 Producer RPCs are `enqueue`, `status`, `result`, and `cancel`. Enqueue accepts a
 stable task key, a JSON-object `args`, and options for `id` or `submission_id`,
-one-time delay/run-at, retries, timeout, queue, and Event-v1 exponential backoff.
-`submission_id` deterministically derives the durable job ID. If a reply is
+one-time delay/run-at, retries, timeout, queue, durability (`persistent` or
+`volatile`), and Event-v1 exponential backoff.
+`submission_id` deterministically derives the stable job ID. If a reply is
 lost after enqueue, the result is unknown: retry only with the same ID and
 definition, never with a fresh submission ID.
 
-Completion state and a size-bounded successful JSON return value are durable.
-The value survives restart and is retained with its completed job; compaction
-removes it when that job expires under terminal retention. Cron and interval
+For persistent jobs, completion state and a size-bounded successful JSON return
+value are durable. The value survives restart and is retained with its completed
+job; compaction removes it when that job expires under terminal retention.
+Volatile jobs and results remain in the current in-memory generation. Cron and interval
 schedules created through `schedule` are also durable and can be cancelled
 through `cancel_schedule`. Due occurrences retry temporary admission failure
 with a stable job ID, and schedule advancement is recorded only after durable

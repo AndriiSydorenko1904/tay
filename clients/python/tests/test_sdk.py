@@ -156,20 +156,36 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
         client._request = request  # type: ignore[method-assign]
 
-        @client.task(name="accounts.retry.v1", retries=3, backoff="exponential")
+        @client.task(
+            name="accounts.retry.v1",
+            retries=3,
+            backoff="exponential",
+            durability="volatile",
+        )
         def retry(account_id: str) -> None:
             return None
 
         await retry.enqueue("account-1")
-        await retry.enqueue("account-2", retries=0)
+        await retry.enqueue("account-2", retries=0, durability="persistent")
 
         self.assertEqual(
             [fields["options"] for _, fields in calls],
             [
-                {"retries": 3, "backoff": "exponential"},
-                {"retries": 0, "backoff": "exponential"},
+                {
+                    "retries": 3,
+                    "backoff": "exponential",
+                    "durability": "volatile",
+                },
+                {
+                    "retries": 0,
+                    "backoff": "exponential",
+                    "durability": "persistent",
+                },
             ],
         )
+
+        with self.assertRaisesRegex(ValidationError, "durability"):
+            await retry.enqueue("account-3", durability="sync")
 
     async def test_task_decorator_rejects_duplicate_names(self) -> None:
         client = Tay(mode="client")
@@ -234,31 +250,46 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
         async def request(method, path, body=None):
             calls.append((method, path, body))
-            return {"job_id": "http-job", "result": 42}
+            return {
+                "job_id": "http-job",
+                "job": {"id": "http-job", "durability": "volatile"},
+                "result": 42,
+            }
 
         client._request = request
-        job = await client.enqueue("tests.http", {"value": 1})
+        job = await client.enqueue("tests.http", {"value": 1}, durability="volatile")
         self.assertIsInstance(job, HTTPJobHandle)
         self.assertEqual(job.id, "http-job")
+        self.assertEqual(job.durability, "volatile")
         self.assertEqual(await job.result(), 42)
         self.assertEqual(calls[0][0:2], ("POST", "/jobs"))
+        self.assertEqual(calls[0][2]["options"], {"durability": "volatile"})
         self.assertEqual(calls[1][0:2], ("GET", "/jobs/http-job/result"))
 
     async def test_http_worker_task_accepts_retry_defaults(self) -> None:
         worker = TayHTTPWorker("http://127.0.0.1:8080")
 
-        @worker.task(name="tests.http.retry", retries=4, backoff="exponential")
+        @worker.task(
+            name="tests.http.retry",
+            retries=4,
+            backoff="exponential",
+            durability="volatile",
+        )
         def retry(value: int) -> int:
             return value
 
         self.assertEqual(retry.config.retries, 4)
         self.assertEqual(retry.config.backoff, "exponential")
+        self.assertEqual(retry.config.durability, "volatile")
 
         with self.assertRaisesRegex(ModeError, "does not support schedules"):
             await retry.schedule(cron="0 * * * *")
 
         with self.assertRaisesRegex(ValidationError, "0..65534"):
             worker.task(name="tests.invalid", retries=65_535)
+
+        with self.assertRaisesRegex(ValidationError, "durability"):
+            worker.task(name="tests.invalid.durability", durability="sync")
 
     async def test_http_response_limit_reads_only_one_extra_byte(self) -> None:
         module = importlib.import_module("tay.http")

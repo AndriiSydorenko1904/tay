@@ -15,10 +15,11 @@ from .errors import (
 )
 from .http import HTTPJobHandle, TayHTTP, TayHTTPWorker
 from .socket_path import resolve_socket_path
-from .task import Task
+from .task import Durability, Task
 
 __all__ = [
     "ConnectionLost",
+    "Durability",
     "HTTPJobHandle",
     "JobHandle",
     "ModeError",

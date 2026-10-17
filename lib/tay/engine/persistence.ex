@@ -13,14 +13,28 @@ defmodule Tay.Engine.Persistence do
   @memory_reclaim_idle_ms 1_000
   @segment_catalog_limit 128
 
-  def commit(state, previous, event, encoded \\ nil)
+  def commit(state, previous, event, encoded \\ nil) do
+    {durability, encoded} =
+      case encoded do
+        {:durability, mode, payload} when mode in [:persistent, :volatile] -> {mode, payload}
+        payload -> {nil, payload}
+      end
 
-  def commit(%{epoch_id: epoch_id} = state, previous, event, _encoded)
-      when is_binary(epoch_id) do
-    commit_v2(state, previous, event)
+    mode =
+      durability ||
+        if(previous, do: ProjectionState.durability(state, previous), else: :persistent)
+
+    case mode do
+      :volatile -> commit_volatile(state, previous, event)
+      :persistent -> commit_persistent(state, previous, event, encoded)
+    end
   end
 
-  def commit(state, previous, event, encoded) do
+  defp commit_persistent(%{epoch_id: epoch_id} = state, previous, event, _encoded)
+       when is_binary(epoch_id),
+       do: commit_v2(state, previous, event)
+
+  defp commit_persistent(state, previous, event, encoded) do
     ensure_generation_live!(state)
 
     with {:ok, {type, schema, payload}} <- encoded_event(state, event, encoded),
@@ -67,6 +81,12 @@ defmodule Tay.Engine.Persistence do
   def encoded_event(_state, event, payload), do: {:ok, {event.record_type, 1, payload}}
 
   def commit_auxiliary(state, event, job \\ nil) do
+    if job && ProjectionState.durability(state, job) == :volatile,
+      do: commit_volatile_auxiliary(state, event, job),
+      else: commit_persistent_auxiliary(state, event, job)
+  end
+
+  defp commit_persistent_auxiliary(state, event, job) do
     ensure_generation_live!(state)
 
     seed = %{
@@ -83,7 +103,7 @@ defmodule Tay.Engine.Persistence do
              Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: state.next_sequence}, seed),
-         :ok <- headroom(state, byte_size(payload), state.settlement_reserve) do
+         :ok <- headroom(state, byte_size(payload), state.persistent_settlement_reserve) do
       {writer_result, state} = append_record(state, type, 2, payload)
 
       case writer_result do
@@ -178,6 +198,83 @@ defmodule Tay.Engine.Persistence do
     end
   end
 
+  defp commit_volatile(state, previous, event) do
+    ensure_generation_live!(state)
+
+    with {:ok, mutation} <-
+           Mutation.from_event(event, previous, state.volatile_next_availability_order),
+         {:ok, _payload} <- Codec.encode_mutation(mutation, state.config.value_limits),
+         {:ok, predicted, next_order} <-
+           V2Reducer.apply_one(
+             previous,
+             mutation,
+             state.volatile_next_availability_order,
+             state.config.candidate_limits,
+             state.config.value_limits
+           ),
+         {:ok, job, budget} <-
+           ProjectionState.account_active(state, previous, predicted, :volatile) do
+      job = Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
+      :ok = ProjectionState.publish(state, previous, job, :volatile)
+      reserve = reservation_after(state, previous, event.record_type, :volatile)
+
+      next = %{
+        state
+        | volatile_ids: MapSet.put(state.volatile_ids, job.id),
+          volatile_next_availability_order: next_order,
+          budget: budget,
+          active_budget:
+            ProjectionState.replace_partition(
+              state.active_budget,
+              previous,
+              job,
+              :active,
+              :volatile
+            ),
+          volatile_terminal_budget:
+            ProjectionState.replace_partition(
+              state.volatile_terminal_budget,
+              previous,
+              job,
+              :terminal
+            ),
+          blocked: state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
+          settlement_reserve: reserve
+      }
+
+      next =
+        next
+        |> record_transition(telemetry_operation(event.record_type), previous, job)
+        |> maybe_schedule_memory_reclaim(previous, job)
+        |> ProjectionState.ensure_active_accounting!()
+
+      hook(state.config, :post_projection)
+      hook(state.config, {:execution, event.record_type, :post_projection})
+      {:ok, job, next}
+    end
+  end
+
+  defp commit_volatile_auxiliary(state, event, job) do
+    ensure_generation_live!(state)
+
+    seed = %{
+      Transition.candidate(state.config.candidate_limits, state.config.value_limits)
+      | jobs: %{job.id => job},
+        schedules: %{},
+        results: state.results
+    }
+
+    with {:ok, {_, 2, _}} <-
+           Event.encode(
+             event,
+             state.config.value_limits,
+             Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
+           ),
+         {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: 1}, seed) do
+      {:ok, %{state | results: candidate.results}}
+    end
+  end
+
   defp finish_commit(
          state,
          previous,
@@ -205,7 +302,8 @@ defmodule Tay.Engine.Persistence do
         next_sequence: state.next_sequence + 1,
         events_since_checkpoint: state.events_since_checkpoint + 1,
         next_availability_order: next_order || state.next_availability_order,
-        settlement_reserve: reserve,
+        settlement_reserve: reservation_after(state, previous, operation, :all),
+        persistent_settlement_reserve: reserve,
         history_bytes: state.history_bytes + history_delta(state, byte_size(payload)),
         segment_count: state.segment_count + receipt.segment_id - state.segment.id,
         segment: %{
@@ -256,12 +354,28 @@ defmodule Tay.Engine.Persistence do
     if LocalFence.live?(state.fence), do: :ok, else: exit(:execution_generation_revoked)
   end
 
-  defp reservation_after(state, _previous, 3), do: state.settlement_reserve + 1
+  defp reservation_after(state, previous, type),
+    do: reservation_after(state, previous, type, :persistent)
 
-  defp reservation_after(state, %{state: :executing}, type) when type in [4, 5],
-    do: state.settlement_reserve - 1
+  defp reservation_after(state, _previous, 3, :persistent),
+    do: state.persistent_settlement_reserve + 1
 
-  defp reservation_after(state, _previous, _type), do: state.settlement_reserve
+  defp reservation_after(state, %{state: :executing}, type, :persistent)
+       when type in [4, 5],
+       do: state.persistent_settlement_reserve - 1
+
+  defp reservation_after(state, _previous, _type, :persistent),
+    do: state.persistent_settlement_reserve
+
+  defp reservation_after(state, _previous, 3, mode) when mode in [:volatile, :all],
+    do: state.settlement_reserve + 1
+
+  defp reservation_after(state, %{state: :executing}, type, mode)
+       when type in [4, 5] and mode in [:volatile, :all],
+       do: state.settlement_reserve - 1
+
+  defp reservation_after(state, _previous, _type, mode) when mode in [:volatile, :all],
+    do: state.settlement_reserve
 
   defp telemetry_operation(1), do: :insert
   defp telemetry_operation(2), do: :make_available

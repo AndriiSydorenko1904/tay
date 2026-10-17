@@ -48,8 +48,7 @@ defmodule Tay.Engine.GroupCommitTest do
     end
 
     {:ok, root} =
-      EngineHelpers.start(path, @name,
-        group_commit_interval_ms: 20,
+      start_batched(path, 100, 20,
         writer_hook: hook,
         client_slots: 8
       )
@@ -78,7 +77,7 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   test "fsync failure returns no success for any request in the batch", %{path: path} do
-    {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 10)
+    {:ok, root} = start_batched(path, 100, 10)
     writer = :sys.get_state(EngineHelpers.engine(root)).writer
     :ok = Writer.inject_fault(writer, :sync, 1, :error, 5)
 
@@ -93,7 +92,7 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   test "drain flushes a pending batch instead of waiting for its interval", %{path: path} do
-    {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 1_000)
+    {:ok, root} = start_batched(path, 100, 1_000)
     insert = Task.async(fn -> Tay.insert(intent!(%{}), name: @name, timeout: 2_000) end)
     Process.sleep(20)
     started = System.monotonic_time(:millisecond)
@@ -115,15 +114,61 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   test "shutdown resolves pending callers without hanging", %{path: path} do
-    {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 1_000)
+    {:ok, root} = start_batched(path, 100, 1_000)
     insert = Task.async(fn -> Tay.insert(intent!(%{}), name: @name, timeout: 2_000) end)
     Process.sleep(20)
     EngineHelpers.stop(root)
     assert {:ok, _} = Task.yield(insert, 2_000)
   end
 
+  test "max_events flushes a bounded batch before the interval", %{path: path} do
+    parent = self()
+    hook = fn tag, _ -> if tag == :append_synced, do: send(parent, :fsync) end
+    {:ok, root} = start_batched(path, 3, 1_000, writer_hook: hook, client_slots: 8)
+
+    first = Task.async(fn -> Tay.insert(intent!(%{"n" => 1}), name: @name) end)
+    second = Task.async(fn -> Tay.insert(intent!(%{"n" => 2}), name: @name) end)
+    refute_receive :fsync, 50
+    third = Task.async(fn -> Tay.insert(intent!(%{"n" => 3}), name: @name) end)
+
+    assert_receive :fsync, 500
+
+    assert Enum.all?([first, second, third], fn task ->
+             match?({:ok, {:ok, _}}, Task.yield(task, 2_000))
+           end)
+
+    refute_receive :fsync, 50
+    EngineHelpers.stop(root)
+  end
+
+  test "volatile insert bypasses a pending persistent journal batch", %{path: path} do
+    parent = self()
+    hook = fn tag, _ -> if tag == :append_synced, do: send(parent, :fsync) end
+    {:ok, root} = start_batched(path, 100, 1_000, writer_hook: hook)
+
+    assert {:ok, %{durability: :volatile}} =
+             Tay.insert(intent!(%{}), name: @name, durability: :volatile)
+
+    refute_receive :fsync, 50
+    EngineHelpers.stop(root)
+  end
+
   defp intent!(args) do
     {:ok, intent} = EngineWorker.new(args)
     intent
+  end
+
+  defp start_batched(path, max_events, interval_ms, extra \\ []) do
+    previous = Application.fetch_env(:tay, :journal)
+    Application.put_env(:tay, :journal, batch: [max_events: max_events, interval_ms: interval_ms])
+
+    try do
+      EngineHelpers.start(path, @name, extra)
+    after
+      case previous do
+        {:ok, value} -> Application.put_env(:tay, :journal, value)
+        :error -> Application.delete_env(:tay, :journal)
+      end
+    end
   end
 end

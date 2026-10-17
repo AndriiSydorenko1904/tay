@@ -54,6 +54,7 @@ defmodule Tay.Engine.OnlineCheckpoint do
     )
 
     terminal_budget = terminal_budget(jobs)
+    volatile_results = Map.take(state.results, MapSet.to_list(state.volatile_ids))
 
     segment_catalog =
       recovered.store.segments
@@ -67,13 +68,14 @@ defmodule Tay.Engine.OnlineCheckpoint do
         next_sequence: recovered.next_sequence,
         next_availability_order: recovered.candidate.next_availability_order,
         schedules: recovered.candidate.schedules,
-        results: recovered.candidate.results,
+        results: Map.merge(recovered.candidate.results, volatile_results),
         segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
         segment_catalog: segment_catalog,
         history_bytes: recovered.total_segment_bytes,
         segment_count: recovered.segment_count,
         active_budget: state.active_budget,
         terminal_budget: terminal_budget,
+        volatile_terminal_budget: state.volatile_terminal_budget,
         budget: state.budget,
         terminal_stats: terminal_statistics(jobs),
         compaction_estimate:

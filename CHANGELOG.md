@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.1 — 2026-10-17
+
+### Added
+
+- Added immutable per-job `:persistent` and `:volatile` durability with
+  job-over-worker-over-global precedence. Volatile jobs share execution and
+  accounting machinery but remain entirely in the live ETS projection.
+- Added global persistent-journal group commit with bounded event-count and
+  interval thresholds while retaining post-fsync acknowledgements.
+- Updated `tay-client` to 1.4.0 with validated per-enqueue and decorated-task
+  durability options for both Unix-socket and HTTP producers.
+
 ## 1.5.0 — 2026-10-17
 
 ### Changed

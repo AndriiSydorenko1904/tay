@@ -4,7 +4,14 @@ defmodule Tay.ConfigTest do
   alias Tay.Config
 
   test "defaults leave the storage location unconfigured" do
-    assert {:ok, %Config{data_dir: nil, queues: [default: 10]}} = Config.new([])
+    assert {:ok,
+            %Config{
+              data_dir: nil,
+              queues: [default: 10],
+              durability: :persistent,
+              journal: [batch: [max_events: 1, interval_ms: 0]]
+            }} = Config.new([])
+
     assert {:ok, %Config{data_dir: nil}} = Config.new(data_dir: nil)
   end
 
@@ -46,8 +53,36 @@ defmodule Tay.ConfigTest do
     assert {:error, {:invalid_config, :options, "must not contain duplicate keys"}} =
              Config.new(data_dir: "first", data_dir: "second")
 
-    assert {:error, {:invalid_config, :options, "only :data_dir and :queues are supported"}} =
+    assert {:error, {:invalid_config, :options, "contains an unsupported key"}} =
              Config.new(typo: true)
+  end
+
+  test "validates selective durability and global journal batching" do
+    assert {:ok,
+            %Config{
+              durability: :volatile,
+              journal: [batch: [max_events: 100, interval_ms: 10]]
+            }} =
+             Config.new(
+               durability: :volatile,
+               journal: [batch: [max_events: 100, interval_ms: 10]]
+             )
+
+    for durability <- [:sync, :write, nil, "persistent"] do
+      assert {:error, {:invalid_config, :durability, _}} =
+               Config.new(durability: durability)
+    end
+
+    for journal <- [
+          [],
+          [batch: []],
+          [batch: [max_events: 0, interval_ms: 10]],
+          [batch: [max_events: 1, interval_ms: -1]],
+          [batch: [max_events: 1, interval_ms: 10, extra: true]],
+          [batch: [max_events: 1, interval_ms: 10], extra: true]
+        ] do
+      assert {:error, {:invalid_config, :journal, _}} = Config.new(journal: journal)
+    end
   end
 
   test "rejects invalid path types" do

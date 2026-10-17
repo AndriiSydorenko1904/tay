@@ -36,7 +36,7 @@ from .protocol import (
     validate_task_name,
 )
 from .socket_path import resolve_socket_path
-from .task import Task, TaskConfig
+from .task import Durability, Task, TaskConfig
 
 DEFAULT_MAX_RESULT_BYTES = 65_536
 DEFAULT_MAX_ERROR_BYTES = 8_192
@@ -44,6 +44,7 @@ _MODES = frozenset({"client", "embedded", "worker"})
 # Event-v1 freezes a single durable retry curve. Keep the SDK's accepted surface
 # aligned with the listener rather than accepting values it cannot represent.
 _BACKOFF_MODES = frozenset({"exponential"})
+_DURABILITY_MODES = frozenset({"persistent", "volatile"})
 _OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
 _CATCH_UP_POLICIES = frozenset({"latest", "all"})
 _TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
@@ -51,13 +52,14 @@ _TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
 
 @dataclass(frozen=True)
 class JobHandle:
-    """A lightweight, non-authoritative reference to a durable Tay job."""
+    """A lightweight, non-authoritative reference to a Tay job."""
 
     id: str
     _tay: Tay
+    durability: Durability | None = None
 
     async def status(self) -> Any:
-        """Fetch current durable status from Tay."""
+        """Fetch the job's current status from Tay."""
 
         reply = await self._tay._request("status", {"job_id": self.id})
         return reply.get("status", reply.get("job", reply))
@@ -236,6 +238,7 @@ class Tay:
         name: str | None = None,
         retries: int | None = None,
         backoff: str | Mapping[str, Any] | None = None,
+        durability: Durability | None = None,
         cron: str | None = None,
         every: Mapping[str, Any] | None = None,
         overlap: str | None = None,
@@ -246,6 +249,7 @@ class Tay:
         config = self._task_config(
             retries=retries,
             backoff=backoff,
+            durability=durability,
             cron=cron,
             every=every,
             overlap=overlap,
@@ -290,6 +294,12 @@ class Tay:
         elif backoff is not None:
             raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
 
+        durability = raw["durability"]
+        if durability is not None and durability not in _DURABILITY_MODES:
+            raise ValidationError(
+                f"durability must be one of {sorted(_DURABILITY_MODES)}"
+            )
+
         cron = raw["cron"]
         every = raw["every"]
         if cron is not None and every is not None:
@@ -317,6 +327,7 @@ class Tay:
         return TaskConfig(
             retries=retries,
             backoff=backoff,
+            durability=durability,
             cron=cron,
             every=every,
             overlap=overlap,
@@ -712,6 +723,7 @@ class Tay:
         args: Mapping[str, Any] | None = None,
         *,
         options: Mapping[str, Any] | None = None,
+        durability: Durability | None = None,
         **option_keywords: Any,
     ) -> JobHandle:
         """Submit a named task with a JSON-object argument map.
@@ -736,9 +748,18 @@ class Tay:
         if overlap:
             raise ValidationError(f"enqueue option supplied twice: {min(overlap)}")
         merged_options.update(option_keywords)
+        if durability is not None:
+            if "durability" in merged_options:
+                raise ValidationError("enqueue option supplied twice: durability")
+            merged_options["durability"] = durability
         backoff = merged_options.get("backoff")
         if not (backoff is None or backoff == "exponential"):
             raise ValidationError("Protocol v1 supports only backoff='exponential'")
+        durability = merged_options.get("durability")
+        if durability is not None and durability not in _DURABILITY_MODES:
+            raise ValidationError(
+                f"durability must be one of {sorted(_DURABILITY_MODES)}"
+            )
         payload = {
             "task": task_name,
             "args": normalize_json(args),
@@ -746,7 +767,7 @@ class Tay:
         }
         reply = await self._request("enqueue", payload)
         job_id = _extract_identifier(reply, "job_id", "job")
-        return JobHandle(job_id, self)
+        return JobHandle(job_id, self, _extract_job_durability(reply))
 
     async def schedule(
         self,
@@ -1134,3 +1155,12 @@ def _extract_identifier(reply: Mapping[str, Any], field: str, nested_field: str)
     if type(identifier) is not str or not identifier:
         raise ProtocolError(f"Tay reply did not include a valid {field}")
     return identifier
+
+
+def _extract_job_durability(reply: Mapping[str, Any]) -> Durability | None:
+    job = reply.get("job")
+    if isinstance(job, Mapping):
+        durability = job.get("durability")
+        if durability in _DURABILITY_MODES:
+            return durability
+    return None

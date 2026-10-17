@@ -10,6 +10,9 @@ defmodule Tay.Config do
       not resolve symlinks, create directories, or verify permissions.
     * `:queues` — a keyword list of unique atom names and positive integer
       concurrency limits, defaulting to `[default: 10]`. `[]` is allowed.
+    * `:durability` — default job durability, `:persistent` (the default) or
+      `:volatile`.
+    * `:journal` — global persistent-journal batching configuration.
 
   This module has no default storage path. This repository supplies provisional
   dev/test paths in `config/config.exs`; these are not production storage-location
@@ -17,11 +20,16 @@ defmodule Tay.Config do
   startup only. Production startup requires an explicitly configured path.
 
   Unknown and duplicate options are rejected. Queue strings are not converted
-  to atoms. Durability and storage-session options belong to the Engine and
-  explicit Storage APIs, not this foundation configuration.
+  to atoms. Storage-session durability (`:sync` or development-only `:write`)
+  remains an Engine/Storage option and is distinct from job durability.
   """
 
-  defstruct data_dir: nil, queues: [default: 10]
+  @default_journal [batch: [max_events: 1, interval_ms: 0]]
+  defstruct data_dir: nil,
+            queues: [default: 10],
+            durability: :persistent,
+            journal: @default_journal
+
   @environment Mix.env()
 
   @doc "Enforces the production storage-location requirement without filesystem I/O."
@@ -34,7 +42,9 @@ defmodule Tay.Config do
 
   @type t :: %__MODULE__{
           data_dir: String.t() | nil,
-          queues: [{atom(), pos_integer()}]
+          queues: [{atom(), pos_integer()}],
+          durability: :persistent | :volatile,
+          journal: keyword()
         }
 
   @type error :: {:invalid_config, atom(), String.t()}
@@ -47,8 +57,16 @@ defmodule Tay.Config do
   def new(options) do
     with :ok <- validate_options(options),
          {:ok, data_dir} <- normalize_data_dir(Keyword.get(options, :data_dir)),
-         {:ok, queues} <- validate_queues(Keyword.get(options, :queues, default_queues())) do
-      {:ok, %__MODULE__{data_dir: data_dir, queues: queues}}
+         {:ok, queues} <- validate_queues(Keyword.get(options, :queues, default_queues())),
+         {:ok, durability} <- validate_durability(Keyword.get(options, :durability, :persistent)),
+         {:ok, journal} <- validate_journal(Keyword.get(options, :journal, @default_journal)) do
+      {:ok,
+       %__MODULE__{
+         data_dir: data_dir,
+         queues: queues,
+         durability: durability,
+         journal: journal
+       }}
     end
   end
 
@@ -72,8 +90,8 @@ defmodule Tay.Config do
         length(keys) != length(Enum.uniq(keys)) ->
           invalid(:options, "must not contain duplicate keys")
 
-        Enum.any?(keys, &(&1 not in [:data_dir, :queues])) ->
-          invalid(:options, "only :data_dir and :queues are supported")
+        Enum.any?(keys, &(&1 not in [:data_dir, :queues, :durability, :journal])) ->
+          invalid(:options, "contains an unsupported key")
 
         true ->
           :ok
@@ -122,6 +140,27 @@ defmodule Tay.Config do
     else
       invalid(:queues, "must be a keyword list with atom queue names")
     end
+  end
+
+  defp validate_durability(mode) when mode in [:persistent, :volatile], do: {:ok, mode}
+  defp validate_durability(_), do: invalid(:durability, "must be :persistent or :volatile")
+
+  defp validate_journal(journal) do
+    with true <- exact_keyword?(journal, [:batch]),
+         batch <- Keyword.fetch!(journal, :batch),
+         true <- exact_keyword?(batch, [:max_events, :interval_ms]),
+         max_events <- Keyword.fetch!(batch, :max_events),
+         interval <- Keyword.fetch!(batch, :interval_ms),
+         true <- is_integer(max_events) and max_events in 1..65_536,
+         true <- is_integer(interval) and interval in 0..1_000 do
+      {:ok, [batch: [max_events: max_events, interval_ms: interval]]}
+    else
+      _ -> invalid(:journal, "must contain a bounded :batch configuration")
+    end
+  end
+
+  defp exact_keyword?(value, keys) do
+    Keyword.keyword?(value) and Enum.sort(Keyword.keys(value)) == Enum.sort(keys)
   end
 
   defp invalid(key, message), do: {:error, {:invalid_config, key, message}}

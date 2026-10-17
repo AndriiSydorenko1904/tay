@@ -38,7 +38,11 @@ except ModuleNotFoundError as exc:
     if missing != "cryptography" and not missing.startswith("cryptography."):
         raise
 
-from .client import _extract_identifier, _server_error_from_payload
+from .client import (
+    _extract_identifier,
+    _extract_job_durability,
+    _server_error_from_payload,
+)
 from .errors import (
     ConnectionLost,
     ProtocolError,
@@ -47,7 +51,9 @@ from .errors import (
     ValidationError,
 )
 from .protocol import json_bytes, normalize_json, validate_task_name
-from .task import Task, TaskConfig
+from .task import Durability, Task, TaskConfig
+
+_DURABILITY_MODES = frozenset({"persistent", "volatile"})
 
 # Buffer at most one MB plus one byte to detect an oversized response.
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
@@ -69,6 +75,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class HTTPJobHandle:
     id: str
     _tay: TayHTTP
+    durability: Durability | None = None
 
     async def status(self) -> Any:
         reply = await self._tay._request("GET", f"/jobs/{self.id}")
@@ -179,6 +186,7 @@ class TayHTTP:
         args: Mapping[str, Any] | None = None,
         *,
         options: Mapping[str, Any] | None = None,
+        durability: Durability | None = None,
         **option_keywords: Any,
     ) -> HTTPJobHandle:
         if args is None:
@@ -189,8 +197,16 @@ class TayHTTP:
         if merged.keys() & option_keywords.keys():
             raise ValidationError("enqueue option supplied twice")
         merged.update(option_keywords)
+        if durability is not None:
+            if "durability" in merged:
+                raise ValidationError("enqueue option supplied twice")
+            merged["durability"] = durability
         if merged.get("backoff") not in (None, "exponential"):
             raise ValidationError("Protocol v1 supports only backoff='exponential'")
+        if merged.get("durability") not in (None, *_DURABILITY_MODES):
+            raise ValidationError(
+                f"durability must be one of {sorted(_DURABILITY_MODES)}"
+            )
         reply = await self._request(
             "POST",
             "/jobs",
@@ -200,7 +216,11 @@ class TayHTTP:
                 "options": normalize_json(merged),
             },
         )
-        return HTTPJobHandle(_extract_identifier(reply, "job_id", "job"), self)
+        return HTTPJobHandle(
+            _extract_identifier(reply, "job_id", "job"),
+            self,
+            _extract_job_durability(reply),
+        )
 
     async def _request(
         self,
@@ -296,6 +316,7 @@ class TayHTTPWorker(TayHTTP):
         name: str | None = None,
         retries: int | None = None,
         backoff: str | None = None,
+        durability: Durability | None = None,
     ) -> Task | Callable[[Callable[..., Any]], Task]:
         """Register a callable, either as ``@worker.task`` or ``@worker.task(...)``."""
 
@@ -305,8 +326,12 @@ class TayHTTPWorker(TayHTTP):
             raise ValidationError("retries must be an integer in 0..65534")
         if backoff is not None and backoff != "exponential":
             raise ValidationError("backoff must be 'exponential'")
+        if durability is not None and durability not in _DURABILITY_MODES:
+            raise ValidationError(
+                f"durability must be one of {sorted(_DURABILITY_MODES)}"
+            )
 
-        config = TaskConfig(retries=retries, backoff=backoff)
+        config = TaskConfig(retries=retries, backoff=backoff, durability=durability)
 
         def register(fn: Callable[..., Any]) -> Task:
             if not callable(fn):

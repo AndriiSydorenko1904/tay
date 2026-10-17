@@ -8,6 +8,12 @@ defmodule Tay.Engine.JobBuilderTest do
     def perform(_), do: raise("Phase 4 must never execute")
   end
 
+  defmodule VolatileWorker do
+    use Tay.Worker, key: "volatile.worker", durability: :volatile
+    @impl true
+    def perform(_), do: raise("builder test must never execute")
+  end
+
   test "builder creates stable immutable definition, but never a durable/available job" do
     assert {:ok, job} = Worker.new(%{"x" => 1})
     assert {:ok, id} = JobID.decode(job.id)
@@ -22,6 +28,16 @@ defmodule Tay.Engine.JobBuilderTest do
     assert same.definition == job.definition
     assert {:ok, other} = Worker.new(%{"x" => 1})
     refute other.id == job.id
+  end
+
+  test "worker durability is a validated overridable insertion default" do
+    assert {:ok, %{durability: :volatile}} = VolatileWorker.new(%{})
+
+    assert {:ok, %{durability: :persistent}} =
+             VolatileWorker.new(%{}, durability: :persistent)
+
+    assert {:error, %{reason: :invalid_durability}} =
+             VolatileWorker.new(%{}, durability: :sync)
   end
 
   test "explicit bare worker metadata, UTC schedule, and invalid inputs" do

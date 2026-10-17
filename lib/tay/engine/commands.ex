@@ -125,11 +125,13 @@ defmodule Tay.Engine.Commands do
     end
   end
 
-  def execute({:insert, raw, worker, bytes}, state, insert_new, _cancel_task) do
+  def execute({:insert, raw, worker, bytes, durability}, state, insert_new, _cancel_task) do
+    durability = durability || state.config.job_durability
     existing = ProjectionState.lookup(state, raw)
+    existing_durability = if(existing, do: ProjectionState.durability(state, existing))
 
     cond do
-      existing && existing.definition_bytes == bytes ->
+      existing && existing.definition_bytes == bytes && existing_durability == durability ->
         {{:ok, ProjectionState.view(state, existing)}, state}
 
       existing ->
@@ -139,7 +141,7 @@ defmodule Tay.Engine.Commands do
         failure(state, :unavailable, :draining, raw)
 
       true ->
-        insert_new.(state, raw, worker, bytes)
+        insert_new.(state, raw, worker, bytes, durability)
     end
   end
 

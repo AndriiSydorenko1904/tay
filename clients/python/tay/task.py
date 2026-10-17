@@ -7,7 +7,7 @@ import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from .errors import ModeError, ValidationError
 from .protocol import normalize_json, validate_task_name
@@ -15,6 +15,8 @@ from .protocol import normalize_json, validate_task_name
 if TYPE_CHECKING:  # pragma: no cover
     from .client import JobHandle, ScheduleHandle, Tay
     from .http import HTTPJobHandle
+
+Durability: TypeAlias = Literal["persistent", "volatile"]
 
 
 class _TaskOwner(Protocol):
@@ -38,6 +40,7 @@ _ENQUEUE_OPTION_NAMES = frozenset(
         "priority",
         "queue",
         "timeout",
+        "durability",
     }
 )
 
@@ -48,6 +51,7 @@ class TaskConfig:
 
     retries: int | None = None
     backoff: str | Mapping[str, Any] | None = None
+    durability: Durability | None = None
     cron: str | None = None
     every: Mapping[str, Any] | None = None
     overlap: str | None = None
@@ -59,6 +63,8 @@ class TaskConfig:
             options["retries"] = self.retries
         if self.backoff is not None:
             options["backoff"] = self.backoff
+        if self.durability is not None:
+            options["durability"] = self.durability
         return options
 
     @property
@@ -70,7 +76,7 @@ class Task:
     """A registered Python callable.
 
     Calling a ``Task`` runs the original Python callable locally.  Calling its
-    async :meth:`enqueue` method submits a durable remote job instead.
+    async :meth:`enqueue` method submits a remote job instead.
     """
 
     def __init__(
@@ -192,7 +198,7 @@ class Task:
         return self.function(*positional, **keyword)
 
     async def enqueue(self, *args: Any, **kwargs: Any) -> JobHandle | HTTPJobHandle:
-        """Submit a durable job using this task's stable identity."""
+        """Submit a job using this task's stable identity."""
 
         task_kwargs, options = self._split_enqueue_kwargs(kwargs)
         options = {**self.config.execution_options(), **options}

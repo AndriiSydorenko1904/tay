@@ -4,7 +4,7 @@ defmodule Tay.Executor.Job do
   alias Tay.{Error, Job, JobID}
   alias Tay.Event.V2
 
-  @options [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at]
+  @options [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at, :durability]
 
   # Builds the existing immutable Event-v1 definition.  The remote marker is
   # checked again by the Engine; this helper merely keeps all producer paths
@@ -23,7 +23,8 @@ defmodule Tay.Executor.Job do
              queue: Keyword.get(options, :queue, :default),
              max_attempts: max_attempts,
              timeout_ms: Keyword.get(options, :timeout_ms, 30_000),
-             scheduled_at: scheduled_at
+             scheduled_at: scheduled_at,
+             durability: Keyword.get(options, :durability)
            ) do
       {:ok, job}
     else

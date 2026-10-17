@@ -92,6 +92,19 @@ The producer surface is asynchronous: `enqueue`, `JobHandle.status()`,
 supported Protocol v1 requests. Use a stable `submission_id` when retrying an
 enqueue whose connection outcome is unknown.
 
+Choose job durability per submission with `durability="persistent"` (the
+default) or `durability="volatile"`:
+
+```python
+durable = await tay.enqueue("reports.rebuild.v1", {}, durability="persistent")
+ephemeral = await tay.enqueue("cache.warm.v1", {}, durability="volatile")
+assert ephemeral.durability == "volatile"
+```
+
+Volatile jobs use Tay's normal execution, retry, cancellation, and accounting
+paths, but never enter persistent storage and disappear with the Engine's
+in-memory generation.
+
 For `TayHTTPWorker`, tasks declared before `await worker.register()` are
 advertised when it registers. `register()` only creates the remote worker
 session; use `serve_forever()` to register and then continuously claim and
@@ -119,14 +132,19 @@ def refresh(account_id: str, force: bool = False) -> None:
     ...
 
 
-@tay.task(name="accounts.refresh.v1", retries=3, backoff="exponential")
+@tay.task(
+    name="accounts.refresh.v1",
+    retries=3,
+    backoff="exponential",
+    durability="volatile",
+)
 def public_refresh(account_id: str) -> None: ...
 
 
 job = await refresh.enqueue("acct-42", force=True)
 ```
 
-`retries` and `backoff` declared on either `Tay.task` or
+`retries`, `backoff`, and `durability` declared on either `Tay.task` or
 `TayHTTPWorker.task` become defaults when the decorated task enqueues a job.
 Pass an option such as `retries=0` to `task.enqueue()` to override a default for
 one submission.

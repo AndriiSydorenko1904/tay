@@ -1229,7 +1229,8 @@ defmodule Tay.Executor.Server do
   defp schedule_id, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
 
   defp enqueue_options(options) when is_map(options) and not is_struct(options) do
-    allowed = ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue)
+    allowed =
+      ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue durability)
 
     if Enum.all?(Map.keys(options), &(&1 in allowed)) do
       with {:ok, id} <- submission_id(options),
@@ -1238,14 +1239,16 @@ defmodule Tay.Executor.Server do
            {:ok, retries} <- integer_option(options, "retries", 0, 65_534),
            {:ok, timeout} <- timeout(options),
            :ok <- backoff(options),
-           {:ok, queue} <- queue(options) do
+           {:ok, queue} <- queue(options),
+           {:ok, durability} <- durability(options) do
         values = [
           id: id,
           retries: retries,
           timeout_ms: timeout,
           queue: queue,
           delay_ms: delay,
-          scheduled_at: scheduled
+          scheduled_at: scheduled,
+          durability: durability
         ]
 
         {:ok, Enum.reject(values, fn {_key, value} -> is_nil(value) end)}
@@ -1347,6 +1350,15 @@ defmodule Tay.Executor.Server do
     end
   end
 
+  defp durability(options) do
+    case Map.get(options, "durability") do
+      nil -> {:ok, nil}
+      "persistent" -> {:ok, :persistent}
+      "volatile" -> {:ok, :volatile}
+      _ -> {:error, :invalid_durability}
+    end
+  end
+
   defp public_job(job) do
     %{
       "id" => job.id,
@@ -1356,6 +1368,7 @@ defmodule Tay.Executor.Server do
       "attempt" => job.attempt,
       "max_attempts" => job.max_attempts,
       "queue" => to_string(job.queue),
+      "durability" => Atom.to_string(job.durability),
       "scheduled_at" => present_time(job.scheduled_at),
       "completed_at" => present_time(job.completed_at),
       "errors" => job.errors

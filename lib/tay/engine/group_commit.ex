@@ -1,7 +1,42 @@
 defmodule Tay.Engine.GroupCommit do
   @moduledoc false
 
+  alias Tay.Engine.ProjectionState
   alias Tay.Storage.Writer
+
+  def batchable?(state, {:insert, _, _, _, requested}) do
+    mode = requested || state.config.job_durability
+    enabled?(state) and mode == :persistent
+  end
+
+  def batchable?(state, {operation, id, _revision}) when operation in [:cancel, :retry] do
+    case ProjectionState.lookup(state, id) do
+      nil -> false
+      job -> enabled?(state) and ProjectionState.durability(state, job) == :persistent
+    end
+  end
+
+  def batchable?(state, {operation, _, _, _, _, _}) when operation == :advance_schedule,
+    do: enabled?(state)
+
+  def batchable?(state, {operation, _, _, _}) when operation == :cancel_schedule,
+    do: enabled?(state)
+
+  def batchable?(state, {:register_schedule, _}), do: enabled?(state)
+
+  def batchable?(_, _), do: false
+
+  defp enabled?(state) do
+    batch = state.config.journal_batch
+
+    state.config.durability == :sync and state.mode == :ready and
+      (batch.max_events > 1 or batch.interval_ms > 0)
+  end
+
+  def full?(%{group_commit: %{commands: commands}, config: %{journal_batch: batch}}),
+    do: length(commands) >= batch.max_events
+
+  def full?(_), do: false
 
   def enqueue(%{group_commit: nil} = state, permit, intent, from) do
     token = make_ref()
@@ -10,7 +45,7 @@ defmodule Tay.Engine.GroupCommit do
       Process.send_after(
         self(),
         {:flush_group_commit, token},
-        state.config.group_commit_interval_ms
+        state.config.journal_batch.interval_ms
       )
 
     %{

@@ -51,10 +51,10 @@ restart-durable, while job completion remains durable.
   claim. Windows, network/object storage, distributed store ownership, and
   unvalidated production filesystems are unsupported. Production builds do
   not silently downgrade to `:write`.
-- Strict `:sync` enqueue group commit is optional and defaults to an immediate
-  per-event fsync (`group_commit_interval_ms: 0`). Positive intervals preserve
-  record order and acknowledge a batch only after its fsync; they do not change
-  the on-disk format or recovery compatibility.
+- Strict `:sync` journal group commit is optional and defaults to an immediate
+  per-event fsync (`journal: [batch: [max_events: 1, interval_ms: 0]]`).
+  Batches preserve record order and acknowledge a batch only after its fsync;
+  they do not change the on-disk format or recovery compatibility.
 - External effects are at-least-once, not exactly-once. There is no live
   backup, automatic torn-tail repair, or multi-host executor protocol. Durable
   successful results are bounded JSON values retained with completed jobs, not

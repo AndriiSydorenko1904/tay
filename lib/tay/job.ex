@@ -12,13 +12,16 @@ defmodule Tay.Job do
   explicitly to change that intent. Recovered views can lack runtime mappings.
   """
 
+  @default_max_attempts 10
+  @default_timeout_ms 30_000
+
   defstruct id: nil,
             worker: nil,
             queue: :default,
             args: %{},
             state: nil,
             attempt: 0,
-            max_attempts: 10,
+            max_attempts: @default_max_attempts,
             inserted_at: nil,
             scheduled_at: nil,
             attempted_at: nil,
@@ -27,7 +30,8 @@ defmodule Tay.Job do
             worker_key: nil,
             definition: nil,
             revision: nil,
-            timeout_ms: 30_000
+            timeout_ms: @default_timeout_ms,
+            durability: nil
 
   @type t :: %__MODULE__{
           id: binary() | nil,
@@ -45,12 +49,13 @@ defmodule Tay.Job do
           worker_key: String.t() | nil,
           definition: map() | nil,
           revision: term(),
-          timeout_ms: pos_integer()
+          timeout_ms: pos_integer(),
+          durability: :persistent | :volatile | nil
         }
 
   alias Tay.{Error, JobID}
   alias Tay.Event.{Value, V2}
-  @options [:id, :worker_key, :queue, :max_attempts, :timeout_ms, :scheduled_at]
+  @options [:id, :worker_key, :queue, :max_attempts, :timeout_ms, :scheduled_at, :durability]
 
   def new(worker, args, options \\ []) do
     with true <-
@@ -59,14 +64,15 @@ defmodule Tay.Job do
          defaults = defaults(worker),
          true <- valid_options?(defaults) || {:error, :invalid_worker_defaults},
          opts = Keyword.merge(defaults, options),
+         true <- durability?(Keyword.get(opts, :durability)) || {:error, :invalid_durability},
          {:ok, scheduled} <- schedule(Keyword.get(opts, :scheduled_at)),
          definition = %{
            "definition_version" => 1,
            "args" => args,
            "worker_key" => Keyword.get(opts, :worker_key),
            "queue_key" => queue_key(Keyword.get(opts, :queue, :default)),
-           "max_attempts" => Keyword.get(opts, :max_attempts, 10),
-           "timeout_ms" => Keyword.get(opts, :timeout_ms, 30_000),
+           "max_attempts" => Keyword.get(opts, :max_attempts, @default_max_attempts),
+           "timeout_ms" => Keyword.get(opts, :timeout_ms, @default_timeout_ms),
            "scheduled_at" => scheduled,
            "retry_policy" => V2.policy()
          },
@@ -84,7 +90,8 @@ defmodule Tay.Job do
          definition: definition,
          max_attempts: definition["max_attempts"],
          timeout_ms: definition["timeout_ms"],
-         scheduled_at: scheduled
+         scheduled_at: scheduled,
+         durability: Keyword.get(opts, :durability)
        }}
     else
       {:error, {:resource_limit, reason}} -> {:error, Error.new(:resource_limit, reason)}
@@ -93,7 +100,9 @@ defmodule Tay.Job do
   end
 
   defp defaults(worker) do
-    if function_exported?(worker, :__tay_worker__, 0), do: worker.__tay_worker__(), else: []
+    if Code.ensure_loaded?(worker) and function_exported?(worker, :__tay_worker__, 0),
+      do: worker.__tay_worker__(),
+      else: []
   end
 
   defp valid_options?(opts),
@@ -101,6 +110,9 @@ defmodule Tay.Job do
       Keyword.keyword?(opts) and
         length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))) and
         Enum.all?(Keyword.keys(opts), &(&1 in @options))
+
+  defp durability?(nil), do: true
+  defp durability?(mode), do: mode in [:persistent, :volatile]
 
   defp queue_key(queue) when is_atom(queue) and queue not in [nil, false, true],
     do: Atom.to_string(queue)
@@ -118,7 +130,15 @@ defmodule Tay.Job do
   defp schedule(n), do: if(V2.time?(n), do: {:ok, n}, else: {:error, :invalid_schedule})
 
   @doc false
-  def view(job, registry, queues, store_id, generation, epoch_id \\ nil) do
+  def view(
+        job,
+        registry,
+        queues,
+        store_id,
+        generation,
+        epoch_id \\ nil,
+        durability \\ :persistent
+      ) do
     d = job.definition
 
     %__MODULE__{
@@ -141,7 +161,8 @@ defmodule Tay.Job do
         if(epoch_id,
           do: {:tay_revision_v2, store_id, epoch_id, job.id, generation, job.revision},
           else: {:tay_revision, store_id, job.id, generation, job.revision}
-        )
+        ),
+      durability: durability
     }
   end
 

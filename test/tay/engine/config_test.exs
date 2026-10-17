@@ -1,5 +1,5 @@
 defmodule Tay.Engine.ConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   alias Tay.Engine.Config
 
   test "appendix option names, defaults, exact domains and conservative cross-budget checks" do
@@ -82,6 +82,24 @@ defmodule Tay.Engine.ConfigTest do
                  validated_filesystem: true
                )
     end
+  end
+
+  test "uses global journal batching while preserving the legacy interval option" do
+    previous = Application.fetch_env(:tay, :journal)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:tay, :journal, value)
+        :error -> Application.delete_env(:tay, :journal)
+      end
+    end)
+
+    Application.put_env(:tay, :journal, batch: [max_events: 100, interval_ms: 10])
+    base = [data_dir: "tmp/config-only", durability: :write]
+    assert {:ok, %{journal_batch: %{max_events: 100, interval_ms: 10}}} = Config.new(base)
+
+    assert {:ok, %{journal_batch: %{max_events: 64, interval_ms: 25}}} =
+             Config.new(base ++ [group_commit_interval_ms: 25])
   end
 
   test "HTTP binds to loopback unless complete mTLS is configured" do

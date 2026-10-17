@@ -114,6 +114,7 @@ defmodule Tay.Engine do
           budget: budget,
           active_budget: active_budget,
           terminal_budget: terminal_budget,
+          volatile_terminal_budget: %{count: 0, bytes: 0},
           compaction_estimate:
             Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
               CompactionEstimate.replace(acc, nil, job)
@@ -131,6 +132,8 @@ defmodule Tay.Engine do
           store_id: summary.store_id,
           epoch_id: Map.get(summary, :epoch_id),
           next_availability_order: Map.get(candidate, :next_availability_order, 1),
+          volatile_next_availability_order: 1,
+          volatile_ids: MapSet.new(),
           next_sequence: summary.arithmetic_next_sequence,
           segment: Map.take(summary.highest, [:id, :bytes, :count, :state]),
           segment_catalog: Enum.take(summary.segment_catalog, -@segment_catalog_limit),
@@ -146,6 +149,7 @@ defmodule Tay.Engine do
           snapshot_pending: nil,
           snapshot_dirty: false,
           settlement_reserve: 0,
+          persistent_settlement_reserve: 0,
           mode: :ready,
           paused:
             if(config.start_paused, do: MapSet.new(Map.keys(config.queues)), else: MapSet.new()),
@@ -228,11 +232,6 @@ defmodule Tay.Engine do
       Persistence.ensure_generation_live!(s)
 
       case intent do
-        {:insert, _, _, _}
-        when s.config.durability == :sync and s.config.group_commit_interval_ms > 0 and
-               s.mode == :ready ->
-          {:noreply, GroupCommit.enqueue(s, permit, intent, from)}
-
         {:drain, deadline} when is_integer(deadline) ->
           s = flush_group_commit(s)
 
@@ -249,11 +248,17 @@ defmodule Tay.Engine do
           {:noreply, publish(complete_drains(next))}
 
         _ ->
-          s = flush_group_commit(s)
-          {reply, next} = command(intent, s)
-          next = complete_drains(next)
-          reply_command(next, permit, from, reply)
-          {:noreply, wake_controls(next)}
+          if GroupCommit.batchable?(s, intent) do
+            next = GroupCommit.enqueue(s, permit, intent, from)
+            next = if GroupCommit.full?(next), do: flush_group_commit(next), else: next
+            {:noreply, wake_controls(next)}
+          else
+            s = flush_group_commit(s)
+            {reply, next} = command(intent, s)
+            next = complete_drains(next)
+            reply_command(next, permit, from, reply)
+            {:noreply, wake_controls(next)}
+          end
       end
     else
       {:noreply, s}
@@ -616,7 +621,7 @@ defmodule Tay.Engine do
   defp command_state?(_), do: false
 
   defp command(intent, state),
-    do: Commands.execute(intent, state, &insert_new/4, &cancel_task/2)
+    do: Commands.execute(intent, state, &insert_new/5, &cancel_task/2)
 
   defp reply_command(s, {slot, token}, from, reply) do
     hook(s.config, :pre_reply)
@@ -669,7 +674,7 @@ defmodule Tay.Engine do
   defp reconcile(s) do
     match = [{{:"$1", %{state: :executing}}, [], [true]}]
     count = :ets.select_count(s.projection.jobs, match)
-    s = %{s | settlement_reserve: count}
+    s = %{s | settlement_reserve: count, persistent_settlement_reserve: count}
     :ok = GenServer.call(s.guardian, {:reconciliation, ProjectionState.snapshot(s)})
 
     selection =
@@ -886,7 +891,7 @@ defmodule Tay.Engine do
          {:ok, predicted} <- predict_execution(s, job, started),
          :ok <- settlement_fits(s, predicted, at),
          {:ok, {_, _, payload}} <- execution_encoding(s, job, started),
-         :ok <- Persistence.headroom(s, byte_size(payload), s.settlement_reserve + 1) do
+         :ok <- execution_headroom(s, job, payload) do
       case dispatch do
         {:local, worker} ->
           options = %{
@@ -911,6 +916,12 @@ defmodule Tay.Engine do
     else
       _ -> {:error, s}
     end
+  end
+
+  defp execution_headroom(s, job, payload) do
+    if ProjectionState.durability(s, job) == :persistent,
+      do: Persistence.headroom(s, byte_size(payload), s.persistent_settlement_reserve + 1),
+      else: :ok
   end
 
   defp dispatch_for(s, job) do
@@ -1325,7 +1336,7 @@ defmodule Tay.Engine do
     end
   end
 
-  defp insert_new(s, raw, worker, bytes) do
+  defp insert_new(s, raw, worker, bytes, durability) do
     c = s.config
 
     with {:ok, definition} <- Value.decode(bytes, c.value_limits),
@@ -1351,7 +1362,8 @@ defmodule Tay.Engine do
          },
          {:ok, {1, 1, payload}} <- Event.encode(event, limits, c.max_insert_payload_bytes),
          {:ok, _} <- Value.measure(definition["args"], limits, c.max_insert_args_bytes),
-         {:ok, job, next} <- Persistence.commit(s, nil, event, payload) do
+         {:ok, job, next} <-
+           Persistence.commit(s, nil, event, {:durability, durability, payload}) do
       {{:ok, ProjectionState.view(next, job)}, next}
     else
       {:error, {:resource_limit, key}} ->

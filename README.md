@@ -51,7 +51,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.1
 ```
 
 For a ready-made Tay deployment example:
@@ -87,7 +87,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.1
 ```
 
 ## Why Tay?
@@ -257,6 +257,29 @@ Once the Engine is ready, submit and inspect a job:
 
 IO.inspect(current.state)
 ```
+
+Jobs are persistent by default. Selective durability is resolved from the
+individual insertion, then the worker default, then the global default:
+
+```elixir
+config :tay,
+  durability: :persistent,
+  journal: [batch: [max_events: 100, interval_ms: 10]]
+
+defmodule MyApp.EphemeralWorker do
+  use Tay.Worker, key: "ephemeral.v1", durability: :volatile
+  # ...
+end
+
+Tay.insert(MyApp.EphemeralWorker, %{}, durability: :persistent)
+```
+
+`:persistent` jobs are acknowledged only after their journal mutations meet
+the Engine's storage-durability contract and are recovered after restart.
+`:volatile` jobs use the same queues, state machine, retries, cancellation, and
+resource limits, but remain solely in the current Engine's ETS projection. They
+never enter Store V2, terminal disk storage, checkpoints, or compaction output,
+and disappear when that in-memory generation is lost.
 
 List and summarize jobs through the bounded public inspection API:
 
@@ -436,7 +459,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.5.0
+ghcr.io/andriisydorenko1904/tay:1.5.1
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -446,7 +469,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:1.5.0
+docker pull ghcr.io/andriisydorenko1904/tay:1.5.1
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:
@@ -548,10 +571,13 @@ requirements are documented explicitly.
 Production `:sync` requires Linux and an explicitly validated supported local
 filesystem.
 
-Strict-durability Engines may set `group_commit_interval_ms: 0..1000` (default
-`0`). A positive value batches concurrent enqueue writes behind one fsync and
-returns every ACK only after that fsync succeeds. `durability: :write` is never
-delayed by this setting.
+Strict-durability Engines use the global
+`journal: [batch: [max_events: n, interval_ms: milliseconds]]` configuration.
+Persistent commands are flushed when either bound is reached, and every ACK is
+returned only after the shared fsync succeeds. The defaults (`max_events: 1`,
+`interval_ms: 0`) preserve immediate commits. Volatile jobs never join a journal
+batch. The legacy Engine option `group_commit_interval_ms` remains accepted for
+backward compatibility; `durability: :write` is never delayed by batching.
 
 Store-v2 Engines may also set `compaction: [checkpoint_interval: milliseconds]`
 (`0` disables it). Periodic checkpoints publish a verified semantic snapshot

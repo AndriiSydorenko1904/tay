@@ -54,14 +54,15 @@ defmodule Tay do
     with {:ok, raw} <- JobID.decode(job.id),
          true <-
            (is_atom(job.worker) and job.worker not in [false, true]) || {:error, :invalid_worker},
-         {:ok, name, timeout} <- request_options(options),
+         {:ok, durability, request_options} <- insert_options(options),
+         {:ok, name, timeout} <- request_options(request_options),
          {:ok, meta} <- ready(name),
          {:ok, bytes} <- Value.encode(job.definition, meta.value_limits),
          true <- V2.definition?(job.definition) || {:error, :invalid_definition} do
       Admission.request(
         name,
         meta,
-        {:insert, raw, job.worker, bytes},
+        {:insert, raw, job.worker, bytes, durability || job.durability},
         byte_size(bytes) + 256,
         :insert,
         job.id,
@@ -74,6 +75,26 @@ defmodule Tay do
 
   def insert(_, _), do: {:error, Error.new(:invalid, :invalid_job, nil, :insert)}
 
+  def insert(worker, args, options)
+      when is_atom(worker) and is_map(args) and is_list(options) do
+    builder_keys = [
+      :id,
+      :worker_key,
+      :queue,
+      :max_attempts,
+      :timeout_ms,
+      :scheduled_at,
+      :durability
+    ]
+
+    {builder, request} = Keyword.split(options, builder_keys)
+
+    case Job.new(worker, args, builder) do
+      {:ok, job} -> insert(job, request)
+      {:error, _} = error -> error
+    end
+  end
+
   @doc """
   Enqueues a portable task for a currently configured Protocol v1 listener.
 
@@ -85,7 +106,15 @@ defmodule Tay do
   def enqueue(task, args, options \\ []) do
     with true <- Keyword.keyword?(options) || {:error, :invalid_options},
          {job_options, request_options} <-
-           Keyword.split(options, [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at]),
+           Keyword.split(options, [
+             :id,
+             :queue,
+             :retries,
+             :timeout_ms,
+             :delay_ms,
+             :scheduled_at,
+             :durability
+           ]),
          {:ok, job} <- Tay.Executor.Job.new(task, args, job_options) do
       insert(job, request_options)
     else
@@ -486,6 +515,18 @@ defmodule Tay do
            (is_nil(timeout) or (is_integer(timeout) and timeout in 1..4_294_967_295)),
          do: {:ok, name, timeout},
          else: {:error, :invalid_options}
+    else
+      {:error, :invalid_options}
+    end
+  end
+
+  defp insert_options(options) do
+    if Config.keyword?(options, [:name, :timeout, :durability]) do
+      durability = Keyword.get(options, :durability)
+
+      if is_nil(durability) or durability in [:persistent, :volatile],
+        do: {:ok, durability, Keyword.delete(options, :durability)},
+        else: {:error, :invalid_options}
     else
       {:error, :invalid_options}
     end

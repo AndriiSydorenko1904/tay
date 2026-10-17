@@ -867,11 +867,10 @@ defmodule Tay.Engine.Lifecycle do
 
   defp dispatch_commands(s, _limit), do: s
 
-  defp engine_command_window(%{
-         config: %{durability: :sync, group_commit_interval_ms: interval, client_slots: slots}
-       })
-       when interval > 0,
-       do: slots
+  defp engine_command_window(%{config: %{durability: :sync} = config}) do
+    batch = config.journal_batch
+    if batch.max_events > 1 or batch.interval_ms > 0, do: config.client_slots, else: 1
+  end
 
   defp engine_command_window(_), do: 1
 

@@ -47,12 +47,15 @@ Malformed explicit values fail startup. The socket must be absolute, at most
 `0660` so a worker can use a shared group where the deployment platform
 supports it.
 
-With a positive group-commit interval, concurrent durable enqueue requests are
+Concurrent persistent commands are flushed when the global batch reaches
+`max_events` or its `interval_ms` expires, whichever happens first. They are
 written in arrival order and acknowledged together only after their batch fsync
-succeeds. It trades up to the configured wait for fewer fsync calls. It does not
-change recovery, capacity accounting, or failure semantics; a write/fsync error
-fails the generation without returning success for that batch. Embedded Engines
-use the `:group_commit_interval_ms` option. `durability: :write` remains immediate.
+succeeds. Batching does not change recovery, capacity accounting, or failure
+semantics; a write/fsync error fails the generation without returning success
+for that batch. Embedded Engines use global
+`journal: [batch: [max_events: n, interval_ms: milliseconds]]` configuration.
+The legacy `:group_commit_interval_ms` Engine option remains accepted.
+`durability: :write` remains immediate.
 
 `TAY_MAX_STATE_BYTES` uses binary multipliers: `KB` is 1,024 bytes, `MB` is
 1,024 KB, and `GB` is 1,024 MB. For example, `5GB` is `5_368_709_120` bytes.
@@ -136,7 +139,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.5.0
+  ghcr.io/andriisydorenko1904/tay:1.5.1
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
