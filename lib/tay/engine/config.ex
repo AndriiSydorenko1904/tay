@@ -1,7 +1,7 @@
 defmodule Tay.Engine.Config do
   @moduledoc "Validated, non-persisted Engine configuration. No storage is opened here."
   alias Tay.Event.V2
-  alias Tay.Executor.SocketPath
+  alias Tay.Gateway.Config, as: GatewayConfig
   alias Tay.Storage.Recovery
   @environment Mix.env()
   @bytes_per_mebibyte 1_048_576
@@ -10,10 +10,6 @@ defmodule Tay.Engine.Config do
   @default_insert_payload_bytes 1 * @bytes_per_mebibyte
   @default_insert_args_bytes 256 * @bytes_per_kibibyte
   @default_client_bytes 64 * @bytes_per_mebibyte
-  @default_executor_frame_bytes 1 * @bytes_per_mebibyte
-  @default_executor_result_bytes 64 * @bytes_per_kibibyte
-  @default_executor_error_bytes 8 * @bytes_per_kibibyte
-  @default_http_body_bytes 1 * @bytes_per_mebibyte
   # Shared hard ceiling for bounded Event values and public protocol bodies.
   @max_protocol_payload_bytes 16 * @bytes_per_mebibyte
   @max_rotation_target_bytes 1_024 * @bytes_per_mebibyte
@@ -27,49 +23,34 @@ defmodule Tay.Engine.Config do
   @group_commit_interval_range 0..1_000
   @execution_batch_range 1..1_024
   @execution_wake_range_ms 1..1_000
-  @max_executor_socket_bytes 100
-  @tcp_port_range 1..65_535
-  @defaults %{
-    name: Tay.Engine,
-    workers: %{},
-    durability: :sync,
-    group_commit_interval_ms: 0,
-    initialize: :never,
-    validated_filesystem: false,
-    rotation_target_bytes: @default_rotation_target_bytes,
-    storage_timeout: 10_000,
-    recovery: [],
-    max_insert_payload_bytes: @default_insert_payload_bytes,
-    max_insert_args_bytes: @default_insert_args_bytes,
-    insert_value_depth: 32,
-    insert_value_nodes: 10_000,
-    max_state_bytes: @default_max_state_bytes,
-    client_slots: 64,
-    client_bytes: @default_client_bytes,
-    caller_timeout: 5_000,
-    execution_batch: 32,
-    execution_wake_ms: 1_000,
-    # A local Protocol v1 listener is automatic by default. Set an absolute
-    # path to override discovery, or explicitly pass nil to disable it.
-    executor_socket: :auto,
-    executor_socket_mode: 0o600,
-    executor_max_frame_bytes: @default_executor_frame_bytes,
-    executor_max_connections: 128,
-    executor_max_tasks_per_connection: 256,
-    executor_result_bytes: @default_executor_result_bytes,
-    executor_error_bytes: @default_executor_error_bytes,
-    executor_max_results: 10_000,
-    http_port: nil,
-    http_ip: "127.0.0.1",
-    http_max_body_bytes: @default_http_body_bytes,
-    http_tls_certfile: nil,
-    http_tls_keyfile: nil,
-    http_tls_cacertfile: nil,
-    start_paused: false,
-    max_history_bytes: :infinity,
-    max_segments: :infinity,
-    compaction: []
-  }
+  @defaults Map.merge(
+              %{
+                name: Tay.Engine,
+                workers: %{},
+                durability: :sync,
+                group_commit_interval_ms: 0,
+                initialize: :never,
+                validated_filesystem: false,
+                rotation_target_bytes: @default_rotation_target_bytes,
+                storage_timeout: 10_000,
+                recovery: [],
+                max_insert_payload_bytes: @default_insert_payload_bytes,
+                max_insert_args_bytes: @default_insert_args_bytes,
+                insert_value_depth: 32,
+                insert_value_nodes: 10_000,
+                max_state_bytes: @default_max_state_bytes,
+                client_slots: 64,
+                client_bytes: @default_client_bytes,
+                caller_timeout: 5_000,
+                execution_batch: 32,
+                execution_wake_ms: 1_000,
+                start_paused: false,
+                max_history_bytes: :infinity,
+                max_segments: :infinity,
+                compaction: []
+              },
+              GatewayConfig.defaults()
+            )
 
   def new(options) do
     allowed =
@@ -97,14 +78,10 @@ defmodule Tay.Engine.Config do
              @defaults,
              options |> Keyword.drop([:max_jobs, :max_state_nodes]) |> Map.new()
            ),
-         {:ok, socket} <- SocketPath.resolve(config.executor_socket),
-         config =
-           config
-           |> Map.put(:executor_socket, socket.path)
-           |> Map.put(:executor_socket_private_directory, socket.private_directory),
+         {:ok, config} <- GatewayConfig.resolve(config, base.data_dir),
          {:ok, recovery} <- Recovery.options(config.recovery),
          {:ok, compaction} <- Tay.Engine.CompactionConfig.new(config.compaction),
-         :ok <- validate(config, recovery) do
+         :ok <- validate(Map.put(config, :data_dir, base.data_dir), recovery) do
       queues = Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
       queue_limits = Map.new(base.queues, fn {name, limit} -> {Atom.to_string(name), limit} end)
 
@@ -192,14 +169,7 @@ defmodule Tay.Engine.Config do
       :client_bytes,
       :caller_timeout,
       :insert_value_depth,
-      :insert_value_nodes,
-      :executor_max_frame_bytes,
-      :executor_max_connections,
-      :executor_max_tasks_per_connection,
-      :executor_result_bytes,
-      :executor_error_bytes,
-      :executor_max_results,
-      :http_max_body_bytes
+      :insert_value_nodes
     ]
 
     nonnegative_fields = [
@@ -227,19 +197,7 @@ defmodule Tay.Engine.Config do
   end
 
   defp validate_transport(c) do
-    validate_all([
-      executor_socket?(c.executor_socket),
-      c.executor_socket_mode in [0o600, 0o660],
-      is_boolean(c.executor_socket_private_directory),
-      executor_socket_outside_data_dir?(c.executor_socket, c.data_dir),
-      c.executor_max_frame_bytes <= @max_protocol_payload_bytes,
-      c.executor_result_bytes <= c.executor_max_frame_bytes,
-      c.executor_error_bytes <= c.executor_max_frame_bytes,
-      http_port?(c.http_port),
-      http_ip?(c.http_ip),
-      http_tls?(c),
-      c.http_max_body_bytes <= @max_protocol_payload_bytes
-    ])
+    GatewayConfig.validate(c, c.data_dir)
   end
 
   defp validate_storage(c) do
@@ -298,61 +256,6 @@ defmodule Tay.Engine.Config do
   defp valid(true), do: :ok
   defp valid(false), do: {:error, :invalid_engine_options}
   defp validate_all(checks), do: valid(Enum.all?(checks))
-
-  defp executor_socket?(nil), do: true
-
-  defp executor_socket?(path) when is_binary(path) do
-    path != "" and byte_size(path) <= @max_executor_socket_bytes and String.valid?(path) and
-      not String.contains?(path, <<0>>) and Path.type(path) == :absolute
-  end
-
-  defp http_port?(nil), do: true
-  defp http_port?(port), do: integer_in?(port, @tcp_port_range)
-
-  defp http_ip?(ip) when is_binary(ip) do
-    match?({:ok, _}, :inet.parse_address(String.to_charlist(ip)))
-  end
-
-  defp http_ip?(_), do: false
-
-  defp http_tls?(config) do
-    files = [config.http_tls_certfile, config.http_tls_keyfile, config.http_tls_cacertfile]
-
-    cond do
-      Enum.all?(files, &is_nil/1) -> is_nil(config.http_port) or http_loopback?(config.http_ip)
-      Enum.all?(files, &tls_path?/1) -> not is_nil(config.http_port)
-      true -> false
-    end
-  end
-
-  defp tls_path?(path) when is_binary(path),
-    do:
-      path != "" and String.valid?(path) and not String.contains?(path, <<0>>) and
-        Path.type(path) == :absolute
-
-  defp tls_path?(_), do: false
-
-  defp http_loopback?(ip) do
-    case :inet.parse_address(String.to_charlist(ip)) do
-      {:ok, {127, _, _, _}} -> true
-      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
-      _ -> false
-    end
-  end
-
-  # Storage owns and validates every entry below data_dir. Keep a runtime Unix
-  # socket beside it, never inside it, so recovery cannot mistake it for foreign
-  # storage state or require a weakened directory scan.
-  defp executor_socket_outside_data_dir?(nil, _data_dir), do: true
-
-  defp executor_socket_outside_data_dir?(socket, data_dir)
-       when is_binary(socket) and is_binary(data_dir) do
-    socket = Path.expand(socket)
-    data_dir = Path.expand(data_dir)
-    socket != data_dir and not String.starts_with?(socket, data_dir <> "/")
-  end
-
-  defp executor_socket_outside_data_dir?(_, _), do: false
 
   # Compile only the applicable branch. Test hooks remain unavailable to
   # production configuration and no environment check runs on a live request.

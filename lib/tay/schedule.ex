@@ -1,7 +1,7 @@
 defmodule Tay.Schedule do
   @moduledoc false
 
-  alias Tay.Executor.Protocol
+  alias Tay.Protocol.V1, as: Protocol
   alias Tay.Schedule.Cron
 
   @overlap ~w(allow skip queue)
@@ -25,6 +25,8 @@ defmodule Tay.Schedule do
     :registered_at,
     :options
   ]
+
+  @type t :: %__MODULE__{}
 
   # This is the canonical, serializable schedule definition used by both the
   # Protocol listener and the durable event layer. `next_at` is always UTC ms.

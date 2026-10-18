@@ -2,7 +2,8 @@ defmodule Tay.Executor.Connection do
   @moduledoc false
   use GenServer
 
-  alias Tay.Executor.{Protocol, Server}
+  alias Tay.Executor.{Protocol, SessionAPI}
+  alias Tay.Protocol.Service
 
   @send_timeout 5_000
 
@@ -53,7 +54,9 @@ defmodule Tay.Executor.Connection do
              {:error, :invalid_result_limit},
          true <-
            (is_integer(options.error_bytes) and options.error_bytes >= 1) ||
-             {:error, :invalid_error_limit} do
+             {:error, :invalid_error_limit},
+         true <- is_pid(options.schedule_coordinator) || {:error, :invalid_schedule_coordinator},
+         true <- is_atom(options.engine_name) || {:error, :invalid_engine_name} do
       {:ok,
        %{
          socket: options.socket,
@@ -65,6 +68,8 @@ defmodule Tay.Executor.Connection do
          max_pending_requests: options.max_pending_requests,
          result_bytes: options.result_bytes,
          error_bytes: options.error_bytes,
+         engine_name: options.engine_name,
+         schedule_coordinator: options.schedule_coordinator,
          buffer: <<>>,
          session: nil,
          pending: %{}
@@ -164,7 +169,7 @@ defmodule Tay.Executor.Connection do
   @impl true
   def terminate(_reason, s) do
     Enum.each(s.pending, fn {_request_id, timer} -> Process.cancel_timer(timer) end)
-    Server.disconnected(s.server, self())
+    SessionAPI.disconnected(s.server, self())
     _ = :gen_tcp.close(s.socket)
     :ok
   end
@@ -178,7 +183,7 @@ defmodule Tay.Executor.Connection do
 
   defp request(%{"type" => "hello"} = message, %{session: nil} = s) do
     with {:ok, session} <- hello(message),
-         :ok <- Server.hello(s.server, self(), session),
+         :ok <- SessionAPI.hello(s.server, self(), session),
          {:ok, next} <- send_wire(%{s | session: session}, hello_reply(message, session)) do
       {:ok, next}
     else
@@ -210,7 +215,7 @@ defmodule Tay.Executor.Connection do
 
   defp request(%{"type" => "register_tasks"} = message, s) do
     with {:ok, tasks} <- task_list(message, s.max_tasks),
-         :ok <- Server.register_tasks(s.server, self(), tasks),
+         :ok <- SessionAPI.register_tasks(s.server, self(), tasks),
          {:ok, next} <-
            send_wire(
              s,
@@ -226,7 +231,7 @@ defmodule Tay.Executor.Connection do
 
   defp request(%{"type" => "unregister_tasks"} = message, s) do
     with {:ok, tasks} <- task_list(message, s.max_tasks),
-         :ok <- Server.unregister_tasks(s.server, self(), tasks),
+         :ok <- SessionAPI.unregister_tasks(s.server, self(), tasks),
          {:ok, next} <-
            send_wire(
              s,
@@ -263,7 +268,7 @@ defmodule Tay.Executor.Connection do
 
   defp request(%{"type" => "started"} = message, s) do
     with {:ok, reservation_id, execution} <- execution_context(message),
-         :ok <- Server.started(s.server, self(), reservation_id, execution),
+         :ok <- SessionAPI.started(s.server, self(), reservation_id, execution),
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
@@ -277,7 +282,8 @@ defmodule Tay.Executor.Connection do
     with {:ok, reservation_id, execution} <- execution_context(message),
          result = Map.get(message, "result"),
          {:ok, _} <- Protocol.json_bytes(result, s.result_bytes),
-         :ok <- Server.complete(s.server, self(), reservation_id, execution, {:success, result}),
+         :ok <-
+           SessionAPI.complete(s.server, self(), reservation_id, execution, {:success, result}),
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
@@ -291,7 +297,8 @@ defmodule Tay.Executor.Connection do
   defp request(%{"type" => "failed"} = message, s) do
     with {:ok, reservation_id, execution} <- execution_context(message),
          {:ok, error} <- failure(message, s.error_bytes),
-         :ok <- Server.complete(s.server, self(), reservation_id, execution, {:failure, error}),
+         :ok <-
+           SessionAPI.complete(s.server, self(), reservation_id, execution, {:failure, error}),
          {:ok, next} <- send_wire(s, Protocol.reply("accepted", Protocol.request_id(message))) do
       {:ok, next}
     else
@@ -317,8 +324,23 @@ defmodule Tay.Executor.Connection do
       protocol_reply(s, message, "too_many_requests")
     else
       timer = Process.send_after(self(), {:request_timeout, request_id}, s.request_timeout)
-      :ok = Server.request(s.server, self(), message)
+      connection = self()
+
+      context = %{
+        core: {Tay.Core.Local, s.engine_name},
+        schedule: {Tay.Schedule.Local, s.schedule_coordinator}
+      }
+
+      Task.start(fn -> reply_request(context, connection, request_id, message) end)
       {:ok, %{s | pending: Map.put(s.pending, request_id, timer)}}
+    end
+  end
+
+  defp reply_request(context, connection, request_id, message) do
+    case Service.handle(context, message) do
+      {:ok, reply_type, fields} -> reply(connection, request_id, reply_type, fields)
+      {:error, code} -> error(connection, request_id, code)
+      {:error, code, fields} -> error(connection, request_id, code, fields)
     end
   end
 

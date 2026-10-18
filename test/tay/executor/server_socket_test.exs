@@ -117,9 +117,9 @@ defmodule Tay.Executor.ServerSocketTest do
     }
 
     assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
-    first_entry = :sys.get_state(server).schedules["stable-schedule"]
+    first_entry = schedule_state(server).schedules["stable-schedule"]
     assert {:ok, second} = GenServer.call(server, {:put_schedule, fields})
-    second_entry = :sys.get_state(server).schedules["stable-schedule"]
+    second_entry = schedule_state(server).schedules["stable-schedule"]
 
     assert second == first
     assert second_entry.timer == first_entry.timer
@@ -127,7 +127,7 @@ defmodule Tay.Executor.ServerSocketTest do
 
     changed = put_in(fields, ["every"], %{"hours" => 12})
     assert {:ok, _} = GenServer.call(server, {:put_schedule, changed})
-    changed_entry = :sys.get_state(server).schedules["stable-schedule"]
+    changed_entry = schedule_state(server).schedules["stable-schedule"]
     refute changed_entry.timer == first_entry.timer
     assert changed_entry.schedule.expression == 12 * 60 * 60 * 1_000
 
@@ -153,7 +153,7 @@ defmodule Tay.Executor.ServerSocketTest do
     assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
     EngineHelpers.stop(root)
     Process.sleep(100)
-    entry = :sys.get_state(server).schedules["retrying-schedule"]
+    entry = schedule_state(server).schedules["retrying-schedule"]
 
     assert entry.schedule.next_at == first["next_at"]
     assert is_reference(entry.timer)
@@ -176,6 +176,13 @@ defmodule Tay.Executor.ServerSocketTest do
     end)
 
     root
+  end
+
+  defp schedule_state(server) do
+    server
+    |> :sys.get_state()
+    |> Map.fetch!(:schedule_coordinator)
+    |> :sys.get_state()
   end
 
   test "invalid occurrence options reject the declaration", %{socket: socket} do
@@ -210,7 +217,7 @@ defmodule Tay.Executor.ServerSocketTest do
     }
 
     assert {:error, "unavailable"} = GenServer.call(server, {:put_schedule, fields})
-    assert :sys.get_state(server).schedules == %{}
+    assert schedule_state(server).schedules == %{}
     GenServer.stop(server)
   end
 end

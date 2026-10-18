@@ -3,6 +3,7 @@ defmodule Tay.HTTP.Router do
   @behaviour Plug
 
   alias Tay.Executor.{Protocol, Server}
+  alias Tay.Protocol.Service
 
   @impl Plug
   def init(options), do: options
@@ -90,7 +91,7 @@ defmodule Tay.HTTP.Router do
         error(conn, "invalid_job_id")
 
       true ->
-        Server.protocol_request(options.executor_server, options.engine_name, %{
+        Service.handle(service_context(options), %{
           "type" => kind,
           "job_id" => id
         })
@@ -104,7 +105,7 @@ defmodule Tay.HTTP.Router do
     with {:ok, request} <- decode_object(body),
          :ok <- enqueue_request(request),
          result <-
-           Server.protocol_request(options.executor_server, options.engine_name, %{
+           Service.handle(service_context(options), %{
              "type" => "enqueue",
              "task" => request["task"],
              "args" => request["args"],
@@ -255,6 +256,9 @@ defmodule Tay.HTTP.Router do
        do: :ok,
        else: {:error, "invalid_enqueue"}
   end
+
+  defp service_context(options),
+    do: %{core: {Tay.Core.Local, options.engine_name}, executor: options.executor_server}
 
   defp respond(conn, {:ok, type, fields}, status, limit) do
     value = Map.put(fields, "type", type)

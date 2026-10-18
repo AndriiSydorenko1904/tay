@@ -1,15 +1,13 @@
 defmodule Tay.Executor.Server do
   @moduledoc false
   use GenServer
-  import Bitwise
-
-  alias Tay.Executor.{Connection, Protocol}
+  alias Tay.Executor.{Connection, Protocol, Registry}
+  alias Tay.Executor.Transport.Unix
   alias Tay.HTTP.WorkerSession
-  alias Tay.Schedule
+  alias Tay.Schedule.Coordinator
 
   @call_timeout 5_000
   @request_timeout 30_000
-  @schedule_retry_ms 1_000
   @max_pending_requests 64
 
   # Executor sessions are deliberately children of an execution generation. Jobs are
@@ -73,68 +71,40 @@ defmodule Tay.Executor.Server do
         @call_timeout
       )
 
-  def request(server, connection, message),
-    do: GenServer.cast(server, {:request, connection, message})
-
-  @doc false
-  # The socket connection and HTTP API use this request path.
-  # Both transports retain identical producer semantics.
-  def protocol_request(server, engine_name, %{"type" => type} = message) do
-    case type do
-      "enqueue" -> enqueue(engine_name, message)
-      "status" -> status(engine_name, message)
-      "cancel" -> cancel_job(engine_name, message)
-      "result" -> result(server, engine_name, message)
-      "schedule" -> schedule(server, message)
-      "cancel_schedule" -> cancel_schedule(server, message)
-      _ -> {:error, "unsupported_request"}
-    end
-  catch
-    :exit, _ -> {:error, "unavailable"}
-    _, _ -> {:error, "invalid_request"}
+  def register_schedule(server, fields) do
+    with {:ok, coordinator} <- GenServer.call(server, :schedule_coordinator, @call_timeout),
+         do: Coordinator.register(coordinator, fields)
   end
 
-  def protocol_request(_, _, _), do: {:error, "invalid_request"}
+  def cancel_schedule(server, id) do
+    with {:ok, coordinator} <- GenServer.call(server, :schedule_coordinator, @call_timeout),
+         do: Coordinator.cancel(coordinator, id)
+  end
 
   def disconnected(server, connection), do: GenServer.cast(server, {:disconnected, connection})
 
   @impl true
   def init(options) do
     with {:ok, config} <- config(options),
-         {:ok, listener, acceptor, acceptor_monitor} <- start_socket(config) do
-      schedules =
-        Map.get(config, :schedules, %{})
-        |> Map.values()
-        |> Enum.reject(& &1.cancelled_at)
-        |> Enum.reduce(%{}, fn stored, acc ->
-          case Schedule.from_durable(stored) do
-            {:ok, schedule} ->
-              Map.put(
-                acc,
-                schedule.id,
-                arm_schedule(schedule, schedule.options, System.system_time(:millisecond))
-              )
-
-            _ ->
-              acc
-          end
-        end)
-
+         {:ok, coordinator, owns_coordinator} <- schedule_coordinator(config),
+         {:ok, listener, acceptor, acceptor_monitor} <-
+           Unix.open(config.socket_path, config.socket_mode, config.private_directory, self()) do
       state =
-        Map.merge(config, %{
-          listener: listener,
-          acceptor: acceptor,
-          acceptor_monitor: acceptor_monitor,
-          http_workers: %{},
-          connections: %{},
-          monitors: %{},
-          reservations: %{},
-          schedules: schedules,
-          schedule_operation: nil,
-          schedule_operations: :queue.new(),
-          results: Map.get(config, :results, %{}),
-          result_order: :queue.new()
-        })
+        Map.merge(
+          Map.merge(Map.delete(config, :schedules), %{
+            schedule_coordinator: coordinator,
+            owns_coordinator: owns_coordinator
+          }),
+          %{
+            listener: listener,
+            acceptor: acceptor,
+            acceptor_monitor: acceptor_monitor,
+            http_workers: %{},
+            connections: %{},
+            monitors: %{},
+            reservations: %{}
+          }
+        )
 
       send(config.engine, {:executor_server_ready, self()})
       {:ok, state, {:continue, :release_startup_heap}}
@@ -147,20 +117,6 @@ defmodule Tay.Executor.Server do
   def handle_continue(:release_startup_heap, state) do
     :erlang.garbage_collect()
     {:noreply, state}
-  end
-
-  defp start_socket(%{socket_path: nil}), do: {:ok, nil, nil, nil}
-
-  defp start_socket(config) do
-    with :ok <- prepare_socket(config.socket_path, config.private_directory),
-         {:ok, listener} <- listen(config.socket_path),
-         :ok <- File.chmod(config.socket_path, config.socket_mode) do
-      server = self()
-      acceptor = spawn_link(fn -> acceptor_wait(server, listener) end)
-      :ok = :gen_tcp.controlling_process(listener, acceptor)
-      send(acceptor, :accept)
-      {:ok, listener, acceptor, Process.monitor(acceptor)}
-    end
   end
 
   @impl true
@@ -177,7 +133,9 @@ defmodule Tay.Executor.Server do
         request_timeout: @request_timeout,
         max_pending_requests: @max_pending_requests,
         result_bytes: s.result_bytes,
-        error_bytes: s.error_bytes
+        error_bytes: s.error_bytes,
+        engine_name: s.engine_name,
+        schedule_coordinator: s.schedule_coordinator
       }
 
       case Connection.start_link(options) do
@@ -218,60 +176,29 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  def handle_info({:schedule_due, id, due}, s) do
-    case Map.get(s.schedules, id) do
-      %{schedule: %{next_at: ^due} = schedule, options: options} ->
-        enqueue_schedule(self(), s.engine_name, schedule, options, due)
-        entry = %{schedule: schedule, options: options, timer: nil}
-        {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
-
-      _ ->
-        {:noreply, s}
-    end
-  end
-
-  def handle_info({:schedule_enqueue_result, id, due, result}, s) do
-    case Map.get(s.schedules, id) do
-      %{schedule: %{next_at: ^due} = schedule, options: options} ->
-        case result do
-          :ok ->
-            case Schedule.advance_after_delivery(schedule, due, System.system_time(:millisecond)) do
-              {:ok, advanced} ->
-                now = System.system_time(:millisecond)
-                operation = {:advance, schedule, advanced, options, due, now}
-                {:noreply, enqueue_schedule_operation(s, operation)}
-
-              {:error, _} ->
-                {:noreply, drop_schedule(s, id)}
-            end
-
-          :retry ->
-            timer = Process.send_after(self(), {:schedule_due, id, due}, @schedule_retry_ms)
-            entry = %{schedule: schedule, options: options, timer: timer}
-            {:noreply, %{s | schedules: Map.put(s.schedules, id, entry)}}
-        end
-
-      _ ->
-        {:noreply, s}
-    end
-  end
-
-  def handle_info(
-        {:schedule_operation_result, token, result},
-        %{schedule_operation: {token, operation}} = s
-      ) do
-    next = complete_schedule_operation(s, operation, result)
-    {:noreply, continue_schedule_operations(%{next | schedule_operation: nil})}
-  end
-
   def handle_info(_, s), do: {:noreply, s}
 
   @impl true
-  def handle_call(:available_tasks, _from, s), do: {:reply, capabilities(s), s}
+  def handle_call(:available_tasks, _from, s),
+    do: {:reply, Registry.capabilities(s.connections), s}
+
+  def handle_call(:schedule_coordinator, _from, s),
+    do: {:reply, {:ok, s.schedule_coordinator}, s}
+
+  def handle_call({:put_schedule, fields}, from, s) do
+    reply_async(from, fn -> Coordinator.register(s.schedule_coordinator, fields) end)
+    {:noreply, s}
+  end
+
+  def handle_call({:cancel_schedule, id}, from, s) do
+    reply_async(from, fn -> Coordinator.cancel(s.schedule_coordinator, id) end)
+    {:noreply, s}
+  end
 
   def handle_call({:register_http_worker, runtime_id, tasks, capacity, queue}, _from, s) do
     valid =
-      Protocol.identifier?(runtime_id) and valid_tasks?(tasks, s.max_tasks_per_connection) and
+      Protocol.identifier?(runtime_id) and
+        Registry.valid_tasks?(tasks, s.max_tasks_per_connection) and
         tasks != [] and is_integer(capacity) and capacity in 1..256 and
         Protocol.task_key?(queue) and map_size(s.connections) < s.max_connections
 
@@ -311,17 +238,10 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  def handle_call({:result, job_id}, _from, s) when is_binary(job_id) do
-    case Map.fetch(s.results, job_id) do
-      {:ok, result} -> {:reply, {:ok, result}, s}
-      :error -> {:reply, :missing, s}
-    end
-  end
-
   def handle_call({:hello, connection, session}, _from, s) do
     case Map.fetch(s.connections, connection) do
       {:ok, %{mode: nil} = entry} ->
-        case valid_session?(session) do
+        case Registry.valid_session?(session) do
           true -> {:reply, :ok, put_connection(s, connection, Map.merge(entry, session))}
           false -> {:reply, {:error, "invalid_hello"}, s}
         end
@@ -335,8 +255,9 @@ defmodule Tay.Executor.Server do
   end
 
   def handle_call({:register_tasks, connection, tasks}, _from, s) do
-    with {:ok, entry} <- executor_connection(s, connection),
-         true <- valid_tasks?(tasks, s.max_tasks_per_connection) || {:error, "invalid_tasks"} do
+    with {:ok, entry} <- Registry.executor(s.connections, connection),
+         true <-
+           Registry.valid_tasks?(tasks, s.max_tasks_per_connection) || {:error, "invalid_tasks"} do
       state =
         put_connection(s, connection, %{
           entry
@@ -351,8 +272,9 @@ defmodule Tay.Executor.Server do
   end
 
   def handle_call({:unregister_tasks, connection, tasks}, _from, s) do
-    with {:ok, entry} <- executor_connection(s, connection),
-         true <- valid_tasks?(tasks, s.max_tasks_per_connection) || {:error, "invalid_tasks"} do
+    with {:ok, entry} <- Registry.executor(s.connections, connection),
+         true <-
+           Registry.valid_tasks?(tasks, s.max_tasks_per_connection) || {:error, "invalid_tasks"} do
       state =
         put_connection(s, connection, %{
           entry
@@ -366,26 +288,8 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  def handle_call({:put_schedule, fields}, from, s) do
-    id = Map.get(fields, "declaration_id") || schedule_id()
-    now = System.system_time(:millisecond)
-
-    with {:ok, schedule} <- Schedule.new(id, fields, now),
-         options <- Map.get(fields, "options", %{}),
-         {:ok, _} <- enqueue_options(options) do
-      operation = {:register, schedule, options, now, from}
-      {:noreply, enqueue_schedule_operation(s, operation)}
-    else
-      _ -> {:reply, {:error, "invalid_schedule"}, s}
-    end
-  end
-
-  def handle_call({:cancel_schedule, id}, from, s) do
-    {:noreply, enqueue_schedule_operation(s, {:cancel, id, from})}
-  end
-
   def handle_call({:reserve, task, queue}, _from, s) do
-    case choose_executor(s, task, queue) do
+    case Registry.choose(s.connections, task, queue) do
       nil ->
         {:reply, {:error, :unavailable}, s}
 
@@ -467,15 +371,9 @@ defmodule Tay.Executor.Server do
 
   def handle_call({:complete, connection, reservation, execution, outcome}, _from, s) do
     case Map.get(s.reservations, reservation) do
-      %{connection: ^connection, status: status, execution_id: ^execution} = value
+      %{connection: ^connection, status: status, execution_id: ^execution}
       when status in [:inflight, :started] ->
         state = put_in(s.reservations[reservation].status, :completed)
-
-        state =
-          if match?({:success, _}, outcome),
-            do: put_result(state, value.job_id, outcome),
-            else: state
-
         send(s.engine, {:executor_completion, self(), reservation, outcome})
         {:reply, :ok, state}
 
@@ -514,34 +412,25 @@ defmodule Tay.Executor.Server do
   @impl true
   def handle_cast({:disconnected, connection}, s), do: {:noreply, drop_connection(s, connection)}
 
-  def handle_cast({:request, connection, message}, s) do
-    if Map.has_key?(s.connections, connection) do
-      server = self()
-      Task.start(fn -> reply_request(server, s.engine_name, connection, message) end)
-    end
-
-    {:noreply, s}
-  end
-
   @impl true
   def terminate(_reason, s) do
     Enum.each(Map.keys(s.connections), &Connection.close/1)
-    if is_port(s.listener), do: :gen_tcp.close(s.listener)
 
-    if is_pid(s.acceptor) do
-      Process.unlink(s.acceptor)
-      Process.exit(s.acceptor, :shutdown)
-    end
+    if s.owns_coordinator and Process.alive?(s.schedule_coordinator),
+      do: GenServer.stop(s.schedule_coordinator)
 
-    if s.socket_path, do: remove_socket(s.socket_path)
-    :ok
+    Unix.close(s.listener, s.acceptor, s.socket_path)
   end
 
   defp config(options) when is_map(options) do
     with true <- is_pid(options.engine) || {:error, :invalid_engine},
          true <- is_atom(options.engine_name) || {:error, :invalid_engine_name},
          true <-
-           (is_nil(options.socket_path) or socket_path?(options.socket_path)) ||
+           (is_nil(Map.get(options, :schedule_coordinator)) or
+              is_pid(options.schedule_coordinator)) || {:error, :invalid_schedule_coordinator},
+         true <- is_map(Map.get(options, :schedules, %{})) || {:error, :invalid_durable_state},
+         true <-
+           (is_nil(options.socket_path) or Unix.valid_path?(options.socket_path)) ||
              {:error, :invalid_socket_path},
          true <- options.socket_mode in [0o600, 0o660] || {:error, :invalid_socket_mode},
          true <- is_boolean(options.private_directory) || {:error, :invalid_socket_directory_mode},
@@ -557,19 +446,16 @@ defmodule Tay.Executor.Server do
              {:error, :invalid_result_limit},
          true <-
            valid_positive?(options.error_bytes, options.max_frame_bytes) ||
-             {:error, :invalid_error_limit},
-         true <- valid_positive?(options.max_results, 100_000) || {:error, :invalid_result_count},
-         true <-
-           (is_map(Map.get(options, :schedules, %{})) and
-              is_map(Map.get(options, :results, %{}))) ||
-             {:error, :invalid_durable_state} do
+             {:error, :invalid_error_limit} do
       {:ok,
        options
+       |> Map.put_new(:schedule_coordinator, nil)
        |> Map.put_new(:schedules, %{})
-       |> Map.put_new(:results, %{})
        |> Map.take([
          :engine,
          :engine_name,
+         :schedule_coordinator,
+         :schedules,
          :socket_path,
          :socket_mode,
          :private_directory,
@@ -577,10 +463,7 @@ defmodule Tay.Executor.Server do
          :max_connections,
          :max_tasks_per_connection,
          :result_bytes,
-         :error_bytes,
-         :max_results,
-         :schedules,
-         :results
+         :error_bytes
        ])}
     else
       {:error, _} = error -> error
@@ -591,117 +474,22 @@ defmodule Tay.Executor.Server do
   defp config(_), do: {:error, :invalid_server_options}
   defp valid_positive?(value, maximum), do: is_integer(value) and value in 1..maximum
 
-  defp socket_path?(path) when is_binary(path) do
-    Path.type(path) == :absolute and String.valid?(path) and byte_size(path) in 1..100 and
-      not String.contains?(path, <<0>>)
-  end
+  defp schedule_coordinator(%{schedule_coordinator: coordinator}) when is_pid(coordinator),
+    do: {:ok, coordinator, false}
 
-  defp socket_path?(_), do: false
-
-  defp prepare_socket(path, private_directory) do
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- protect_directory(Path.dirname(path), private_directory) do
-      case File.lstat(path) do
-        {:error, :enoent} ->
-          :ok
-
-        {:ok, stat} ->
-          if(is_socket?(stat),
-            do: reclaim_stale_socket(path),
-            else: {:error, :socket_path_exists}
-          )
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+  defp schedule_coordinator(config) do
+    case Coordinator.start_link(%{
+           core: {Tay.Core.Local, config.engine_name},
+           schedules: config.schedules
+         }) do
+      {:ok, coordinator} -> {:ok, coordinator, true}
+      {:error, _} = error -> error
     end
   end
 
-  defp protect_directory(_path, false), do: :ok
-  defp protect_directory(path, true), do: File.chmod(path, 0o700)
-
-  # A pathname socket can outlive an unorderly listener death, but it can also
-  # name a healthy Tay instance. Probe it before unlinking: only an explicit
-  # connection refusal is stale. Permission, protocol and transient failures
-  # deliberately preserve the existing object rather than risking disruption.
-  defp reclaim_stale_socket(path) do
-    case :gen_tcp.connect({:local, String.to_charlist(path)}, 0, [:binary, active: false], 100) do
-      {:ok, socket} ->
-        :ok = :gen_tcp.close(socket)
-        {:error, :socket_path_in_use}
-
-      {:error, :econnrefused} ->
-        remove_if_socket(path)
-
-      {:error, :enoent} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, {:socket_path_unavailable, reason}}
-    end
-  end
-
-  defp remove_if_socket(path) do
-    case File.lstat(path) do
-      {:ok, stat} -> if(is_socket?(stat), do: File.rm(path), else: {:error, :socket_path_exists})
-      {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp listen(path) do
-    :gen_tcp.listen(0, [
-      :binary,
-      active: false,
-      packet: 0,
-      ifaddr: {:local, String.to_charlist(path)}
-    ])
-  end
-
-  defp acceptor_wait(server, listener) do
-    receive do
-      :accept -> acceptor_loop(server, listener)
-    end
-  end
-
-  defp acceptor_loop(server, listener) do
-    case :gen_tcp.accept(listener) do
-      {:ok, socket} ->
-        case :gen_tcp.controlling_process(socket, server) do
-          :ok -> send(server, {:executor_accepted, socket})
-          _ -> :gen_tcp.close(socket)
-        end
-
-        acceptor_loop(server, listener)
-
-      {:error, :closed} ->
-        :ok
-
-      {:error, _} ->
-        send(server, :executor_accept_failed)
-    end
-  end
-
-  defp valid_session?(%{mode: mode, runtime_id: id, capacity: capacity}) do
-    mode in ["client", "embedded", "worker"] and Protocol.identifier?(id) and
-      is_integer(capacity) and capacity in 0..65_535 and
-      (mode == "client" or capacity > 0) and (mode != "client" or capacity == 0)
-  end
-
-  defp valid_session?(_), do: false
-
-  defp executor_connection(s, connection) do
-    case Map.get(s.connections, connection) do
-      %{mode: mode} = entry when mode in ["embedded", "worker"] -> {:ok, entry}
-      %{mode: "client"} -> {:error, "client_cannot_execute"}
-      nil -> {:error, "connection_closed"}
-      _ -> {:error, "hello_required"}
-    end
-  end
-
-  defp valid_tasks?(tasks, maximum) do
-    is_list(tasks) and length(tasks) <= maximum and Enum.all?(tasks, &Protocol.task_key?/1) and
-      length(tasks) == length(Enum.uniq(tasks))
+  defp reply_async(from, function) do
+    Task.start(fn -> GenServer.reply(from, function.()) end)
+    :ok
   end
 
   defp reservation(s, id) do
@@ -717,37 +505,6 @@ defmodule Tay.Executor.Server do
       :error -> {:error, :connection_closed}
     end
   end
-
-  defp capabilities(s) do
-    s.connections
-    |> Enum.filter(fn {_connection, entry} -> executor_available?(entry) end)
-    |> Enum.flat_map(fn {_connection, entry} -> MapSet.to_list(entry.tasks) end)
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp choose_executor(s, task, queue) do
-    if Protocol.task_key?(task) do
-      s.connections
-      |> Enum.filter(fn {_connection, entry} ->
-        executor_available?(entry) and MapSet.member?(entry.tasks, task) and
-          (queue == :all or Map.get(entry, :queue, :all) in [:all, queue])
-      end)
-      |> Enum.min_by(
-        fn {connection, entry} ->
-          {MapSet.size(entry.reservations), entry.runtime_id, connection}
-        end,
-        fn -> nil end
-      )
-      |> case do
-        nil -> nil
-        {connection, _} -> connection
-      end
-    end
-  end
-
-  defp executor_available?(entry),
-    do: entry.mode in ["embedded", "worker"] and MapSet.size(entry.reservations) < entry.capacity
 
   defp put_connection(s, connection, entry),
     do: %{s | connections: Map.put(s.connections, connection, entry)}
@@ -803,579 +560,9 @@ defmodule Tay.Executor.Server do
     end
   end
 
-  defp put_result(s, nil, _outcome), do: s
-
-  defp put_result(s, job_id, {:success, result}) do
-    # Results are bounded by Connection before this point and count-bounded
-    # here. Event-v1 persists completion, but intentionally has no result field,
-    # so this is live-generation retention rather than an imaginary durable
-    # result backend.
-    if Map.has_key?(s.results, job_id) do
-      %{s | results: Map.put(s.results, job_id, result)}
-    else
-      {results, order} = trim_results(s.results, s.result_order, s.max_results - 1)
-      %{s | results: Map.put(results, job_id, result), result_order: :queue.in(job_id, order)}
-    end
-  end
-
-  defp trim_results(results, order, limit) when map_size(results) <= limit, do: {results, order}
-
-  defp trim_results(results, order, limit) do
-    case :queue.out(order) do
-      {{:value, job_id}, next_order} ->
-        trim_results(Map.delete(results, job_id), next_order, limit)
-
-      {:empty, _} ->
-        {%{}, :queue.new()}
-    end
-  end
-
   defp notify_capacity(s), do: send(s.engine, {:executor_capacity_changed, self()})
 
   defp reservation_id do
     :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
   end
-
-  defp remove_socket(path) do
-    case File.lstat(path) do
-      {:ok, stat} -> if(is_socket?(stat), do: File.rm(path), else: :ok)
-      _ -> :ok
-    end
-  end
-
-  defp is_socket?(%{mode: mode}) when is_integer(mode), do: (mode &&& 0o170000) == 0o140000
-  defp is_socket?(_), do: false
-
-  defp reply_request(
-         server,
-         engine_name,
-         connection,
-         %{"type" => _type, "request_id" => request_id} = message
-       ) do
-    result = protocol_request(server, engine_name, message)
-
-    case result do
-      {:ok, reply_type, fields} -> Connection.reply(connection, request_id, reply_type, fields)
-      {:error, code} -> Connection.error(connection, request_id, code)
-      {:error, code, fields} -> Connection.error(connection, request_id, code, fields)
-    end
-  end
-
-  defp reply_request(_, _, _, _), do: :ok
-
-  defp enqueue(engine_name, %{"task" => task, "args" => args} = message) do
-    with {:ok, options} <- enqueue_options(Map.get(message, "options", %{})),
-         {:ok, job} <- Tay.enqueue(task, args, [name: engine_name] ++ options) do
-      {:ok, "enqueued", %{"job_id" => job.id, "job" => public_job(job)}}
-    else
-      {:error, %Tay.Error{kind: :unknown_outcome, reason: reason}} ->
-        {:error, "unknown_outcome", %{"reason" => unknown_outcome_reason(reason)}}
-
-      {:error, %Tay.Error{kind: :capacity, reason: reason}} ->
-        {:error, "capacity", %{"reason" => capacity_reason(reason)}}
-
-      {:error, %Tay.Error{kind: :unavailable}} ->
-        {:error, "unavailable"}
-
-      {:error, _} ->
-        {:error, "invalid_enqueue"}
-
-      _ ->
-        {:error, "invalid_enqueue"}
-    end
-  end
-
-  defp capacity_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp capacity_reason(_), do: "capacity_exhausted"
-
-  defp unknown_outcome_reason(:submitted_request_lost), do: "caller_timeout_or_disconnect"
-  defp unknown_outcome_reason({:generation_lost, _component}), do: "generation_lost"
-  defp unknown_outcome_reason(_), do: "outcome_unknown"
-
-  defp status(engine_name, %{"job_id" => id}) do
-    case Tay.get_job(id, name: engine_name) do
-      {:ok, job} ->
-        {:ok, "status", %{"job" => public_job(job), "status" => Atom.to_string(job.state)}}
-
-      {:error, :not_found} ->
-        {:error, "not_found"}
-
-      _ ->
-        {:error, "unavailable"}
-    end
-  end
-
-  defp cancel_job(engine_name, %{"job_id" => id}) do
-    case Tay.cancel(id, name: engine_name) do
-      {:ok, job} ->
-        {:ok, "cancelled", %{"job" => public_job(job), "status" => Atom.to_string(job.state)}}
-
-      {:error, :not_found} ->
-        {:error, "not_found"}
-
-      {:error, _} ->
-        {:error, "cancel_rejected"}
-    end
-  end
-
-  defp result(_server, engine_name, %{"job_id" => id}) do
-    case Tay.get_job(id, name: engine_name) do
-      {:ok, %{state: :completed}} ->
-        case Tay.result(id, name: engine_name) do
-          {:ok, value} -> {:ok, "result", %{"result" => value}}
-          :missing -> {:ok, "result", %{"result" => nil}}
-          _ -> {:ok, "result", %{"result" => nil}}
-        end
-
-      {:ok, %{state: :discarded}} ->
-        {:error, "task_failed"}
-
-      {:ok, _} ->
-        {:error, "result_not_ready"}
-
-      {:error, :not_found} ->
-        {:error, "not_found"}
-
-      _ ->
-        {:error, "unavailable"}
-    end
-  end
-
-  defp schedule(server, message) do
-    fields = Map.drop(message, ["version", "type", "request_id"])
-
-    case GenServer.call(server, {:put_schedule, fields}, @call_timeout) do
-      {:ok, value} ->
-        {:ok, "scheduled", %{"schedule_id" => value["id"], "schedule" => value}}
-
-      {:error, code} ->
-        {:error, code}
-
-      {:error, code, fields} ->
-        {:error, code, fields}
-    end
-  catch
-    :exit, {:timeout, _} ->
-      {:error, "unknown_outcome", %{"reason" => "caller_timeout_or_disconnect"}}
-  end
-
-  defp cancel_schedule(server, %{"schedule_id" => id}) when is_binary(id) do
-    case GenServer.call(server, {:cancel_schedule, id}, @call_timeout) do
-      {:ok, value} ->
-        {:ok, "schedule_cancelled", %{"schedule_id" => id, "schedule" => value}}
-
-      {:error, code} ->
-        {:error, code}
-
-      {:error, code, fields} ->
-        {:error, code, fields}
-    end
-  catch
-    :exit, {:timeout, _} ->
-      {:error, "unknown_outcome", %{"reason" => "caller_timeout_or_disconnect"}}
-  end
-
-  defp cancel_schedule(_, _), do: {:error, "invalid_schedule_id"}
-
-  defp arm_schedule(schedule, options, now) do
-    delay = max(schedule.next_at - now, 0)
-    timer = Process.send_after(self(), {:schedule_due, schedule.id, schedule.next_at}, delay)
-    %{schedule: schedule, options: options, timer: timer}
-  end
-
-  defp equivalent_schedule_entry?(%{schedule: existing, options: options}, candidate, options),
-    do: Schedule.equivalent?(existing, candidate)
-
-  defp equivalent_schedule_entry?(_, _, _), do: false
-
-  defp enqueue_schedule_operation(s, operation) do
-    next = %{s | schedule_operations: :queue.in(operation, s.schedule_operations)}
-    continue_schedule_operations(next)
-  end
-
-  defp continue_schedule_operations(%{schedule_operation: nil} = s) do
-    case :queue.out(s.schedule_operations) do
-      {{:value, operation}, remaining} ->
-        begin_schedule_operation(%{s | schedule_operations: remaining}, operation)
-
-      {:empty, _} ->
-        s
-    end
-  end
-
-  defp continue_schedule_operations(s), do: s
-
-  defp begin_schedule_operation(s, {:register, schedule, options, _now, from} = operation) do
-    case Map.get(s.schedules, schedule.id) do
-      existing when not is_nil(existing) ->
-        if equivalent_schedule_entry?(existing, schedule, options) do
-          GenServer.reply(from, {:ok, public_schedule(existing.schedule)})
-          continue_schedule_operations(s)
-        else
-          launch_schedule_operation(s, operation)
-        end
-
-      nil ->
-        launch_schedule_operation(s, operation)
-    end
-  end
-
-  defp begin_schedule_operation(s, {:cancel, id, from}) do
-    case Map.fetch(s.schedules, id) do
-      {:ok, %{schedule: schedule}} ->
-        launch_schedule_operation(s, {:cancel, schedule, from})
-
-      :error ->
-        GenServer.reply(from, {:error, "schedule_not_found"})
-        continue_schedule_operations(s)
-    end
-  end
-
-  defp begin_schedule_operation(
-         s,
-         {:advance, schedule, _advanced, _options, due, _now} = operation
-       ) do
-    case Map.get(s.schedules, schedule.id) do
-      %{schedule: %{revision: revision, next_at: ^due}}
-      when revision == schedule.revision ->
-        launch_schedule_operation(s, operation)
-
-      _ ->
-        continue_schedule_operations(s)
-    end
-  end
-
-  defp launch_schedule_operation(s, operation) do
-    server = self()
-    token = make_ref()
-    engine_name = s.engine_name
-
-    Task.start(fn ->
-      result = run_schedule_operation(operation, engine_name)
-      send(server, {:schedule_operation_result, token, result})
-    end)
-
-    %{s | schedule_operation: {token, operation}}
-  end
-
-  defp run_schedule_operation({:register, schedule, _options, _now, _from}, engine_name),
-    do: Tay.register_schedule(schedule, name: engine_name)
-
-  defp run_schedule_operation({:cancel, schedule, _from}, engine_name),
-    do: Tay.cancel_schedule(schedule.id, schedule.revision, name: engine_name)
-
-  defp run_schedule_operation(
-         {:advance, schedule, advanced, _options, due, now},
-         engine_name
-       ) do
-    Tay.advance_schedule(
-      schedule.id,
-      schedule.revision,
-      due,
-      advanced.next_at,
-      now,
-      name: engine_name
-    )
-  end
-
-  defp complete_schedule_operation(
-         s,
-         {:register, schedule, options, now, from},
-         {:ok, durable}
-       ) do
-    schedule = durable_schedule(schedule, durable)
-    state = drop_schedule(s, schedule.id)
-    entry = arm_schedule(schedule, options, now)
-    GenServer.reply(from, {:ok, public_schedule(schedule)})
-    %{state | schedules: Map.put(state.schedules, schedule.id, entry)}
-  end
-
-  defp complete_schedule_operation(s, {:register, schedule, _options, _now, from}, error) do
-    GenServer.reply(from, schedule_operation_error(error))
-
-    if unknown_schedule_outcome?(error),
-      do: drop_schedule(s, schedule.id),
-      else: s
-  end
-
-  defp complete_schedule_operation(s, {:cancel, schedule, from}, {:ok, durable}) do
-    cancelled = durable_schedule(schedule, durable)
-    GenServer.reply(from, {:ok, public_schedule(cancelled)})
-    drop_schedule(s, schedule.id)
-  end
-
-  defp complete_schedule_operation(s, {:cancel, schedule, from}, error) do
-    GenServer.reply(from, schedule_operation_error(error))
-
-    if unknown_schedule_outcome?(error),
-      do: drop_schedule(s, schedule.id),
-      else: s
-  end
-
-  defp complete_schedule_operation(
-         s,
-         {:advance, schedule, advanced, options, _due, now},
-         {:ok, durable}
-       ) do
-    advanced = durable_schedule(advanced, durable)
-    entry = arm_schedule(advanced, options, now)
-    %{s | schedules: Map.put(s.schedules, schedule.id, entry)}
-  end
-
-  defp complete_schedule_operation(
-         s,
-         {:advance, schedule, _advanced, options, due, _now},
-         error
-       ) do
-    cond do
-      unknown_schedule_outcome?(error) ->
-        drop_schedule(s, schedule.id)
-
-      retryable_schedule_error?(error) ->
-        timer = Process.send_after(self(), {:schedule_due, schedule.id, due}, @schedule_retry_ms)
-        entry = %{schedule: schedule, options: options, timer: timer}
-        %{s | schedules: Map.put(s.schedules, schedule.id, entry)}
-
-      true ->
-        drop_schedule(s, schedule.id)
-    end
-  end
-
-  defp durable_schedule(schedule, durable) do
-    %{
-      schedule
-      | revision: durable.revision,
-        next_at: durable.next_at,
-        last_at: durable.last_at,
-        cancelled_at: durable.cancelled_at
-    }
-  end
-
-  defp schedule_operation_error({:error, %Tay.Error{kind: :unknown_outcome, reason: reason}}),
-    do: {:error, "unknown_outcome", %{"reason" => unknown_outcome_reason(reason)}}
-
-  defp schedule_operation_error({:error, %Tay.Error{kind: :capacity, reason: reason}}),
-    do: {:error, "capacity", %{"reason" => capacity_reason(reason)}}
-
-  defp schedule_operation_error({:error, %Tay.Error{kind: :unavailable}}),
-    do: {:error, "unavailable"}
-
-  defp schedule_operation_error({:error, %Tay.Error{kind: :conflict}}),
-    do: {:error, "schedule_conflict"}
-
-  defp schedule_operation_error(_), do: {:error, "invalid_schedule"}
-
-  defp unknown_schedule_outcome?({:error, %Tay.Error{kind: :unknown_outcome}}), do: true
-  defp unknown_schedule_outcome?(_), do: false
-
-  defp retryable_schedule_error?({:error, %Tay.Error{kind: kind}})
-       when kind in [:capacity, :unavailable],
-       do: true
-
-  defp retryable_schedule_error?(_), do: false
-
-  defp drop_schedule(s, id) do
-    case Map.pop(s.schedules, id) do
-      {nil, _} ->
-        s
-
-      {%{timer: timer}, schedules} ->
-        if timer, do: Process.cancel_timer(timer)
-        %{s | schedules: schedules}
-    end
-  end
-
-  defp enqueue_schedule(server, engine_name, schedule, raw_options, due) do
-    Task.start(fn ->
-      result =
-        with {:ok, options} <- enqueue_options(raw_options),
-             id <- schedule_job_id(schedule.id, due),
-             options <- Keyword.put(options, :id, id) do
-          case Tay.enqueue(schedule.task, schedule.args, [name: engine_name] ++ options) do
-            {:ok, _} -> :ok
-            _ -> if(match?({:ok, _}, Tay.get_job(id, name: engine_name)), do: :ok, else: :retry)
-          end
-        else
-          _ -> :retry
-        end
-
-      send(server, {:schedule_enqueue_result, schedule.id, due, result})
-    end)
-  end
-
-  defp schedule_job_id(id, due) do
-    digest =
-      :crypto.hash(:sha256, ["tay-schedule-occurrence-v1:", id, ":", Integer.to_string(due)])
-
-    raw = binary_part(digest, 0, 16)
-    Tay.JobID.encode(if(raw == <<0::128>>, do: <<0::120, 1>>, else: raw))
-  end
-
-  defp public_schedule(schedule) do
-    %{
-      "id" => schedule.id,
-      "task" => schedule.task,
-      "kind" => Atom.to_string(schedule.kind),
-      "timezone" => schedule.timezone,
-      "overlap" => schedule.overlap,
-      "catch_up" => schedule.catch_up,
-      "next_at" => schedule.next_at,
-      "last_at" => schedule.last_at,
-      "cancelled_at" => schedule.cancelled_at,
-      "revision" => schedule.revision
-    }
-  end
-
-  defp schedule_id, do: :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
-
-  defp enqueue_options(options) when is_map(options) and not is_struct(options) do
-    allowed =
-      ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue durability)
-
-    if Enum.all?(Map.keys(options), &(&1 in allowed)) do
-      with {:ok, id} <- submission_id(options),
-           {:ok, delay} <- delay(options),
-           {:ok, scheduled} <- run_at(options),
-           {:ok, retries} <- integer_option(options, "retries", 0, 65_534),
-           {:ok, timeout} <- timeout(options),
-           :ok <- backoff(options),
-           {:ok, queue} <- queue(options),
-           {:ok, durability} <- durability(options) do
-        values = [
-          id: id,
-          retries: retries,
-          timeout_ms: timeout,
-          queue: queue,
-          delay_ms: delay,
-          scheduled_at: scheduled,
-          durability: durability
-        ]
-
-        {:ok, Enum.reject(values, fn {_key, value} -> is_nil(value) end)}
-      end
-    else
-      {:error, :invalid_options}
-    end
-  end
-
-  defp enqueue_options(_), do: {:error, :invalid_options}
-
-  defp submission_id(options) do
-    case {Map.get(options, "id"), Map.get(options, "submission_id")} do
-      {nil, nil} ->
-        {:ok, nil}
-
-      {id, nil} ->
-        if(match?({:ok, _}, Tay.JobID.decode(id)), do: {:ok, id}, else: {:error, :invalid_id})
-
-      {nil, key} when is_binary(key) ->
-        if Protocol.identifier?(key) do
-          digest = :crypto.hash(:sha256, "tay-submission-v1:" <> key) |> binary_part(0, 16)
-          {:ok, Tay.JobID.encode(if(digest == <<0::128>>, do: <<0::120, 1>>, else: digest))}
-        else
-          {:error, :invalid_submission_id}
-        end
-
-      _ ->
-        {:error, :invalid_submission_id}
-    end
-  end
-
-  defp delay(options) do
-    case {Map.get(options, "delay"), Map.get(options, "delay_ms")} do
-      {nil, nil} ->
-        {:ok, nil}
-
-      {value, nil} when is_integer(value) and value >= 0 ->
-        {:ok, value * 1_000}
-
-      {value, nil} when is_float(value) and value >= 0 and value == value ->
-        {:ok, round(value * 1_000)}
-
-      {nil, value} when is_integer(value) and value >= 0 ->
-        {:ok, value}
-
-      _ ->
-        {:error, :invalid_delay}
-    end
-  end
-
-  defp run_at(options) do
-    case {Map.get(options, "run_at"), Map.get(options, "delay"), Map.get(options, "delay_ms")} do
-      {nil, _, _} ->
-        {:ok, nil}
-
-      {_value, delay, delay_ms} when not is_nil(delay) or not is_nil(delay_ms) ->
-        {:error, :ambiguous_schedule}
-
-      {value, _, _} when is_integer(value) and value >= 0 ->
-        {:ok, value}
-
-      _ ->
-        {:error, :invalid_run_at}
-    end
-  end
-
-  defp integer_option(options, key, default, maximum) do
-    case Map.get(options, key, default) do
-      value when is_integer(value) and value >= 0 and value <= maximum -> {:ok, value}
-      _ -> {:error, :invalid_option}
-    end
-  end
-
-  defp timeout(options) do
-    case {Map.get(options, "timeout"), Map.get(options, "timeout_ms")} do
-      {nil, nil} -> {:ok, 30_000}
-      {value, nil} when is_integer(value) and value in 1..86_400 -> {:ok, value * 1_000}
-      {value, nil} when is_float(value) and value > 0 -> {:ok, round(value * 1_000)}
-      {nil, value} when is_integer(value) and value in 1..86_400_000 -> {:ok, value}
-      _ -> {:error, :invalid_timeout}
-    end
-  end
-
-  defp backoff(options) do
-    case Map.get(options, "backoff", "exponential") do
-      value when value in [nil, "exponential"] -> :ok
-      _ -> {:error, :unsupported_backoff}
-    end
-  end
-
-  defp queue(options) do
-    case Map.get(options, "queue", "default") do
-      value when is_binary(value) ->
-        if Protocol.task_key?(value), do: {:ok, value}, else: {:error, :invalid_queue}
-
-      _ ->
-        {:error, :invalid_queue}
-    end
-  end
-
-  defp durability(options) do
-    case Map.get(options, "durability") do
-      nil -> {:ok, nil}
-      "persistent" -> {:ok, :persistent}
-      "volatile" -> {:ok, :volatile}
-      _ -> {:error, :invalid_durability}
-    end
-  end
-
-  defp public_job(job) do
-    %{
-      "id" => job.id,
-      "task" => job.worker_key,
-      "args" => job.args,
-      "state" => Atom.to_string(job.state),
-      "attempt" => job.attempt,
-      "max_attempts" => job.max_attempts,
-      "queue" => to_string(job.queue),
-      "durability" => Atom.to_string(job.durability),
-      "scheduled_at" => present_time(job.scheduled_at),
-      "completed_at" => present_time(job.completed_at),
-      "errors" => job.errors
-    }
-  end
-
-  defp present_time(nil), do: nil
-  defp present_time(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
-  defp present_time(value), do: value
 end

@@ -113,7 +113,7 @@ defmodule Tay.Engine.SelectiveDurabilityTest do
     before = writer_coordinates(engine)
 
     assert {:ok, "enqueued", %{"job" => job}} =
-             Tay.Executor.Server.protocol_request(server, @name, %{
+             Tay.Protocol.Service.handle(%{engine: @name, executor: server}, %{
                "type" => "enqueue",
                "task" => "remote.volatile.v1",
                "args" => %{},
@@ -124,7 +124,7 @@ defmodule Tay.Engine.SelectiveDurabilityTest do
     assert writer_coordinates(engine) == before
 
     assert {:error, "invalid_enqueue"} =
-             Tay.Executor.Server.protocol_request(server, @name, %{
+             Tay.Protocol.Service.handle(%{engine: @name, executor: server}, %{
                "type" => "enqueue",
                "task" => "remote.invalid.v1",
                "args" => %{},

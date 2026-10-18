@@ -152,7 +152,7 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
 
     cancellation =
       Task.async(fn ->
-        Server.protocol_request(server, @name, %{
+        Tay.Protocol.Service.handle(%{engine: @name, executor: server}, %{
           "type" => "cancel_schedule",
           "schedule_id" => "unknown-cancellation"
         })
@@ -164,10 +164,11 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
     assert {:error, "unknown_outcome", %{"reason" => _}} = Task.await(cancellation, 6_000)
 
     assert ExecutionHelpers.eventually(fn ->
-             state = :sys.get_state(server)
+             server_state = :sys.get_state(server)
+             state = :sys.get_state(server_state.schedule_coordinator)
 
-             state.schedules == %{} and is_nil(state.schedule_operation) and
-               :queue.is_empty(state.schedule_operations)
+             state.schedules == %{} and is_nil(state.operation) and
+               :queue.is_empty(state.operations)
            end)
 
     GenServer.stop(server)

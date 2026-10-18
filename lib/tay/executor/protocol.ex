@@ -1,4 +1,4 @@
-defmodule Tay.Executor.Protocol do
+defmodule Tay.Protocol.V1 do
   @moduledoc """
   Small, transport-neutral codec for the public Executor Protocol v1.
 

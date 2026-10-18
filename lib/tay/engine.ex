@@ -29,9 +29,8 @@ defmodule Tay.Engine do
     Transition
   }
 
-  alias Tay.Execution.{Clock, Outcome, Registry, Relay, LocalFence}
-  alias Tay.Executor.Server
-  alias Tay.HTTP.Listener, as: HTTPListener
+  alias Tay.Execution.{Clock, ControlPlane, Dispatcher, Outcome, Registry, Relay, LocalFence}
+  alias Tay.Gateway.Runtime, as: GatewayRuntime
   alias Tay.Storage.Writer
   alias Tay.Storage.V2.{Codec, Mutation}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
@@ -518,7 +517,7 @@ defmodule Tay.Engine do
 
     case Map.get(s.running, key) do
       %{kind: :external, reservation: ^reservation} = entry ->
-        {:noreply, wake_controls(publish(settle_external(s, key, entry, result)))}
+        {:noreply, wake_controls(publish(Dispatcher.settle(s, key, entry, result)))}
 
       _ ->
         {:noreply, s}
@@ -530,8 +529,8 @@ defmodule Tay.Engine do
 
     case Map.get(s.running, key) do
       %{kind: :external, execution: ^execution} = entry ->
-        if is_pid(entry.server), do: safe_external_cancel(entry.server, reservation)
-        {:noreply, wake_controls(publish(settle_external(s, key, entry, :timeout)))}
+        if is_pid(entry.server), do: Dispatcher.cancel(entry.server, reservation)
+        {:noreply, wake_controls(publish(Dispatcher.settle(s, key, entry, :timeout)))}
 
       _ ->
         {:noreply, s}
@@ -707,76 +706,16 @@ defmodule Tay.Engine do
   end
 
   defp start_controls(s) do
-    supervisor = Tay.Execution.Supervisor.components(s.runtime).controls
-    options = %{engine: self(), generation: s.generation, wake_ms: s.config.execution_wake_ms}
+    components = Tay.Execution.Supervisor.components(s.runtime)
 
-    {:ok, scheduler} =
-      DynamicSupervisor.start_child(supervisor, {Tay.Execution.Scheduler, options})
-
-    controls =
-      Enum.reduce(s.config.queue_limits, %{scheduler: scheduler}, fn {queue, _}, acc ->
-        kind = {:queue, queue}
-
-        {:ok, pid} =
-          DynamicSupervisor.start_child(
-            supervisor,
-            {Tay.Execution.Queue, Map.put(options, :kind, kind)}
-          )
-
-        Map.put(acc, kind, pid)
-      end)
-
-    # The executor server is generation-local; registration and reservations
-    # are never durable. Either transport can keep it alive independently.
-    executor_server =
-      if s.config.executor_socket || s.config.http_port do
-        {:ok, server} =
-          DynamicSupervisor.start_child(
-            supervisor,
-            {Server,
-             %{
-               engine: self(),
-               socket_path: s.config.executor_socket,
-               socket_mode: s.config.executor_socket_mode,
-               private_directory: s.config.executor_socket_private_directory,
-               max_frame_bytes: s.config.executor_max_frame_bytes,
-               max_connections: s.config.executor_max_connections,
-               max_tasks_per_connection: s.config.executor_max_tasks_per_connection,
-               result_bytes: s.config.executor_result_bytes,
-               error_bytes: s.config.executor_error_bytes,
-               max_results: s.config.executor_max_results,
-               schedules: s.schedules,
-               results: s.results,
-               engine_name: s.config.name
-             }}
-          )
-
-        server
-      else
-        nil
-      end
-
-    if s.config.http_port do
-      {:ok, _listener} =
-        DynamicSupervisor.start_child(
-          supervisor,
-          {HTTPListener,
-           %{
-             engine_name: s.config.name,
-             executor_server: executor_server,
-             port: s.config.http_port,
-             ip: s.config.http_ip,
-             max_body_bytes: s.config.http_max_body_bytes,
-             result_bytes: s.config.executor_result_bytes,
-             error_bytes: s.config.executor_error_bytes,
-             tls_certfile: s.config.http_tls_certfile,
-             tls_keyfile: s.config.http_tls_keyfile,
-             tls_cacertfile: s.config.http_tls_cacertfile
-           }}
-        )
+    with {:ok, controls} <-
+           ControlPlane.start(components.controls, self(), s.generation, s.config),
+         {:ok, executor_server} <-
+           GatewayRuntime.start(components.gateways, self(), s.config, %{schedules: s.schedules}) do
+      %{s | controls: controls, executor_server: executor_server}
+    else
+      {:error, reason} -> exit({:control_plane_start_failed, reason})
     end
-
-    %{s | controls: controls, executor_server: executor_server}
   end
 
   defp control_member?(s, kind, pid) do
@@ -853,10 +792,7 @@ defmodule Tay.Engine do
   defp next_ready(s, queue, now) do
     local = Map.keys(s.projection.registry)
 
-    external =
-      if is_pid(s.executor_server) and Process.alive?(s.executor_server),
-        do: Server.available_tasks(s.executor_server),
-        else: []
+    external = Dispatcher.available_tasks(s.executor_server)
 
     candidates =
       (local ++ external)
@@ -911,7 +847,7 @@ defmodule Tay.Engine do
           end
 
         {:external, server, reservation} ->
-          start_external(s, job, queue, started, server, reservation)
+          Dispatcher.start_external(s, job, queue, started, server, reservation)
       end
     else
       _ -> {:error, s}
@@ -925,25 +861,12 @@ defmodule Tay.Engine do
   end
 
   defp dispatch_for(s, job) do
-    case Registry.resolve(s.config.workers, job.definition["worker_key"]) do
-      {:ok, worker} ->
-        {:ok, {:local, worker}}
-
-      _ when is_pid(s.executor_server) ->
-        case Server.reserve(
-               s.executor_server,
-               job.definition["worker_key"],
-               job.definition["queue_key"]
-             ) do
-          {:ok, reservation} -> {:ok, {:external, s.executor_server, reservation}}
-          _ -> {:error, :no_executor_capacity}
-        end
-
-      _ ->
-        {:error, :unavailable_worker}
-    end
-  catch
-    :exit, _ -> {:error, :no_executor_capacity}
+    Dispatcher.select(
+      s.config.workers,
+      s.executor_server,
+      job.definition["worker_key"],
+      job.definition["queue_key"]
+    )
   end
 
   defp settlement_fits(s, executing, at) do
@@ -1034,55 +957,6 @@ defmodule Tay.Engine do
     end
   end
 
-  # Remote executors are not BEAM tasks and must never be put behind the local
-  # relay/fence protocol.  Reserve an advertised connection first, make the
-  # existing durable START transition, then send EXECUTE.  A process crash in
-  # any later window is reconciled through the normal `:executing` recovery
-  # path, giving the documented at-least-once behaviour.
-  defp start_external(s, job, queue, started, server, reservation) do
-    case Persistence.commit(s, job, started) do
-      {:ok, executing, next} ->
-        key = {:executor, reservation}
-
-        timer =
-          Process.send_after(
-            self(),
-            {:executor_timeout, reservation, executing.execution},
-            job.definition["timeout_ms"]
-          )
-
-        entry = %{
-          kind: :external,
-          id: job.id,
-          queue: queue,
-          execution: executing.execution,
-          reservation: reservation,
-          server: server,
-          timer: timer
-        }
-
-        next = %{
-          next
-          | running: Map.put(next.running, key, entry),
-            executions: Map.put(next.executions, job.id, key),
-            slots: Map.update!(next.slots, queue, &(&1 + 1)),
-            projection: Projection.hold(next.projection, job)
-        }
-
-        # The server only serializes JSON-compatible fields from this view and
-        # preserves the reservation until completion/disconnect.  It cannot
-        # send an execution before this durable START exists.
-        case safe_external_dispatch(server, reservation, ProjectionState.view(next, executing)) do
-          :ok -> {:ok, next}
-          _ -> {:error, settle_external(next, key, entry, :lost)}
-        end
-
-      {:error, _} ->
-        safe_external_release(server, reservation)
-        {:error, s}
-    end
-  end
-
   defp abandon_waiting(s, relay) do
     entry = s.running[relay]
     :ok = Relay.terminate_task(relay, entry.ticket)
@@ -1159,8 +1033,8 @@ defmodule Tay.Engine do
       {:executor, reservation} = key ->
         case Map.get(s.running, key) do
           %{kind: :external} = entry ->
-            if is_pid(entry.server), do: safe_external_cancel(entry.server, reservation)
-            settle_external(s, key, entry, :cancelled)
+            if is_pid(entry.server), do: Dispatcher.cancel(entry.server, reservation)
+            Dispatcher.settle(s, key, entry, :cancelled)
 
           _ ->
             s
@@ -1191,89 +1065,6 @@ defmodule Tay.Engine do
       _ ->
         s
     end
-  end
-
-  defp settle_external(s, key, entry, result) do
-    if entry.timer, do: Process.cancel_timer(entry.timer)
-    job = JobIndex.get(s.projection.jobs, entry.id)
-
-    s =
-      case {result, job} do
-        {:cancelled, _} ->
-          s
-
-        {_, %{state: :executing, execution: execution}} when execution == entry.execution ->
-          outcome = external_outcome(result)
-
-          case Outcome.event(job, outcome, Clock.wall(s.config.clock)) do
-            {:ok, finished} ->
-              case Persistence.commit(s, job, finished) do
-                {:ok, completed, next} -> persist_external_result(next, completed, result)
-                _ -> exit(:external_execution_settlement_failed)
-              end
-
-            _ ->
-              exit(:external_execution_outcome_invalid)
-          end
-
-        _ ->
-          s
-      end
-
-    if is_pid(entry.server), do: safe_external_release(entry.server, entry.reservation)
-
-    %{
-      s
-      | running: Map.delete(s.running, key),
-        executions: Map.delete(s.executions, entry.id),
-        slots: Map.update!(s.slots, entry.queue, &max(&1 - 1, 0)),
-        projection: if(job, do: Projection.release(s.projection, job), else: s.projection)
-    }
-  end
-
-  defp external_outcome(:success), do: :success
-  defp external_outcome({:success, _result}), do: :success
-  defp external_outcome(:timeout), do: :timeout
-  defp external_outcome(:lost), do: :interrupted
-  defp external_outcome({:failure, _}), do: {:failure, 1}
-  defp external_outcome(_), do: {:failure, 1}
-
-  defp persist_external_result(state, completed, {:success, result}) do
-    event = %Event{
-      record_type: 10,
-      payload_schema_version: 2,
-      data: %{
-        "at" => completed.completed_at,
-        "expected_revision" => completed.revision,
-        "job_id" => completed.id,
-        "result" => result
-      }
-    }
-
-    case Persistence.commit_auxiliary(state, event, completed) do
-      {:ok, next} -> next
-      _ -> exit(:external_result_commit_failed)
-    end
-  end
-
-  defp persist_external_result(state, _completed, _result), do: state
-
-  defp safe_external_dispatch(server, reservation, job) do
-    Server.dispatch(server, reservation, job)
-  catch
-    :exit, _ -> {:error, :executor_unavailable}
-  end
-
-  defp safe_external_release(server, reservation) do
-    Server.release(server, reservation)
-  catch
-    :exit, _ -> :ok
-  end
-
-  defp safe_external_cancel(server, reservation) do
-    Server.cancel(server, reservation)
-  catch
-    :exit, _ -> :ok
   end
 
   defp wake_controls(s) do

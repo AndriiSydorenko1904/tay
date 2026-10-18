@@ -13,6 +13,10 @@ defmodule Tay.Execution.Supervisor do
         Supervisor.child_spec(
           {DynamicSupervisor, strategy: :one_for_one, max_restarts: 10, max_seconds: 5},
           id: :controls
+        ),
+        Supervisor.child_spec(
+          {DynamicSupervisor, strategy: :one_for_one, max_restarts: 10, max_seconds: 5},
+          id: :gateways
         )
       ],
       strategy: :one_for_all,
@@ -25,6 +29,7 @@ defmodule Tay.Execution.Supervisor do
       {Task.Supervisor, pid, _, _} -> {:tasks, pid}
       {DynamicSupervisor, pid, _, _} -> {:relays, pid}
       {:controls, pid, _, _} -> {:controls, pid}
+      {:gateways, pid, _, _} -> {:gateways, pid}
     end)
   end
 
