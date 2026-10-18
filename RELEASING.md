@@ -18,7 +18,9 @@ public.
 1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
-3. Update versioned GitHub documentation links in package metadata.
+3. Update versioned GitHub documentation links in package metadata, the pinned
+   container tags in `compose.yml` and deployment guides, and keep the README
+   quick-start pull commands on the stable `latest` tag.
 4. Commit and push the release commit to `main` without creating the tag yet.
 5. Wait for both `Continuous integration` and `Standalone runtime` to succeed
    for that exact commit SHA.
