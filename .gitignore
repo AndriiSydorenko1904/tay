@@ -4,7 +4,10 @@
 /standalone/deps/
 /cover/
 /doc/
+/apps/*/doc/
 /tmp/
+/apps/*/tmp/
+/apps/*/erl_crash.dump
 /var/tay/
 /erl_crash.dump
 .DS_Store

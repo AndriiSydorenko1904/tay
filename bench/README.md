@@ -154,7 +154,7 @@ controller. No extra production worker or public API is introduced.
 Focused harness checks, intentionally without organic large rotation:
 
 ```sh
-mix test test/tay/qualification/benchmark_test.exs --warnings-as-errors
+MIX_ENV=test mix do --app tay test test/tay/qualification/benchmark_test.exs --warnings-as-errors
 ```
 
 ## Group commit comparison

@@ -1,8 +1,10 @@
 # Releasing Tay
 
-Tay publishes two independent public packages from this repository:
+Tay publishes four independent public artifacts from this repository:
 
-- `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
+- `tay` on Hex.pm for the core Elixir engine;
+- `tay_http` on Hex.pm for the Bandit transport;
+- `tay_dashboard` on Hex.pm for the Phoenix LiveView dashboard;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
 
 Their versions are independent. A Tay release publishes `tay-client` only when
@@ -15,7 +17,7 @@ public.
 
 ## Prepare
 
-1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
+1. Set the same Tay release version in each `apps/*/mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
 3. Update versioned GitHub documentation links in package metadata, the pinned
@@ -34,8 +36,10 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix dialyzer
 mix test --warnings-as-errors
-TAY_PACKAGE_TEST=1 mix test test/tay/system/package_test.exs --warnings-as-errors
-mix hex.build
+TAY_PACKAGE_TEST=1 MIX_ENV=test mix do --app tay test test/tay/system/package_test.exs --warnings-as-errors
+(cd apps/tay && mix hex.build)
+(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.build)
+(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.build)
 
 uvx ruff check clients/python
 uvx ruff format --check clients/python
@@ -55,7 +59,18 @@ and publish the package and HexDocs:
 
 ```sh
 mix hex.user auth
-mix hex.publish
+(cd apps/tay && mix hex.publish)
+(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.publish)
+(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.publish)
+```
+
+To replace HexDocs for an already published version without republishing the
+immutable package tarball, publish only docs from the corresponding child:
+
+```sh
+(cd apps/tay && mix hex.publish docs)
+(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.publish docs)
+(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.publish docs)
 ```
 
 Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow

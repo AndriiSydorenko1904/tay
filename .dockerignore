@@ -9,6 +9,7 @@ standalone/_build
 standalone/deps
 standalone/test
 test
+apps/*/test
 dashboard
 clients/*
 !clients/python/**

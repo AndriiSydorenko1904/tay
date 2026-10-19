@@ -5,8 +5,9 @@ same host. Socket and directory permissions define who may submit, inspect,
 cancel, and execute work. The socket is ephemeral and must stay outside the
 durable `data_dir`. Set `executor_socket: nil` to disable it.
 
-An optional Bandit HTTP/JSON listener exposes producer and worker operations from
-the Engine. It is disabled by default. Set `http_port` (or `TAY_HTTP_PORT` in
+The optional `tay_http` package supplies a Bandit HTTP/JSON listener for
+producer and worker operations. It is disabled by default. Add
+`{:tay_http, "~> 1.6"}` and set `http_port` (or `TAY_HTTP_PORT` in
 standalone) to enable it. Plain HTTP is limited to loopback; a non-loopback bind
 requires mTLS. Producers and workers can both use HTTP; the Unix socket remains
 available for local workers but can be disabled with `executor_socket: nil`.

@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay:1.5.3
+  ghcr.io/andriisydorenko1904/tay:1.6.0
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -153,5 +153,5 @@ rolling deployment with two replicas sharing the Store.
 
 Use `tay:<version>` without `TAY_ENABLE_DASHBOARD` for headless operation, or set
 `TAY_ENABLE_DASHBOARD=true` when the official UI is needed. In an existing Phoenix
-application, mount the dashboard included in the `tay` Hex package instead of the standalone web
+application, mount the separate `tay_dashboard` Hex package instead of the standalone web
 host.

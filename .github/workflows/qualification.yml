@@ -67,19 +67,18 @@ jobs:
           TAY_LARGE_SEGMENT_TEST: "1"
           TAY_LARGE_RECOVERY_TEST: "1"
         run: >-
-          mix test test/tay/storage/segment_large_test.exs
-          test/tay/storage/recovery_large_test.exs
+          MIX_ENV=test mix do --app tay test test/tay/storage/segment_large_test.exs
           test/tay/engine/large_recovery_test.exs --warnings-as-errors
       - name: Detached consuming application and production release
         env:
           TAY_PACKAGE_TEST: "1"
-        run: mix test test/tay/system/package_test.exs --warnings-as-errors
+        run: MIX_ENV=test mix do --app tay test test/tay/system/package_test.exs --warnings-as-errors
 
       - name: Phase-C bounded automatic compaction default workloads
         env:
           TAY_PHASE_C_WORKLOAD: "1"
         run: >-
-          mix test test/tay/engine/compaction_runtime_test.exs
+          MIX_ENV=test mix do --app tay test test/tay/engine/compaction_runtime_test.exs
           --only phase_c_workload --warnings-as-errors
 
       - name: Phase-C 10000-job automatic retention and headroom qualification
@@ -87,7 +86,7 @@ jobs:
           TAY_PHASE_C_10000: "1"
           TAY_PHASE_C_HEADROOM: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: >-
-          mix test test/tay/engine/compaction_runtime_test.exs
+          MIX_ENV=test mix do --app tay test test/tay/engine/compaction_runtime_test.exs
           --only phase_c_10000 --warnings-as-errors
 
 # These disposable hosted-runner tests are software evidence, not hardware

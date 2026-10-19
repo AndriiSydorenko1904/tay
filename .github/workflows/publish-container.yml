@@ -34,7 +34,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
+          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
           test -n "$version"
           test "$RELEASE_TAG" = "v$version"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"

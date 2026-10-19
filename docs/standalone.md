@@ -139,7 +139,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.5.3
+  ghcr.io/andriisydorenko1904/tay:1.6.0
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source

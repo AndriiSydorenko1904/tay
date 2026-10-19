@@ -7,10 +7,9 @@ on:
       - .dockerignore
       - .github/workflows/standalone.yml
       - config/**
-      - c_src/**
+      - apps/**
       - standalone/**
       - examples/standalone/**
-      - lib/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md
@@ -24,10 +23,9 @@ on:
       - .dockerignore
       - .github/workflows/standalone.yml
       - config/**
-      - c_src/**
+      - apps/**
       - standalone/**
       - examples/standalone/**
-      - lib/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md
@@ -49,7 +47,7 @@ jobs:
       - name: Verify published container references
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
+          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
           test -n "$version"
           test "$(grep -Fc 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md)" -eq 3
           test "$(grep -Ec '^docker pull ghcr.io/andriisydorenko1904/tay:' README.md)" -eq 3

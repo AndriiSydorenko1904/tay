@@ -19,14 +19,19 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY mix.exs mix.lock ./
 COPY config ./config
-COPY c_src ./c_src
+COPY apps/tay/mix.exs apps/tay/README.md apps/tay/
+COPY apps/tay_http/mix.exs apps/tay_http/README.md apps/tay_http/
+COPY apps/tay_dashboard/mix.exs apps/tay_dashboard/README.md apps/tay_dashboard/
 COPY standalone/mix.exs standalone/mix.lock standalone/
 COPY standalone/config standalone/config
 WORKDIR /build/standalone
 RUN mix deps.get --only prod --check-locked
 
 WORKDIR /build
-COPY lib ./lib
+COPY apps/tay/lib apps/tay/lib
+COPY apps/tay/c_src apps/tay/c_src
+COPY apps/tay_http/lib apps/tay_http/lib
+COPY apps/tay_dashboard/lib apps/tay_dashboard/lib
 COPY standalone/lib standalone/lib
 WORKDIR /build/standalone
 RUN mix compile --warnings-as-errors && mix release tay_standalone
