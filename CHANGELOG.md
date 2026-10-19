@@ -23,6 +23,10 @@
   language servers do not report false module-redefinition diagnostics.
 - Kept Hex publication subprocesses attached to the terminal so two-factor
   authentication prompts remain interactive through `mix tay.hex.publish`.
+- Combined each adapter package and documentation upload into one Hex publish
+  command, avoiding a separate OTP prompt for HexDocs.
+- Updated the deployment helper for the umbrella version layout and made it
+  reject inconsistent versions across the three Tay applications.
 
 ## 1.5.3 — 2026-10-18
 

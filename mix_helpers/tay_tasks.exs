@@ -104,17 +104,15 @@ defmodule Mix.Tasks.Tay.Hex.Publish do
     File.mkdir!(workspace)
 
     env = [
-      {"MIX_ENV", "prod"},
+      {"MIX_ENV", "dev"},
       {"TAY_HEX_WORKSPACE", workspace}
     ]
 
     try do
-      Tay.Umbrella.Hex.run!(app, ["deps.get", "--only", "prod"], true, env)
-      Tay.Umbrella.Hex.run!(app, ["hex.publish", "package", "--yes"], true, env)
+      Tay.Umbrella.Hex.run!(app, ["deps.get"], true, env)
+      Tay.Umbrella.Hex.run!(app, ["hex.publish", "--yes"], true, env)
     after
       File.rm_rf!(workspace)
     end
-
-    Tay.Umbrella.Hex.run!(app, ["hex.publish", "docs", "--yes"])
   end
 end

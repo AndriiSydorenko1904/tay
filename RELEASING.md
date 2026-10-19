@@ -66,7 +66,8 @@ uploading artifacts or requesting a two-factor code. During real publication,
 the child Hex processes inherit the terminal so interactive OTP prompts work.
 Adapter packages resolve their just-published upstream package inside a
 disposable build workspace; the repository lockfile and dependency directory
-remain unchanged.
+remain unchanged. Each package and its HexDocs are published by one Hex command,
+so a normal release requires one successful OTP authentication per package.
 
 To replace HexDocs for an already published version without republishing the
 immutable package tarball, publish only docs from the corresponding child:
