@@ -194,6 +194,14 @@ layers are installed transitively:
 {:tay_dashboard, "~> 1.6"}  # dashboard plus HTTP(S), core, and the Unix socket
 ```
 
+Installing `tay_dashboard` makes the complete bundle available but does not
+start or expose a web endpoint. In a host Phoenix application, mount
+`tay_dashboard/2`; it uses the host endpoint's existing `secret_key_base`, so
+the standalone-only `TAY_ENABLE_DASHBOARD` and
+`TAY_DASHBOARD_SECRET_KEY_BASE` variables are unnecessary. The bundled
+standalone/container endpoint remains disabled by default and requires both
+variables when enabled.
+
 Or use the local checkout:
 
 ```elixir

@@ -32,6 +32,13 @@ end
 This installs `tay_http` and `tay` transitively, so the same dependency also
 provides HTTP(S) and Unix-socket transports.
 
+Installing the package makes these capabilities available but does not start or
+expose a dashboard endpoint automatically. In an existing Phoenix application,
+the dashboard is enabled by mounting `tay_dashboard/2` in the host router. The
+`TAY_ENABLE_DASHBOARD` and `TAY_DASHBOARD_SECRET_KEY_BASE` environment variables
+are not used in this deployment shape: browser sessions, CSRF protection, and
+LiveView use the host endpoint's existing `secret_key_base`.
+
 Tay 1.x requires Elixir 1.20, Phoenix 1.8, and Phoenix LiveView 1.2.
 The host endpoint must have a working LiveView socket and PubSub,
 as a normal Phoenix LiveView application does.
@@ -81,6 +88,21 @@ HTTP Basic authentication is enabled by setting both `TAY_DASHBOARD_USERNAME`
 and `TAY_DASHBOARD_PASSWORD`. For a real deployment, keep the UI on a trusted
 network or behind a trusted ingress and set a random
 `TAY_DASHBOARD_SECRET_KEY_BASE`.
+
+Unlike package installation in a host Phoenix application, the standalone
+release owns its Phoenix endpoint. It therefore requires both explicit runtime
+activation and a stable signing secret:
+
+| Deployment | Dashboard activation | Phoenix signing secret |
+| --- | --- | --- |
+| `tay_dashboard` in a host Phoenix application | Mount `tay_dashboard/2` in the host router | Host endpoint's existing `secret_key_base` |
+| Standalone/container without UI | Disabled by default | Not required |
+| Standalone/container with UI | `TAY_ENABLE_DASHBOARD=true` | `TAY_DASHBOARD_SECRET_KEY_BASE`, at least 64 random bytes |
+
+Package presence deliberately does not imply network activation. The official
+image contains the complete bundle even in headless deployments, so enabling
+the endpoint merely because `tay_dashboard` is installed would expose an
+administrative UI unexpectedly.
 
 See the [container deployment guide](dashboard-container.md) for `docker run`, Compose,
 configuration, persistence, worker connectivity, upgrades, and the security
