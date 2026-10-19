@@ -65,6 +65,14 @@ Pull the standalone image:
 docker pull ghcr.io/andriisydorenko1904/tay:latest
 ```
 
+The same tested standalone runtime is published under capability-oriented
+names as well: `tay_http` for HTTP deployments and `tay_dashboard` for the
+complete dashboard deployment.
+
+```sh
+docker pull ghcr.io/andriisydorenko1904/tay_http:latest
+```
+
 For a ready-made Tay deployment example:
 
 ```sh
@@ -94,11 +102,11 @@ Then open:
 http://localhost:4000/tay
 ```
 
-The same image contains the optional dashboard. Enable it with
+Use the dashboard image and enable the UI with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:latest
+docker pull ghcr.io/andriisydorenko1904/tay_dashboard:latest
 ```
 
 ## Why Tay?
@@ -490,9 +498,14 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 ```text
 ghcr.io/andriisydorenko1904/tay:1.6.0
 ghcr.io/andriisydorenko1904/tay:latest
+ghcr.io/andriisydorenko1904/tay_http:1.6.0
+ghcr.io/andriisydorenko1904/tay_http:latest
+ghcr.io/andriisydorenko1904/tay_dashboard:1.6.0
+ghcr.io/andriisydorenko1904/tay_dashboard:latest
 ```
 
-It includes the Erlang VM and Tay runtime.
+All three names currently reference the same qualified standalone artifact;
+the selected runtime capability is controlled through its environment settings.
 
 The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 

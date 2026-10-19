@@ -56,23 +56,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate core image metadata
-        id: meta_core
+      - name: Generate image metadata
+        id: meta
         uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            ghcr.io/${{ github.repository_owner }}/tay_http
+            ghcr.io/${{ github.repository_owner }}/tay_dashboard
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.stable == 'true' }}
             type=raw,value=latest,enable=${{ steps.version.outputs.stable == 'true' }}
 
-      - name: Build and publish core image
+      - name: Build and publish images
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta_core.outputs.tags }}
-          labels: ${{ steps.meta_core.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true

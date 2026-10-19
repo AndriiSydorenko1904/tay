@@ -49,8 +49,9 @@ jobs:
           set -euo pipefail
           version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
           test -n "$version"
-          test "$(grep -Fc 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md)" -eq 3
-          test "$(grep -Ec '^docker pull ghcr.io/andriisydorenko1904/tay:' README.md)" -eq 3
+          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md
+          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_http:latest' README.md
+          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_dashboard:latest' README.md
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" compose.yml
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/standalone.md
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/dashboard-container.md

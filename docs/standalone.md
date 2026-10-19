@@ -6,6 +6,10 @@ official OCI image and connect a language client via HTTP/JSON or the local
 Executor Protocol v1 Unix socket. The standalone runtime is only a small OTP host around the same
 Engine, scheduler, storage implementation, and recovery rules as the library.
 
+The release is published as `tay`, `tay_http`, and `tay_dashboard` OCI images.
+They currently reference the same qualified artifact; the names make the chosen
+deployment capability explicit while environment variables select active listeners.
+
 ```text
 Python producer/worker -> HTTPS :8080 ─┐
 Python local worker   -> Unix socket ──┴─> Tay OTP release -> /var/lib/tay
@@ -139,7 +143,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.6.0
+  ghcr.io/andriisydorenko1904/tay_http:1.6.0
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source

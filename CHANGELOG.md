@@ -27,6 +27,8 @@
   command, avoiding a separate OTP prompt for HexDocs.
 - Included the core native compiler helper in the staged Docker build context
   before Mix loads the umbrella applications during dependency resolution.
+- Published the qualified standalone artifact under `tay`, `tay_http`, and
+  `tay_dashboard` GHCR image names.
 
 ## 1.5.3 — 2026-10-18
 
