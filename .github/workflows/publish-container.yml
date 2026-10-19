@@ -22,12 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: tay
-            target: tay
+          - image: tay_core
+            target: tay_core
           - image: tay_http
             target: tay_http
-          - image: tay_dashboard
-            target: tay_dashboard
+          - image: tay
+            target: tay
     permissions:
       contents: read
       packages: write
@@ -44,7 +44,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
+          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay_core/mix.exs)
           test -n "$version"
           test "$RELEASE_TAG" = "v$version"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"

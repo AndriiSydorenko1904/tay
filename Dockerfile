@@ -19,10 +19,10 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY mix.exs mix.lock ./
 COPY config ./config
-COPY apps/tay/mix.exs apps/tay/README.md apps/tay/
-COPY apps/tay/mix_helpers apps/tay/mix_helpers
+COPY apps/tay_core/mix.exs apps/tay_core/README.md apps/tay_core/
+COPY apps/tay_core/mix_helpers apps/tay_core/mix_helpers
 COPY apps/tay_http/mix.exs apps/tay_http/README.md apps/tay_http/
-COPY apps/tay_dashboard/mix.exs apps/tay_dashboard/README.md apps/tay_dashboard/
+COPY apps/tay/mix.exs apps/tay/README.md apps/tay/
 COPY standalone/mix.exs standalone/mix.lock standalone/
 COPY standalone/config standalone/config
 
@@ -31,8 +31,8 @@ ENV TAY_STANDALONE_FLAVOR=core
 WORKDIR /build/standalone
 RUN mix deps.get --only prod --check-locked
 WORKDIR /build
-COPY apps/tay/lib apps/tay/lib
-COPY apps/tay/c_src apps/tay/c_src
+COPY apps/tay_core/lib apps/tay_core/lib
+COPY apps/tay_core/c_src apps/tay_core/c_src
 COPY standalone/lib/tay/standalone standalone/lib/tay/standalone
 WORKDIR /build/standalone
 RUN mix compile --warnings-as-errors && mix release tay_standalone
@@ -42,8 +42,8 @@ ENV TAY_STANDALONE_FLAVOR=http
 WORKDIR /build/standalone
 RUN mix deps.get --only prod --check-locked
 WORKDIR /build
-COPY apps/tay/lib apps/tay/lib
-COPY apps/tay/c_src apps/tay/c_src
+COPY apps/tay_core/lib apps/tay_core/lib
+COPY apps/tay_core/c_src apps/tay_core/c_src
 COPY apps/tay_http/lib apps/tay_http/lib
 COPY standalone/lib/tay/standalone standalone/lib/tay/standalone
 WORKDIR /build/standalone
@@ -54,10 +54,10 @@ ENV TAY_STANDALONE_FLAVOR=dashboard
 WORKDIR /build/standalone
 RUN mix deps.get --only prod --check-locked
 WORKDIR /build
-COPY apps/tay/lib apps/tay/lib
-COPY apps/tay/c_src apps/tay/c_src
+COPY apps/tay_core/lib apps/tay_core/lib
+COPY apps/tay_core/c_src apps/tay_core/c_src
 COPY apps/tay_http/lib apps/tay_http/lib
-COPY apps/tay_dashboard/lib apps/tay_dashboard/lib
+COPY apps/tay/lib apps/tay/lib
 COPY standalone/lib standalone/lib
 WORKDIR /build/standalone
 RUN mix compile --warnings-as-errors && mix release tay_standalone
@@ -102,13 +102,13 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=15m --retries=12 \
 ENTRYPOINT ["/opt/tay/bin/tay_standalone"]
 CMD ["start"]
 
-FROM runtime-base AS tay
+FROM runtime-base AS tay_core
 COPY --from=build-core --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
 
 FROM runtime-base AS tay_http
 COPY --from=build-http --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
 
-FROM runtime-base AS tay_dashboard
+FROM runtime-base AS tay
 COPY --from=build-dashboard --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
 
-FROM tay_dashboard AS runtime
+FROM tay AS runtime

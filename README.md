@@ -43,11 +43,11 @@ The Elixir codebase is an umbrella with deliberately one-way dependencies:
 
 | Package | Responsibility | Framework dependency |
 | --- | --- | --- |
-| `tay` | durable engine, application/service layer, Unix transport | none |
+| `tay_core` | durable engine, application/service layer, Unix transport | none |
 | `tay_http` | HTTP/JSON producer and worker transport | Bandit |
-| `tay_dashboard` | complete HTTP stack and operational web UI | Phoenix/LiveView |
+| `tay` | complete HTTP stack and operational web UI | Phoenix/LiveView |
 
-Dependencies flow in one direction: `tay_dashboard` → `tay_http` → `tay`.
+Dependencies flow in one direction: `tay` → `tay_http` → `tay_core`.
 Core never depends on either adapter.
 
 > Tay is intentionally single-node and single-writer. It is designed for cases
@@ -65,10 +65,11 @@ Pull the standalone image:
 docker pull ghcr.io/andriisydorenko1904/tay:latest
 ```
 
-Capability-specific releases are also available: `tay_http` contains the HTTP
-transport without Phoenix, while `tay_dashboard` contains the complete UI stack.
+Capability-specific releases are also available: `tay_core` contains only the
+engine and Unix socket, while `tay_http` adds HTTP without Phoenix.
 
 ```sh
+docker pull ghcr.io/andriisydorenko1904/tay_core:latest
 docker pull ghcr.io/andriisydorenko1904/tay_http:latest
 ```
 
@@ -101,11 +102,11 @@ Then open:
 http://localhost:4000/tay
 ```
 
-Use the dashboard image and enable the UI with
+The default `tay` image includes the dashboard; enable the UI with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay_dashboard:latest
+docker pull ghcr.io/andriisydorenko1904/tay:latest
 ```
 
 ## Why Tay?
@@ -188,7 +189,7 @@ and Unix socket only:
 ```elixir
 defp deps do
   [
-    {:tay, "~> 1.6"}
+    {:tay_core, "~> 1.6"}
   ]
 end
 ```
@@ -197,11 +198,11 @@ For HTTP(S) or the complete dashboard bundle, use one of these instead; lower
 layers are installed transitively:
 
 ```elixir
-{:tay_http, "~> 1.6"}       # HTTP(S), core, and the Unix socket
-{:tay_dashboard, "~> 1.6"}  # dashboard plus HTTP(S), core, and the Unix socket
+{:tay_http, "~> 1.6"}  # HTTP(S), core, and the Unix socket
+{:tay, "~> 1.6"}       # dashboard plus HTTP(S), core, and the Unix socket
 ```
 
-Installing `tay_dashboard` makes the complete bundle available but does not
+Installing `tay` makes the complete bundle available but does not
 start or expose a web endpoint. In a host Phoenix application, mount
 `tay_dashboard/2`; it uses the host endpoint's existing `secret_key_base`, so
 the standalone-only `TAY_ENABLE_DASHBOARD` and
@@ -212,7 +213,7 @@ variables when enabled.
 Or use the local checkout:
 
 ```elixir
-{:tay, path: "../tay/apps/tay"}
+{:tay_core, path: "../tay/apps/tay_core"}
 ```
 
 Then run:
@@ -297,7 +298,7 @@ Jobs are persistent by default. Selective durability is resolved from the
 individual insertion, then the worker default, then the global default:
 
 ```elixir
-config :tay,
+config :tay_core,
   durability: :persistent,
   journal: [batch: [max_events: 100, interval_ms: 10]]
 
@@ -337,8 +338,8 @@ List and summarize jobs through the bounded public inspection API:
 {:ok, queues} = Tay.queues()
 ```
 
-The `tay_dashboard` package provides a Phoenix LiveView dashboard for these APIs
-and transitively includes the `tay_http` Bandit transport. The core `tay`
+The `tay` package provides a Phoenix LiveView dashboard for these APIs
+and transitively includes the `tay_http` Bandit transport. The core `tay_core`
 package depends on neither Phoenix nor Bandit. See the
 [dashboard guide](docs/dashboard.md) for router mounting and access control.
 For Prometheus metrics, OpenTelemetry command spans, gauge polling, event names,
@@ -499,12 +500,12 @@ ghcr.io/andriisydorenko1904/tay:1.6.1
 ghcr.io/andriisydorenko1904/tay:latest
 ghcr.io/andriisydorenko1904/tay_http:1.6.1
 ghcr.io/andriisydorenko1904/tay_http:latest
-ghcr.io/andriisydorenko1904/tay_dashboard:1.6.1
-ghcr.io/andriisydorenko1904/tay_dashboard:latest
+ghcr.io/andriisydorenko1904/tay_core:1.6.1
+ghcr.io/andriisydorenko1904/tay_core:latest
 ```
 
-Each image contains only its transitive application layer: `tay` is core/socket,
-`tay_http` adds Bandit HTTP, and `tay_dashboard` adds Phoenix LiveView.
+Each image contains only its transitive application layer: `tay_core` is
+core/socket, `tay_http` adds Bandit HTTP, and `tay` adds Phoenix LiveView.
 
 The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 

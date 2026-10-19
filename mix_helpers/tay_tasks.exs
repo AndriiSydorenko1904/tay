@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Tay.Native do
 
     {_, status} =
       System.cmd(mix, ["compile.tay_native", "--force"],
-        cd: Path.join([@root, "apps", "tay"]),
+        cd: Path.join([@root, "apps", "tay_core"]),
         env: [{"MIX_ENV", Atom.to_string(Mix.env())}],
         into: IO.stream(:stdio, :line)
       )
@@ -57,9 +57,9 @@ defmodule Mix.Tasks.Tay.Hex.Build do
 
   @impl Mix.Task
   def run([]) do
-    Tay.Umbrella.Hex.run!("tay", ["hex.build"])
+    Tay.Umbrella.Hex.run!("tay_core", ["hex.build"])
     Tay.Umbrella.Hex.run!("tay_http", ["hex.build"], true)
-    Tay.Umbrella.Hex.run!("tay_dashboard", ["hex.build"], true)
+    Tay.Umbrella.Hex.run!("tay", ["hex.build"], true)
   end
 
   def run(_args), do: Mix.raise("usage: mix tay.hex.build")
@@ -76,7 +76,7 @@ defmodule Mix.Tasks.Tay.Hex.Publish do
   def run(["--dry-run"]), do: publish_all(["--dry-run"])
 
   def run(["docs"]) do
-    for app <- ["tay", "tay_http", "tay_dashboard"] do
+    for app <- ["tay_core", "tay_http", "tay"] do
       Tay.Umbrella.Hex.run!(app, ["hex.publish", "docs", "--yes"])
     end
   end
@@ -84,9 +84,9 @@ defmodule Mix.Tasks.Tay.Hex.Publish do
   def run(_args), do: Mix.raise("usage: mix tay.hex.publish [docs | --dry-run]")
 
   defp publish_all(extra_args) do
-    Tay.Umbrella.Hex.run!("tay", ["hex.publish", "--yes" | extra_args])
+    Tay.Umbrella.Hex.run!("tay_core", ["hex.publish", "--yes" | extra_args])
     publish_adapter("tay_http", extra_args)
-    publish_adapter("tay_dashboard", extra_args)
+    publish_adapter("tay", extra_args)
   end
 
   defp publish_adapter(app, ["--dry-run"] = extra_args) do

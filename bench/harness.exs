@@ -1048,8 +1048,8 @@ defmodule Tay.Bench.Harness do
   end
 
   defp ensure_application(path) do
-    if is_nil(Process.whereis(Tay.Supervisor)), do: Application.put_env(:tay, :data_dir, path)
-    {:ok, _} = Application.ensure_all_started(:tay)
+    if is_nil(Process.whereis(Tay.Supervisor)), do: Application.put_env(:tay_core, :data_dir, path)
+    {:ok, _} = Application.ensure_all_started(:tay_core)
   end
 
   defp environment(c) do

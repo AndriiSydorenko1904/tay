@@ -1,20 +1,20 @@
 # Tay Dashboard
 
-Tay Dashboard is the Phoenix LiveView dashboard published as the independent
-[`tay_dashboard`](https://hex.pm/packages/tay_dashboard) package. It mounts inside an existing
+Tay Dashboard is the Phoenix LiveView dashboard included in the full
+[`tay`](https://hex.pm/packages/tay) package. It mounts inside an existing
 Phoenix application and communicates with Tay only through its public
 inspection and administration APIs. It does not start a separate server;
 the standalone release can serve it when explicitly enabled.
 
 There are two supported deployment shapes:
 
-1. Mount `tay_dashboard` in an existing Phoenix application.
+1. Install `tay` and mount `tay_dashboard/2` in an existing Phoenix application.
 2. Run the `tay` OCI image with `TAY_ENABLE_DASHBOARD=true`; it contains one Tay
    Engine, its Unix executor socket, and a small Phoenix host.
 
-Dashboard source lives in `apps/tay_dashboard/lib/tay/dashboard/`. Phoenix and
-LiveView are dependencies of `tay_dashboard`. The package pulls in `tay_http`
-and core `tay` transitively, while core stays framework-free.
+Dashboard source lives in `apps/tay/lib/tay/dashboard/`. Phoenix and
+LiveView are dependencies of `tay`. The package pulls in `tay_http`
+and core `tay_core` transitively, while core stays framework-free.
 
 ## Installation
 
@@ -24,12 +24,12 @@ dependencies:
 ```elixir
 def deps do
   [
-    {:tay_dashboard, "~> 1.6"}
+    {:tay, "~> 1.6"}
   ]
 end
 ```
 
-This installs `tay_http` and `tay` transitively, so the same dependency also
+This installs `tay_http` and `tay_core` transitively, so the same dependency also
 provides HTTP(S) and Unix-socket transports.
 
 Installing the package makes these capabilities available but does not start or
@@ -95,13 +95,13 @@ activation and a stable signing secret:
 
 | Deployment | Dashboard activation | Phoenix signing secret |
 | --- | --- | --- |
-| `tay_dashboard` in a host Phoenix application | Mount `tay_dashboard/2` in the host router | Host endpoint's existing `secret_key_base` |
+| `tay` in a host Phoenix application | Mount `tay_dashboard/2` in the host router | Host endpoint's existing `secret_key_base` |
 | Standalone/container without UI | Disabled by default | Not required |
 | Standalone/container with UI | `TAY_ENABLE_DASHBOARD=true` | `TAY_DASHBOARD_SECRET_KEY_BASE`, at least 64 random bytes |
 
 Package presence deliberately does not imply network activation. The official
 image contains the complete bundle even in headless deployments, so enabling
-the endpoint merely because `tay_dashboard` is installed would expose an
+the endpoint merely because `tay` is installed would expose an
 administrative UI unexpectedly.
 
 See the [container deployment guide](dashboard-container.md) for `docker run`, Compose,
@@ -162,12 +162,12 @@ result set.
 ## Documentation
 
 The maintained documentation sources are this guide and module documentation
-under `apps/tay_dashboard/lib/tay/dashboard/`. Generated `doc/` output is
+under `apps/tay/lib/tay/dashboard/`. Generated `doc/` output is
 ignored. Build it from the dashboard application with:
 
 ```sh
-cd apps/tay_dashboard
+cd apps/tay
 mix docs
 ```
 
-The dashboard and core packages publish their own focused ExDoc output.
+The `tay` and `tay_core` packages publish their own focused ExDoc output.

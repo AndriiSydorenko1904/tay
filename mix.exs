@@ -16,9 +16,9 @@ defmodule Tay.Umbrella.MixProject do
       dialyzer: [
         plt_add_apps: [:mix],
         paths: [
-          "_build/#{Mix.env()}/lib/tay/ebin",
+          "_build/#{Mix.env()}/lib/tay_core/ebin",
           "_build/#{Mix.env()}/lib/tay_http/ebin",
-          "_build/#{Mix.env()}/lib/tay_dashboard/ebin"
+          "_build/#{Mix.env()}/lib/tay/ebin"
         ]
       ],
       aliases: [

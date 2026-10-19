@@ -1,14 +1,16 @@
 # Tay
 
-`tay` is the durable single-node job engine and Protocol v1 service layer.
-It includes the Unix-socket executor transport and has no HTTP or Phoenix dependency.
+`tay` is the complete Tay web bundle. It supplies the Phoenix
+LiveView dashboard, depends on `tay_http`, and transitively installs the core
+`tay_core` engine and Bandit HTTP(S) transport. A host Phoenix application can mount
+it with `Tay.Dashboard.Router.tay_dashboard/2`.
 
-Choose one package according to the highest layer you need:
+Installing the package does not start or expose an endpoint. In a host Phoenix
+application, mounting `tay_dashboard/2` activates the UI and the host endpoint's
+existing `secret_key_base` protects sessions, CSRF, and LiveView. The
+standalone-only `TAY_ENABLE_DASHBOARD` and `TAY_DASHBOARD_SECRET_KEY_BASE`
+environment variables are not needed in this deployment shape.
 
-```elixir
-{:tay, "~> 1.6"}            # core and Unix socket
-{:tay_http, "~> 1.6"}       # HTTP(S), plus tay transitively
-{:tay_dashboard, "~> 1.6"}  # dashboard, plus tay_http and tay transitively
-```
-
-Repository documentation: https://github.com/AndriiSydorenko1904/tay
+The standalone/container release owns a separate Phoenix endpoint. Its bundled
+UI remains disabled until `TAY_ENABLE_DASHBOARD=true`, and enabling it requires
+a stable `TAY_DASHBOARD_SECRET_KEY_BASE` of at least 64 random bytes.

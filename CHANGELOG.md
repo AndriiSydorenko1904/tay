@@ -4,14 +4,17 @@
 
 ### Changed
 
-- Split OCI publication into dependency-bounded `tay`, `tay_http`, and
-  `tay_dashboard` images.
+- Renamed the minimal engine package and image to `tay_core`, and made `tay`
+  the complete dashboard bundle. Dependencies now flow `tay` → `tay_http` →
+  `tay_core`.
+- Split OCI publication into dependency-bounded `tay_core`, `tay_http`, and
+  `tay` images.
 - Selected standalone dependencies and compiled sources according to the
   requested release flavor.
 
 ### Fixed
 
-- Ensured the HTTP-only image excludes `tay_dashboard`, Phoenix, LiveView, and
+- Ensured the HTTP-only image excludes `tay`, Phoenix, LiveView, and
   Phoenix PubSub, with automated release-content verification.
 
 ## 1.6.0 — 2026-10-19

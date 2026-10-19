@@ -200,11 +200,11 @@ run_check "2" "Deprecated, TODO, FIXME, and temporary APIs" \
 
 check_storage_compatibility() {
   git_grep_report 'store.?v[0-9]|segment.?v[0-9]|event.?v[0-9]|format.?version|magic|codec|CURRENT|epoch|migration' \
-    apps/tay/lib/tay/storage apps/tay/lib/tay/event.ex apps/tay/lib/tay/event apps/tay/test/fixtures docs || return
+    apps/tay_core/lib/tay/storage apps/tay_core/lib/tay/event.ex apps/tay_core/lib/tay/event apps/tay_core/test/fixtures docs || return
   printf '\n=== Compatibility fixtures ===\n'
-  find apps/tay/test/fixtures -maxdepth 5 -type f -print | sort
+  find apps/tay_core/test/fixtures -maxdepth 5 -type f -print | sort
   printf '\n=== Fixture manifests and checksums ===\n'
-  find apps/tay/test/fixtures -type f \( -name SHA256SUMS -o -name manifest.exs -o -name README.md \) \
+  find apps/tay_core/test/fixtures -type f \( -name SHA256SUMS -o -name manifest.exs -o -name README.md \) \
     -print -exec sed -n '1,240p' {} \;
 }
 run_check "3a" "Storage format constants and compatibility inventory" check_storage_compatibility
@@ -215,8 +215,8 @@ run_mix_test_files "3b" "Storage codec and frozen-fixture tests" \
   test/tay/storage/v2_authority_test.exs
 
 check_recovery_inventory() {
-  find apps/tay/test/tay -type f \( -iname '*recovery*' -o -iname '*restart*' -o -iname '*crash*' \) -print | sort
-  git_grep_report 'test .*(recover|restart|crash|kill|truncate|torn|corrupt)' apps/tay/test/tay
+  find apps/tay_core/test/tay -type f \( -iname '*recovery*' -o -iname '*restart*' -o -iname '*crash*' \) -print | sort
+  git_grep_report 'test .*(recover|restart|crash|kill|truncate|torn|corrupt)' apps/tay_core/test/tay
 }
 run_check "4a" "Recovery and crash test inventory" check_recovery_inventory
 run_mix_test_files "4b" "Recovery and crash executable tests" \
@@ -231,7 +231,7 @@ run_mix_test_files "4b" "Recovery and crash executable tests" \
 
 run_check "5a" "Disk-full, I/O, and permission fault coverage inventory" \
   git_grep_report 'ENOSPC|disk.?full|no space|EIO|I/O|EACCES|EPERM|permission|read.?only|write.?fault|sync.?fault|fsync|fdatasync|fault' \
-  apps/tay/c_src apps/*/lib apps/*/test docs
+  apps/tay_core/c_src apps/*/lib apps/*/test docs
 run_mix_test_files "5b" "Filesystem fault executable tests" \
   test/tay/engine/fault_test.exs \
   test/tay/execution/fault_test.exs \
@@ -245,7 +245,7 @@ run_mix_test_files "5b" "Filesystem fault executable tests" \
 
 run_check "6a" "Compaction implementation and configuration inventory" \
   git_grep_report 'compaction|terminal_retention|max_terminal|high.?water|cooldown|sealed' \
-  apps/tay/lib/tay config docs standalone/lib standalone/config
+  apps/tay_core/lib/tay config docs standalone/lib standalone/config
 run_mix_test_files "6b" "Compaction executable tests" \
   test/tay/engine/compaction_policy_test.exs \
   test/tay/engine/compaction_runtime_test.exs \
@@ -253,7 +253,7 @@ run_mix_test_files "6b" "Compaction executable tests" \
 
 run_check "7a" "Retry, scheduling, cancellation, and delivery-semantics inventory" \
   git_grep_report 'retry|backoff|schedule|cron|cancel|at.?least.?once|exactly.?once|idempoten|attempt|reservation|fence' \
-  apps/*/lib docs README.md clients/python/README.md apps/tay/test/tay
+  apps/*/lib docs README.md clients/python/README.md apps/tay_core/test/tay
 run_mix_test_files "7b" "Retry, scheduling, and cancellation executable tests" \
   test/tay/execution/retry_test.exs \
   test/tay/execution/control_test.exs \
@@ -288,8 +288,8 @@ run_mix_test_files "9b" "Backpressure and capacity executable tests" \
   test/tay/execution/resource_test.exs
 
 check_backup_inventory() {
-  sed -n '1,260p' apps/tay/lib/mix/tasks/tay.storage.backup.ex || return
-  sed -n '1,260p' apps/tay/lib/mix/tasks/tay.storage.restore.ex || return
+  sed -n '1,260p' apps/tay_core/lib/mix/tasks/tay.storage.backup.ex || return
+  sed -n '1,260p' apps/tay_core/lib/mix/tasks/tay.storage.restore.ex || return
   git_grep_report 'backup|restore|cold.?copy|catalog|sha-?256|live owner' apps docs
 }
 run_check "10a" "Backup, restore, and cold-copy inventory" check_backup_inventory
@@ -339,7 +339,7 @@ fi
 
 run_check "13a" "Upgrade, migration, and backward-compatibility inventory" \
   git_grep_report 'upgrade|migration|migrat|backward.?compat|forward.?compat|frozen|unsupported version|protocol version|store.?v1|store.?v2' \
-  apps/*/lib apps/tay/test/fixtures apps/*/test/tay docs CHANGELOG.md RELEASING.md README.md clients/python
+  apps/*/lib apps/tay_core/test/fixtures apps/*/test/tay docs CHANGELOG.md RELEASING.md README.md clients/python
 run_mix_test_files "13b" "Upgrade and compatibility executable tests" \
   test/tay/event/codec_test.exs \
   test/tay/storage/record_fixture_test.exs \
@@ -353,7 +353,7 @@ check_load_inventory() {
   git_grep_report 'load|stress|soak|benchmark|concurr|race|parallel|10000|100000|phase_c|large' \
     apps/*/test bench .github/workflows docs || return
   printf '\n=== Qualification and benchmark assets ===\n'
-  find bench apps/tay/test/tay/qualification -maxdepth 3 -type f -print | sort
+  find bench apps/tay_core/test/tay/qualification -maxdepth 3 -type f -print | sort
   printf '\n=== Profiles advertised by the repository runner ===\n'
   ./bench/run-profile.sh --help
 }
@@ -391,10 +391,10 @@ fi
 
 run_check "15" "Documented guarantees, limitations, and idempotency" \
   git_grep_report 'guarantee|does not guarantee|limitation|unsupported|must not|never|at.?least.?once|exactly.?once|idempoten|durab|acknowledg|best effort|fail.?closed|plaintext|single.?node|power.?loss|filesystem|retention|capacity' \
-  README.md CHANGELOG.md RELEASING.md docs clients/python/README.md bench/README.md apps/tay/c_src/README.md standalone/lib
+  README.md CHANGELOG.md RELEASING.md docs clients/python/README.md bench/README.md apps/tay_core/c_src/README.md standalone/lib
 
 check_release_inventory() {
-  sed -n '1,280p' apps/tay/mix.exs || return
+  sed -n '1,280p' apps/tay_core/mix.exs || return
   sed -n '1,280p' clients/python/pyproject.toml || return
   sed -n '1,340p' Dockerfile || return
   sed -n '1,300p' RELEASING.md || return
@@ -430,9 +430,9 @@ if require_tools_or_unknown "16c" "Build and validate Python artifacts without p
   run_check "16c" "Build and validate Python artifacts without publishing" build_python_artifacts
 fi
 
-if [ ! -f apps/tay/test/tay/system/package_test.exs ]; then
+if [ ! -f apps/tay_core/test/tay/system/package_test.exs ]; then
   skip_check "16d" "Detached Hex consumer and release test" \
-    "missing test file: apps/tay/test/tay/system/package_test.exs"
+    "missing test file: apps/tay_core/test/tay/system/package_test.exs"
 elif [ ! -f "$ARTIFACT_DIR/tay.tar" ]; then
   skip_check "16d" "Detached Hex consumer and release test" \
     "Hex artifact was not produced by check 16b"

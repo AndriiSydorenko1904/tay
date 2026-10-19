@@ -1,0 +1,153 @@
+defmodule Tay.ConfigTest do
+  use ExUnit.Case, async: false
+
+  alias Tay.Config
+
+  test "defaults leave the storage location unconfigured" do
+    assert {:ok,
+            %Config{
+              data_dir: nil,
+              queues: [default: 10],
+              durability: :persistent,
+              journal: [batch: [max_events: 1, interval_ms: 0]]
+            }} = Config.new([])
+
+    assert {:ok, %Config{data_dir: nil}} = Config.new(data_dir: nil)
+  end
+
+  test "normalizes relative paths and preserves explicit queue order" do
+    assert {:ok, config} =
+             Config.new(data_dir: "var/tay/unused/../dev", queues: [mailers: 2, default: 3])
+
+    assert config.data_dir == Path.join(File.cwd!(), "var/tay/dev")
+    assert config.queues == [mailers: 2, default: 3]
+  end
+
+  @tag :tmp_dir
+  test "normalizes absolute paths without creating a directory", %{tmp_dir: tmp_dir} do
+    target = Path.join(tmp_dir, "not-created")
+    refute File.exists?(target)
+
+    assert {:ok, %Config{data_dir: ^target}} = Config.new(data_dir: target <> "/child/..")
+
+    refute File.exists?(target)
+  end
+
+  test "preserves nonblank path whitespace rather than rewriting it" do
+    assert {:ok, config} = Config.new(data_dir: "path with spaces ")
+    assert config.data_dir == Path.join(File.cwd!(), "path with spaces ")
+  end
+
+  test "accepts no configured queues" do
+    assert {:ok, %Config{queues: []}} = Config.new(queues: [])
+  end
+
+  test "rejects non-keyword options" do
+    for options <- [nil, :invalid, %{}, "options", [:data_dir], [{"data_dir", "path"}]] do
+      assert {:error, {:invalid_config, :options, "must be a keyword list"}} =
+               Config.new(options)
+    end
+  end
+
+  test "rejects duplicate and unknown options" do
+    assert {:error, {:invalid_config, :options, "must not contain duplicate keys"}} =
+             Config.new(data_dir: "first", data_dir: "second")
+
+    assert {:error, {:invalid_config, :options, "contains an unsupported key"}} =
+             Config.new(typo: true)
+  end
+
+  test "validates selective durability and global journal batching" do
+    assert {:ok,
+            %Config{
+              durability: :volatile,
+              journal: [batch: [max_events: 100, interval_ms: 10]]
+            }} =
+             Config.new(
+               durability: :volatile,
+               journal: [batch: [max_events: 100, interval_ms: 10]]
+             )
+
+    for durability <- [:sync, :write, nil, "persistent"] do
+      assert {:error, {:invalid_config, :durability, _}} =
+               Config.new(durability: durability)
+    end
+
+    for journal <- [
+          [],
+          [batch: []],
+          [batch: [max_events: 0, interval_ms: 10]],
+          [batch: [max_events: 1, interval_ms: -1]],
+          [batch: [max_events: 1, interval_ms: 10, extra: true]],
+          [batch: [max_events: 1, interval_ms: 10], extra: true]
+        ] do
+      assert {:error, {:invalid_config, :journal, _}} = Config.new(journal: journal)
+    end
+  end
+
+  test "rejects invalid path types" do
+    for path <- [123, false, :path, ~c"path", [], %{}] do
+      assert {:error, {:invalid_config, :data_dir, "must be a path string or nil"}} =
+               Config.new(data_dir: path)
+    end
+  end
+
+  test "rejects blank paths" do
+    for path <- ["", " ", "\t\n"] do
+      assert {:error, {:invalid_config, :data_dir, "must not be blank"}} =
+               Config.new(data_dir: path)
+    end
+  end
+
+  test "rejects invalid UTF-8 and NUL bytes" do
+    assert {:error, {:invalid_config, :data_dir, "must contain valid UTF-8"}} =
+             Config.new(data_dir: <<255>>)
+
+    assert {:error, {:invalid_config, :data_dir, "must not contain NUL bytes"}} =
+             Config.new(data_dir: <<"path", 0, "suffix">>)
+  end
+
+  test "rejects non-keyword queues including string names" do
+    for queues <- [nil, %{}, :default, ["default"], [{"default", 10}]] do
+      assert {:error, {:invalid_config, :queues, "must be a keyword list with atom queue names"}} =
+               Config.new(queues: queues)
+    end
+  end
+
+  test "rejects duplicate queue names" do
+    assert {:error, {:invalid_config, :queues, "queue names must be unique"}} =
+             Config.new(queues: [default: 1, default: 2])
+  end
+
+  test "rejects invalid concurrency limits" do
+    for limit <- [0, -1, 1.5, "10", nil, true] do
+      assert {:error, {:invalid_config, :queues, "concurrency limits must be positive integers"}} =
+               Config.new(queues: [default: limit])
+    end
+  end
+
+  test "load reads current application configuration without modifying it" do
+    previous_env = Application.get_all_env(:tay_core)
+
+    on_exit(fn ->
+      for {key, _value} <- Application.get_all_env(:tay_core),
+          do: Application.delete_env(:tay_core, key)
+
+      for {key, value} <- previous_env, do: Application.put_env(:tay_core, key, value)
+    end)
+
+    Application.put_env(:tay_core, :data_dir, "var/tay/first")
+    Application.put_env(:tay_core, :queues, mailers: 4)
+
+    assert {:ok, %Config{data_dir: first_path, queues: [mailers: 4]}} = Config.load()
+    assert first_path == Path.join(File.cwd!(), "var/tay/first")
+    assert Application.get_env(:tay_core, :data_dir) == "var/tay/first"
+
+    Application.put_env(:tay_core, :data_dir, "var/tay/second")
+    assert {:ok, %Config{data_dir: second_path}} = Config.load()
+    assert second_path == Path.join(File.cwd!(), "var/tay/second")
+
+    Application.put_env(:tay_core, :queues, mailers: 0)
+    assert {:error, {:invalid_config, :queues, _message}} = Config.load()
+  end
+end

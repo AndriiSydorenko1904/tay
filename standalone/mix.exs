@@ -2,7 +2,7 @@ defmodule TayStandalone.MixProject do
   use Mix.Project
 
   @root Path.expand("..", __DIR__)
-  @core Path.join(@root, "apps/tay")
+  @core Path.join(@root, "apps/tay_core")
   @version (case Regex.run(~r/@version\s+"([^"]+)"/, File.read!(Path.join(@core, "mix.exs")),
                    capture: :all_but_first
                  ) do
@@ -39,12 +39,12 @@ defmodule TayStandalone.MixProject do
     end
   end
 
-  defp deps(:core), do: [{:tay, path: Path.join(@root, "apps/tay")}]
+  defp deps(:core), do: [{:tay_core, path: Path.join(@root, "apps/tay_core")}]
   defp deps(:http), do: [{:tay_http, path: Path.join(@root, "apps/tay_http")}]
 
   defp deps(:dashboard),
     do: [
-      {:tay_dashboard, path: Path.join(@root, "apps/tay_dashboard")},
+      {:tay, path: Path.join(@root, "apps/tay")},
       {:jason, "~> 1.4"}
     ]
 

@@ -2,9 +2,9 @@
 
 Tay publishes four independent public artifacts from this repository:
 
-- `tay` on Hex.pm for the core Elixir engine;
+- `tay_core` on Hex.pm for the core Elixir engine;
 - `tay_http` on Hex.pm for the Bandit transport;
-- `tay_dashboard` on Hex.pm for the Phoenix LiveView dashboard;
+- `tay` on Hex.pm for the complete Phoenix LiveView bundle;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
 
 Their versions are independent. A Tay release publishes `tay-client` only when
@@ -36,7 +36,7 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix dialyzer
 mix test --warnings-as-errors
-TAY_PACKAGE_TEST=1 MIX_ENV=test mix do --app tay test test/tay/system/package_test.exs --warnings-as-errors
+TAY_PACKAGE_TEST=1 MIX_ENV=test mix do --app tay_core test test/tay/system/package_test.exs --warnings-as-errors
 mix tay.hex.build
 
 uvx ruff check clients/python

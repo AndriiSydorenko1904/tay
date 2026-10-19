@@ -6,9 +6,9 @@ official OCI image and connect a language client via HTTP/JSON or the local
 Executor Protocol v1 Unix socket. The standalone runtime is only a small OTP host around the same
 Engine, scheduler, storage implementation, and recovery rules as the library.
 
-The release is published as `tay`, `tay_http`, and `tay_dashboard` OCI images.
+The release is published as `tay_core`, `tay_http`, and `tay` OCI images.
 The core image contains the Unix-socket runtime, the HTTP image adds Tay HTTP and
-Bandit without Phoenix, and the Dashboard image adds the full Phoenix LiveView UI.
+Bandit without Phoenix, and the default Tay image adds the full Phoenix LiveView UI.
 
 ```text
 Python producer/worker -> HTTPS :8080 ─┐
