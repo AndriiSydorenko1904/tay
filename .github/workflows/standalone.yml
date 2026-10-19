@@ -53,8 +53,8 @@ jobs:
           grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_http:latest' README.md
           grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_dashboard:latest' README.md
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" compose.yml
-          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/standalone.md
-          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/dashboard-container.md
+          grep -Fq "ghcr.io/andriisydorenko1904/tay_http:$version" docs/standalone.md
+          grep -Fq "ghcr.io/andriisydorenko1904/tay_dashboard:$version" docs/dashboard-container.md
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "29.0.2"
