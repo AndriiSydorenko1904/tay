@@ -23,8 +23,8 @@ jobs:
           persist-credentials: false
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1, node24
         with:
-          otp-version: "29.0.2"
-          elixir-version: "1.20.2"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.4"
           version-type: strict
           install-rebar: false
       - name: Install locked test dependency
