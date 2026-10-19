@@ -10,6 +10,12 @@ The release is published as `tay_core`, `tay_http`, and `tay` OCI images.
 The core image contains the Unix-socket runtime, the HTTP image adds Tay HTTP and
 Bandit without Phoenix, and the default Tay image adds the full Phoenix LiveView UI.
 
+```sh
+docker pull ghcr.io/andriisydorenko1904/tay_core:1.6.1
+docker pull ghcr.io/andriisydorenko1904/tay_http:1.6.1
+docker pull ghcr.io/andriisydorenko1904/tay:1.6.1
+```
+
 ```text
 Python producer/worker -> HTTPS :8080 ─┐
 Python local worker   -> Unix socket ──┴─> Tay OTP release -> /var/lib/tay
