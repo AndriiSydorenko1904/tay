@@ -6,7 +6,7 @@ defmodule Tay.Umbrella.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "1.6.0",
+      version: "1.6.1",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: [

@@ -7,8 +7,8 @@ Executor Protocol v1 Unix socket. The standalone runtime is only a small OTP hos
 Engine, scheduler, storage implementation, and recovery rules as the library.
 
 The release is published as `tay`, `tay_http`, and `tay_dashboard` OCI images.
-They currently reference the same qualified artifact; the names make the chosen
-deployment capability explicit while environment variables select active listeners.
+The core image contains the Unix-socket runtime, the HTTP image adds Tay HTTP and
+Bandit without Phoenix, and the Dashboard image adds the full Phoenix LiveView UI.
 
 ```text
 Python producer/worker -> HTTPS :8080 ─┐
@@ -143,7 +143,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay_http:1.6.0
+  ghcr.io/andriisydorenko1904/tay_http:1.6.1
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source

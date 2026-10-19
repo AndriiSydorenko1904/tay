@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.6.1 — 2026-10-19
+
+### Changed
+
+- Split OCI publication into dependency-bounded `tay`, `tay_http`, and
+  `tay_dashboard` images.
+- Selected standalone dependencies and compiled sources according to the
+  requested release flavor.
+
+### Fixed
+
+- Ensured the HTTP-only image excludes `tay_dashboard`, Phoenix, LiveView, and
+  Phoenix PubSub, with automated release-content verification.
+
 ## 1.6.0 — 2026-10-19
 
 ### Changed
@@ -27,8 +41,6 @@
   command, avoiding a separate OTP prompt for HexDocs.
 - Included the core native compiler helper in the staged Docker build context
   before Mix loads the umbrella applications during dependency resolution.
-- Published the qualified standalone artifact under `tay`, `tay_http`, and
-  `tay_dashboard` GHCR image names.
 
 ## 1.5.3 — 2026-10-18
 

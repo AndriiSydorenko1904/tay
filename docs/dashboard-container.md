@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/andriisydorenko1904/tay_dashboard:1.6.0
+  ghcr.io/andriisydorenko1904/tay_dashboard:1.6.1
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -153,7 +153,6 @@ rolling deployment with two replicas sharing the Store.
 
 Use `tay:<version>` for socket-first headless operation, `tay_http:<version>` for
 HTTP deployments, or `tay_dashboard:<version>` with `TAY_ENABLE_DASHBOARD=true`
-when the official UI is needed. These OCI names currently reference the same
-qualified standalone artifact. In an existing Phoenix
+when the official UI is needed. In an existing Phoenix
 application, mount the separate `tay_dashboard` Hex package instead of the standalone web
 host.

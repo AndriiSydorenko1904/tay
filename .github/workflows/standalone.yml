@@ -71,8 +71,13 @@ jobs:
           MIX_ENV=prod mix release tay_standalone
       - name: Exercise fresh start, readiness, stop, and recovery
         run: standalone/test/release_smoke.sh
-      - name: Build the production image
-        run: docker build --tag tay-standalone:test .
+      - name: Build the production images
+        run: |
+          docker build --target tay --tag tay-standalone:test .
+          docker build --target tay_http --tag tay-http:test .
+          docker build --target tay_dashboard --tag tay-dashboard:test .
+      - name: Verify HTTP release excludes Dashboard and Phoenix
+        run: standalone/test/http_release_contents.sh tay-http:test
       - name: Build the example Python worker
         run: >-
           docker build --file examples/standalone/worker.Dockerfile
@@ -81,7 +86,7 @@ jobs:
         run: >-
           standalone/test/container_smoke.sh
           tay-standalone:test tay-standalone-worker:test
-      - name: Exercise the optional dashboard in the same image
-        run: standalone/test/dashboard_container_smoke.sh tay-standalone:test
+      - name: Exercise the Dashboard image
+        run: standalone/test/dashboard_container_smoke.sh tay-dashboard:test
       - name: Exercise HTTP-only mode without a Unix socket
-        run: standalone/test/http_only_container_smoke.sh tay-standalone:test
+        run: standalone/test/http_only_container_smoke.sh tay-http:test

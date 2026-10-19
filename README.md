@@ -65,9 +65,8 @@ Pull the standalone image:
 docker pull ghcr.io/andriisydorenko1904/tay:latest
 ```
 
-The same tested standalone runtime is published under capability-oriented
-names as well: `tay_http` for HTTP deployments and `tay_dashboard` for the
-complete dashboard deployment.
+Capability-specific releases are also available: `tay_http` contains the HTTP
+transport without Phoenix, while `tay_dashboard` contains the complete UI stack.
 
 ```sh
 docker pull ghcr.io/andriisydorenko1904/tay_http:latest
@@ -496,16 +495,16 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.6.0
+ghcr.io/andriisydorenko1904/tay:1.6.1
 ghcr.io/andriisydorenko1904/tay:latest
-ghcr.io/andriisydorenko1904/tay_http:1.6.0
+ghcr.io/andriisydorenko1904/tay_http:1.6.1
 ghcr.io/andriisydorenko1904/tay_http:latest
-ghcr.io/andriisydorenko1904/tay_dashboard:1.6.0
+ghcr.io/andriisydorenko1904/tay_dashboard:1.6.1
 ghcr.io/andriisydorenko1904/tay_dashboard:latest
 ```
 
-All three names currently reference the same qualified standalone artifact;
-the selected runtime capability is controlled through its environment settings.
+Each image contains only its transitive application layer: `tay` is core/socket,
+`tay_http` adds Bandit HTTP, and `tay_dashboard` adds Phoenix LiveView.
 
 The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 

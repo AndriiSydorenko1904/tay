@@ -2,7 +2,7 @@ Code.require_file("mix_helpers/tay_native.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.6.0"
+  @version "1.6.1"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
   @umbrella_root Path.expand("../..", __DIR__)
 

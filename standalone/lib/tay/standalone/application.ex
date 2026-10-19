@@ -3,12 +3,14 @@ defmodule Tay.Standalone.Application do
 
   use Application
 
+  @dashboard_application Module.concat([Tay, Dashboard, Standalone, Application])
+
   @impl true
   def start(_type, _args) do
     environment = Application.get_env(:tay_standalone, :environment, System.get_env())
 
     with {:ok, config} <- Tay.Standalone.Config.load(environment),
-         {:ok, dashboard_children} <- Tay.Dashboard.Standalone.Application.children(environment) do
+         {:ok, dashboard_children} <- dashboard_children(environment) do
       engine_children =
         if Application.get_env(:tay_standalone, :start_runtime, true) do
           [
@@ -48,6 +50,26 @@ defmodule Tay.Standalone.Application do
     else
       {:error, {:invalid_dashboard_configuration, _} = reason} -> {:error, reason}
       {:error, message} -> {:error, {:invalid_runtime_configuration, message}}
+    end
+  end
+
+  defp dashboard_children(environment) do
+    case Application.fetch_env!(:tay_standalone, :flavor) do
+      :dashboard -> apply(@dashboard_application, :children, [environment])
+      _ -> dashboard_disabled(environment)
+    end
+  end
+
+  defp dashboard_disabled(environment) do
+    case Map.get(environment, "TAY_ENABLE_DASHBOARD", "false") do
+      value when value in ["false", "FALSE", "0"] ->
+        {:ok, []}
+
+      value when value in ["true", "TRUE", "1"] ->
+        {:error, "dashboard is not included in this release"}
+
+      _ ->
+        {:error, "TAY_ENABLE_DASHBOARD must be one of true, false, TRUE, FALSE, 1, or 0"}
     end
   end
 end
