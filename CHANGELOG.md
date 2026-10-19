@@ -21,6 +21,8 @@
   before Tay starts, instead of depending on artifacts from a child build.
 - Loaded custom Mix tasks from require-once helper files so long-running
   language servers do not report false module-redefinition diagnostics.
+- Kept Hex publication subprocesses attached to the terminal so two-factor
+  authentication prompts remain interactive through `mix tay.hex.publish`.
 
 ## 1.5.3 — 2026-10-18
 

@@ -57,8 +57,16 @@ and publish the package and HexDocs:
 
 ```sh
 mix hex.user auth
+mix tay.hex.publish --dry-run
 mix tay.hex.publish
 ```
+
+The dry run exercises the same package order and metadata switching without
+uploading artifacts or requesting a two-factor code. During real publication,
+the child Hex processes inherit the terminal so interactive OTP prompts work.
+Adapter packages resolve their just-published upstream package inside a
+disposable build workspace; the repository lockfile and dependency directory
+remain unchanged.
 
 To replace HexDocs for an already published version without republishing the
 immutable package tarball, publish only docs from the corresponding child:

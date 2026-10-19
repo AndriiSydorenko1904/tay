@@ -33,16 +33,32 @@ defmodule TayHTTP.MixProject do
   end
 
   defp umbrella_paths do
-    if umbrella_checkout?() do
-      [
-        build_path: Path.join(@umbrella_root, "_build"),
-        config_path: Path.join(@umbrella_root, "config/config.exs"),
-        deps_path: Path.join(@umbrella_root, "deps"),
-        lockfile: Path.join(@umbrella_root, "mix.lock")
-      ]
-    else
-      []
+    case {System.get_env("TAY_HEX_BUILD"), System.get_env("TAY_HEX_WORKSPACE")} do
+      {"1", workspace} when is_binary(workspace) ->
+        isolated_hex_paths(workspace)
+
+      _ ->
+        if umbrella_checkout?() do
+          [
+            build_path: Path.join(@umbrella_root, "_build"),
+            config_path: Path.join(@umbrella_root, "config/config.exs"),
+            deps_path: Path.join(@umbrella_root, "deps"),
+            lockfile: Path.join(@umbrella_root, "mix.lock")
+          ]
+        else
+          []
+        end
     end
+  end
+
+  defp isolated_hex_paths(workspace) do
+    workspace = Path.expand(workspace)
+
+    [
+      build_path: Path.join(workspace, "build"),
+      deps_path: Path.join(workspace, "deps"),
+      lockfile: Path.join(workspace, "mix.lock")
+    ]
   end
 
   defp umbrella_checkout? do
