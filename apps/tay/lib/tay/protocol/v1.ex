@@ -20,6 +20,7 @@ defmodule Tay.Executor.Protocol do
   defdelegate reply(type, request_id), to: Codec
   defdelegate reply(type, request_id, fields), to: Codec
   defdelegate json_bytes(value, max_bytes), to: Codec
+  defdelegate decode_json(bytes), to: Codec
   defdelegate json_value?(value), to: Codec
   defdelegate json_value?(value, limits), to: Codec
 end

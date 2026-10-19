@@ -233,16 +233,12 @@ defmodule Tay.HTTP.Router do
   end
 
   defp decode_object(body) do
-    try do
-      case :json.decode(body) do
-        value when is_map(value) and not is_struct(value) ->
-          if Protocol.json_value?(value), do: {:ok, value}, else: {:error, "invalid_json_object"}
+    case Protocol.decode_json(body) do
+      {:ok, value} when is_map(value) and not is_struct(value) ->
+        if Protocol.json_value?(value), do: {:ok, value}, else: {:error, "invalid_json_object"}
 
-        _ ->
-          {:error, "invalid_json_object"}
-      end
-    rescue
-      _ -> {:error, "invalid_json_object"}
+      _ ->
+        {:error, "invalid_json_object"}
     end
   end
 
@@ -299,8 +295,10 @@ defmodule Tay.HTTP.Router do
   end
 
   defp json(conn, status, value) do
+    {:ok, body} = Protocol.json_bytes(value, 16_777_216)
+
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(status, :json.encode(value) |> IO.iodata_to_binary())
+    |> Plug.Conn.send_resp(status, body)
   end
 end

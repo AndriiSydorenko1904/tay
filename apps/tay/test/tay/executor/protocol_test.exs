@@ -33,4 +33,12 @@ defmodule Tay.Executor.ProtocolTest do
              "error" => %{"code" => "capacity", "reason" => "client_slots"}
            } = Protocol.error("request-1", "capacity", %{"reason" => "client_slots"})
   end
+
+  test "JSON null is canonicalized to nil at the protocol boundary" do
+    assert {:ok, %{"result" => nil, "nested" => [nil]}} =
+             Protocol.decode_json(~s({"result":null,"nested":[null]}))
+
+    assert {:ok, ~s({"nested":[null],"result":null})} =
+             Protocol.json_bytes(%{"result" => nil, "nested" => [nil]}, 1_024)
+  end
 end

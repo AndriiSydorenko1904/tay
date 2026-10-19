@@ -82,6 +82,10 @@ jobs:
         run: >-
           docker build --file examples/standalone/worker.Dockerfile
           --tag tay-standalone-worker:test .
+      - name: Exercise volatile Python workers over socket and HTTP
+        run: >-
+          standalone/test/worker_execution_container.sh
+          tay-standalone:test tay-http:test tay-standalone-worker:test
       - name: Exercise the production image with named volumes
         run: >-
           standalone/test/container_smoke.sh

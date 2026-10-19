@@ -152,7 +152,7 @@ defmodule Tay.Protocol.V1 do
   @doc "Encodes one JSON-safe value and verifies its independent byte budget."
   def json_bytes(value, max_bytes) when is_integer(max_bytes) and max_bytes >= 1 do
     try do
-      bytes = value |> :json.encode() |> IO.iodata_to_binary()
+      bytes = value |> encode_json_value() |> :json.encode() |> IO.iodata_to_binary()
 
       if byte_size(bytes) <= max_bytes,
         do: {:ok, bytes},
@@ -165,6 +165,19 @@ defmodule Tay.Protocol.V1 do
   end
 
   def json_bytes(_, _), do: {:error, :invalid_json_value}
+
+  @doc false
+  def decode_json(bytes) when is_binary(bytes) do
+    try do
+      {:ok, bytes |> :json.decode() |> decode_json_value()}
+    rescue
+      _ -> {:error, :malformed_json}
+    catch
+      _, _ -> {:error, :malformed_json}
+    end
+  end
+
+  def decode_json(_), do: {:error, :malformed_json}
 
   @doc "Validates portable JSON values without admitting arbitrary BEAM terms."
   def json_value?(value, limits \\ %{depth: @default_max_depth, nodes: @default_max_nodes}) do
@@ -217,17 +230,24 @@ defmodule Tay.Protocol.V1 do
 
   defp validate_value(_, _depth, _nodes), do: throw(:invalid_json_value)
 
-  defp decode_json(bytes) do
-    try do
-      case :json.decode(bytes) do
-        value -> {:ok, value}
-      end
-    rescue
-      _ -> {:error, :malformed_json}
-    catch
-      _, _ -> {:error, :malformed_json}
-    end
-  end
+  # OTP's JSON codec represents JSON null as :null, while Tay's bounded value
+  # and on-disk codecs use nil. Keep that distinction at the transport boundary
+  # so a valid remote result cannot become an invalid storage event.
+  defp decode_json_value(:null), do: nil
+  defp decode_json_value(value) when is_list(value), do: Enum.map(value, &decode_json_value/1)
+
+  defp decode_json_value(value) when is_map(value),
+    do: Map.new(value, fn {key, child} -> {key, decode_json_value(child)} end)
+
+  defp decode_json_value(value), do: value
+
+  defp encode_json_value(nil), do: :null
+  defp encode_json_value(value) when is_list(value), do: Enum.map(value, &encode_json_value/1)
+
+  defp encode_json_value(value) when is_map(value),
+    do: Map.new(value, fn {key, child} -> {key, encode_json_value(child)} end)
+
+  defp encode_json_value(value), do: value
 
   defp valid_frame_limit(limit) when is_integer(limit) and limit in 1..16_777_216, do: :ok
   defp valid_frame_limit(_), do: {:error, :invalid_frame_limit}

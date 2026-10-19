@@ -256,6 +256,97 @@ defmodule Tay.HTTP.APITest do
              })
   end
 
+  test "Python HTTP worker can complete consecutive volatile null-result jobs" do
+    Process.flag(:trap_exit, true)
+    ExecutionHelpers.install()
+    path = NativeHelpers.path()
+    ExecutionHelpers.initialize(path)
+    on_exit(fn -> File.rm_rf!(path) end)
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, {:ip, {127, 0, 0, 1}}])
+    {:ok, port} = :inet.port(listener)
+    :gen_tcp.close(listener)
+
+    assert {:ok, root} =
+             ExecutionHelpers.start(path, __MODULE__,
+               workers: %{},
+               executor_socket: nil,
+               http_port: port,
+               execution_wake_ms: 5
+             )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    base = "http://127.0.0.1:#{port}"
+
+    assert ExecutionHelpers.eventually(fn ->
+             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
+               {:ok, connection} ->
+                 :gen_tcp.close(connection)
+                 true
+
+               _ ->
+                 false
+             end
+           end)
+
+    script = """
+    import asyncio
+    import contextlib
+    import sys
+    sys.path.insert(0, #{inspect(Path.expand("../../../../../clients/python", __DIR__))})
+    from tay import TayHTTP, TayHTTPWorker
+
+    async def completed(job):
+        for _ in range(200):
+            if await job.status() == "completed":
+                assert await job.result() is None
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("volatile job did not complete")
+
+    async def main():
+        worker = TayHTTPWorker(sys.argv[1], runtime_id="volatile-http")
+
+        @worker.task(name="loadtest.noop.v1", durability="volatile")
+        def noop():
+            return None
+
+        runner = asyncio.create_task(worker.serve_forever())
+        try:
+            async with TayHTTP(sys.argv[1]) as producer:
+                await completed(await producer.enqueue(
+                    "loadtest.noop.v1", {}, durability="volatile"
+                ))
+                await completed(await producer.enqueue(
+                    "loadtest.noop.v1", {}, durability="volatile"
+                ))
+        finally:
+            runner.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await runner
+            await worker.close()
+
+    asyncio.run(main())
+    """
+
+    python = System.find_executable("python3.12") || System.find_executable("python3.11")
+    assert {"", 0} = System.cmd(python, ["-c", script, base], stderr_to_stdout: true)
+
+    assert %{
+             state: :ready,
+             active_jobs: 0,
+             running_executions: 0,
+             unsettled_executions: 0,
+             volatile_jobs: 2
+           } = Tay.status(name: __MODULE__)
+  end
+
   test "Bandit serves producer operations as bounded JSON" do
     Process.flag(:trap_exit, true)
     ExecutionHelpers.install()

@@ -7,5 +7,6 @@ COPY clients/python /tmp/tay-client
 RUN python -m pip install --no-cache-dir /tmp/tay-client && rm -rf /tmp/tay-client
 COPY --chown=worker:worker examples/standalone/worker.py ./worker.py
 COPY --chown=worker:worker examples/standalone/smoke_client.py ./smoke_client.py
+COPY --chown=worker:worker examples/standalone/volatile_execution.py ./volatile_execution.py
 USER 10002:10001
 CMD ["python", "-m", "tay", "worker:tay"]

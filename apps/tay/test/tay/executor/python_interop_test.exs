@@ -175,6 +175,80 @@ defmodule Tay.Executor.PythonInteropTest do
              )
   end
 
+  test "a Python socket worker can complete consecutive volatile null-result jobs", %{
+    path: path,
+    socket: socket
+  } do
+    assert {:ok, root} =
+             ExecutionHelpers.start(path, @name,
+               workers: %{},
+               executor_socket: socket,
+               executor_max_connections: 2,
+               execution_wake_ms: 5
+             )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    assert ExecutionHelpers.eventually(fn -> File.exists?(socket) end)
+
+    script = """
+    import asyncio
+    import sys
+
+    sys.path.insert(0, #{inspect(Path.expand("../../../../../clients/python", __DIR__))})
+    from tay import Tay
+
+    async def completed(job):
+        for _ in range(200):
+            if await job.status() == "completed":
+                assert await job.result() is None
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("volatile job did not complete")
+
+    async def main():
+        client = Tay(mode="embedded", socket_path=sys.argv[1], client_id="volatile-socket")
+
+        @client.task(name="loadtest.noop.v1", durability="volatile")
+        def noop():
+            return None
+
+        await client.start()
+        try:
+            await completed(await noop.enqueue())
+            await completed(await noop.enqueue())
+        finally:
+            await client.close()
+
+    asyncio.run(main())
+    """
+
+    python =
+      if File.exists?("/opt/homebrew/bin/python3"),
+        do: "/opt/homebrew/bin/python3",
+        else: System.find_executable("python3")
+
+    assert {"", 0} =
+             System.cmd(python, ["-c", script, socket],
+               stderr_to_stdout: true,
+               env: [{"PYTHONPYCACHEPREFIX", "/private/tmp/tay-python-cache"}]
+             )
+
+    assert %{
+             state: :ready,
+             active_jobs: 0,
+             running_executions: 0,
+             unsettled_executions: 0,
+             volatile_jobs: 2
+           } = Tay.status(name: @name)
+  end
+
   test "a Python producer receives the exact admission capacity reason", %{
     path: path,
     socket: socket
