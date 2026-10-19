@@ -1,8 +1,6 @@
 # Tay Dashboard
 
-`tay_dashboard` supplies the Phoenix LiveView dashboard for `tay`. It depends
-on `tay` and Phoenix/LiveView, but not on Bandit, so a host Phoenix application
-can mount it with `Tay.Dashboard.Router.tay_dashboard/2`.
-
-Maintainers build or publish this umbrella child with `TAY_HEX_BUILD=1`; that
-switches its local core dependency to the published `tay` version.
+`tay_dashboard` is the complete Tay web bundle. It supplies the Phoenix
+LiveView dashboard, depends on `tay_http`, and transitively installs the core
+`tay` engine and Bandit HTTP(S) transport. A host Phoenix application can mount
+it with `Tay.Dashboard.Router.tay_dashboard/2`.

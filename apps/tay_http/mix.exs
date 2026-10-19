@@ -27,14 +27,13 @@ defmodule TayHTTP.MixProject do
     ]
 
   defp tay_dependency do
-    if System.get_env("TAY_HEX_BUILD") == "1",
+    if System.get_env("TAY_HEX_BUILD") == "1" or not umbrella_checkout?(),
       do: {:tay, "~> 1.6"},
       else: {:tay, "~> 1.6", in_umbrella: true}
   end
 
   defp umbrella_paths do
-    if File.regular?(Path.join(@umbrella_root, "apps/tay/mix.exs")) and
-         File.regular?(Path.join(@umbrella_root, "apps/tay_dashboard/mix.exs")) do
+    if umbrella_checkout?() do
       [
         build_path: Path.join(@umbrella_root, "_build"),
         config_path: Path.join(@umbrella_root, "config/config.exs"),
@@ -44,6 +43,11 @@ defmodule TayHTTP.MixProject do
     else
       []
     end
+  end
+
+  defp umbrella_checkout? do
+    File.regular?(Path.join(@umbrella_root, "apps/tay/mix.exs")) and
+      File.regular?(Path.join(@umbrella_root, "apps/tay_dashboard/mix.exs"))
   end
 
   defp package,

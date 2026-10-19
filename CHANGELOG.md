@@ -6,12 +6,19 @@
 
 - Converted the repository into an umbrella with independently publishable
   `tay`, `tay_http`, and `tay_dashboard` applications.
+- Made installation transitive: `tay_http` installs core `tay`, while
+  `tay_dashboard` installs the complete `tay_http` → `tay` stack.
 - Removed Bandit, Phoenix, and LiveView from the core `tay` dependency graph;
   HTTP and dashboard users now opt into their corresponding adapter package.
 - Moved HTTP worker-session state into the core executor boundary and kept the
   Protocol v1 application service transport-independent.
 - Updated standalone releases, OCI builds, qualification workflows, package
   tests, and documentation for the three-application layout.
+
+### Fixed
+
+- Ensured clean umbrella compile and test runs build both native storage helpers
+  before Tay starts, instead of depending on artifacts from a child build.
 
 ## 1.5.3 — 2026-10-18
 

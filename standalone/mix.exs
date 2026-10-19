@@ -18,8 +18,6 @@ defmodule TayStandalone.MixProject do
       elixirc_options: [debug_info: false],
       start_permanent: Mix.env() == :prod,
       deps: [
-        {:tay, "~> 1.6", path: Path.join(@root, "apps/tay"), override: true},
-        {:tay_http, path: Path.join(@root, "apps/tay_http")},
         {:tay_dashboard, path: Path.join(@root, "apps/tay_dashboard")},
         {:jason, "~> 1.4"}
       ],

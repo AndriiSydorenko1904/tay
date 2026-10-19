@@ -37,9 +37,7 @@ mix compile --warnings-as-errors
 mix dialyzer
 mix test --warnings-as-errors
 TAY_PACKAGE_TEST=1 MIX_ENV=test mix do --app tay test test/tay/system/package_test.exs --warnings-as-errors
-(cd apps/tay && mix hex.build)
-(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.build)
-(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.build)
+mix tay.hex.build
 
 uvx ruff check clients/python
 uvx ruff format --check clients/python
@@ -59,19 +57,19 @@ and publish the package and HexDocs:
 
 ```sh
 mix hex.user auth
-(cd apps/tay && mix hex.publish)
-(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.publish)
-(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.publish)
+mix tay.hex.publish
 ```
 
 To replace HexDocs for an already published version without republishing the
 immutable package tarball, publish only docs from the corresponding child:
 
 ```sh
-(cd apps/tay && mix hex.publish docs)
-(cd apps/tay_http && TAY_HEX_BUILD=1 mix hex.publish docs)
-(cd apps/tay_dashboard && TAY_HEX_BUILD=1 mix hex.publish docs)
+mix tay.hex.publish docs
 ```
+
+The repository tasks publish in dependency order and switch adapter package
+metadata from umbrella paths to published Hex dependencies internally; no
+`TAY_HEX_BUILD` environment variable is required at the command line.
 
 Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow
 and PyPI Trusted Publishing. For the first release, configure a pending GitHub

@@ -13,12 +13,13 @@ defmodule Tay.Dashboard.BoundaryTest do
     end
   end
 
-  test "dashboard owns Phoenix without pulling in Bandit" do
+  test "dashboard depends on the HTTP bundle and owns Phoenix" do
     dependencies = Mix.Project.config() |> Keyword.fetch!(:deps) |> Enum.map(&elem(&1, 0))
 
-    assert :tay in dependencies
+    assert :tay_http in dependencies
     assert :phoenix in dependencies
     assert :phoenix_live_view in dependencies
+    refute :tay in dependencies
     refute :bandit in dependencies
   end
 end

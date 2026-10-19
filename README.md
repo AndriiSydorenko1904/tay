@@ -45,9 +45,10 @@ The Elixir codebase is an umbrella with deliberately one-way dependencies:
 | --- | --- | --- |
 | `tay` | durable engine, application/service layer, Unix transport | none |
 | `tay_http` | HTTP/JSON producer and worker transport | Bandit |
-| `tay_dashboard` | operational web UI mounted by a host application | Phoenix/LiveView |
+| `tay_dashboard` | complete HTTP stack and operational web UI | Phoenix/LiveView |
 
-Both optional packages depend on `tay`; core never depends on either adapter.
+Dependencies flow in one direction: `tay_dashboard` → `tay_http` → `tay`.
+Core never depends on either adapter.
 
 > Tay is intentionally single-node and single-writer. It is designed for cases
 > where durable background execution is needed without operating a separate
@@ -174,7 +175,8 @@ Engine can run directly inside the application's supervision tree.
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
 building.
 
-Add the core engine to your application's Mix dependencies:
+Choose the highest layer your application needs. For the framework-free core
+and Unix socket only:
 
 ```elixir
 defp deps do
@@ -184,11 +186,12 @@ defp deps do
 end
 ```
 
-Add only the adapters the application uses:
+For HTTP(S) or the complete dashboard bundle, use one of these instead; lower
+layers are installed transitively:
 
 ```elixir
-{:tay_http, "~> 1.6"}       # enables the http_* engine options
-{:tay_dashboard, "~> 1.6"}  # provides Tay.Dashboard.Router
+{:tay_http, "~> 1.6"}       # HTTP(S), core, and the Unix socket
+{:tay_dashboard, "~> 1.6"}  # dashboard plus HTTP(S), core, and the Unix socket
 ```
 
 Or use the local checkout:
@@ -319,9 +322,9 @@ List and summarize jobs through the bounded public inspection API:
 {:ok, queues} = Tay.queues()
 ```
 
-The optional `tay_dashboard` package provides a Phoenix LiveView dashboard for
-these APIs. The separate `tay_http` package provides the Bandit HTTP transport;
-the core `tay` package depends on neither Phoenix nor Bandit. See the
+The `tay_dashboard` package provides a Phoenix LiveView dashboard for these APIs
+and transitively includes the `tay_http` Bandit transport. The core `tay`
+package depends on neither Phoenix nor Bandit. See the
 [dashboard guide](docs/dashboard.md) for router mounting and access control.
 For Prometheus metrics, OpenTelemetry command spans, gauge polling, event names,
 and label-cardinality guarantees, see the

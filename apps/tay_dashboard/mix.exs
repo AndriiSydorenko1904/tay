@@ -8,7 +8,7 @@ defmodule TayDashboard.MixProject do
       [
         app: :tay_dashboard,
         version: @version,
-        description: "Phoenix LiveView dashboard for Tay",
+        description: "Phoenix LiveView dashboard and HTTP bundle for Tay",
         source_url: @source_url,
         package: package(),
         docs: [main: "readme", source_ref: "v#{@version}", extras: ["README.md"]],
@@ -23,7 +23,7 @@ defmodule TayDashboard.MixProject do
 
   defp deps,
     do: [
-      tay_dependency(),
+      http_dependency(),
       {:phoenix, "~> 1.8.14"},
       {:phoenix_live_view, "~> 1.2.11"},
       {:phoenix_html, "~> 4.3"},
@@ -33,15 +33,14 @@ defmodule TayDashboard.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
 
-  defp tay_dependency do
-    if System.get_env("TAY_HEX_BUILD") == "1",
-      do: {:tay, "~> 1.6"},
-      else: {:tay, "~> 1.6", in_umbrella: true}
+  defp http_dependency do
+    if System.get_env("TAY_HEX_BUILD") == "1" or not umbrella_checkout?(),
+      do: {:tay_http, "~> 1.6"},
+      else: {:tay_http, "~> 1.6", in_umbrella: true}
   end
 
   defp umbrella_paths do
-    if File.regular?(Path.join(@umbrella_root, "apps/tay/mix.exs")) and
-         File.regular?(Path.join(@umbrella_root, "apps/tay_http/mix.exs")) do
+    if umbrella_checkout?() do
       [
         build_path: Path.join(@umbrella_root, "_build"),
         config_path: Path.join(@umbrella_root, "config/config.exs"),
@@ -51,6 +50,11 @@ defmodule TayDashboard.MixProject do
     else
       []
     end
+  end
+
+  defp umbrella_checkout? do
+    File.regular?(Path.join(@umbrella_root, "apps/tay/mix.exs")) and
+      File.regular?(Path.join(@umbrella_root, "apps/tay_http/mix.exs"))
   end
 
   defp package,

@@ -4,11 +4,7 @@ defmodule Mix.Tasks.Compile.TayNative do
 
   @impl true
   def run(_args) do
-    if Mix.Project.config()[:apps_path] do
-      {:noop, []}
-    else
-      compile_native()
-    end
+    if Mix.Project.config()[:app] == :tay, do: compile_native(), else: {:noop, []}
   end
 
   defp compile_native do
@@ -39,7 +35,9 @@ defmodule Mix.Tasks.Compile.TayNative do
 
       args =
         ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-Wformat=2"] ++
-          sanitizer ++ defines ++ ["c_src/tay_storage_helper.c", "-o", Path.join(dir, name)]
+          sanitizer ++
+          defines ++
+          [Path.join(__DIR__, "c_src/tay_storage_helper.c"), "-o", Path.join(dir, name)]
 
       case System.cmd(cc, args, stderr_to_stdout: true) do
         {_, 0} ->

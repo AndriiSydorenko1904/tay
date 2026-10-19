@@ -13,20 +13,24 @@ There are two supported deployment shapes:
    Engine, its Unix executor socket, and a small Phoenix host.
 
 Dashboard source lives in `apps/tay_dashboard/lib/tay/dashboard/`. Phoenix and
-LiveView are dependencies of `tay_dashboard`; core `tay` stays framework-free.
+LiveView are dependencies of `tay_dashboard`. The package pulls in `tay_http`
+and core `tay` transitively, while core stays framework-free.
 
 ## Installation
 
-Add Tay to the host Phoenix application's dependencies:
+Add the complete dashboard bundle to the host Phoenix application's
+dependencies:
 
 ```elixir
 def deps do
   [
-    {:tay, "~> 1.6"},
     {:tay_dashboard, "~> 1.6"}
   ]
 end
 ```
+
+This installs `tay_http` and `tay` transitively, so the same dependency also
+provides HTTP(S) and Unix-socket transports.
 
 Tay 1.x requires Elixir 1.20, Phoenix 1.8, and Phoenix LiveView 1.2.
 The host endpoint must have a working LiveView socket and PubSub,
