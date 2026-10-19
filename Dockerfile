@@ -20,6 +20,7 @@ RUN mix local.hex --force && mix local.rebar --force
 COPY mix.exs mix.lock ./
 COPY config ./config
 COPY apps/tay/mix.exs apps/tay/README.md apps/tay/
+COPY apps/tay/mix_helpers apps/tay/mix_helpers
 COPY apps/tay_http/mix.exs apps/tay_http/README.md apps/tay_http/
 COPY apps/tay_dashboard/mix.exs apps/tay_dashboard/README.md apps/tay_dashboard/
 COPY standalone/mix.exs standalone/mix.lock standalone/
