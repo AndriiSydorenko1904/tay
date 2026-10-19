@@ -1,59 +1,4 @@
-defmodule Mix.Tasks.Compile.TayNative do
-  use Mix.Task.Compiler
-  import Bitwise
-
-  @impl true
-  def run(_args) do
-    if Mix.Project.config()[:app] == :tay, do: compile_native(), else: {:noop, []}
-  end
-
-  defp compile_native do
-    cc =
-      System.find_executable("cc") || Mix.raise("A C compiler is required for Tay's storage Port")
-
-    dir = Path.join(Mix.Project.app_path(), "priv")
-    File.mkdir_p!(dir)
-
-    if Mix.env() != :test do
-      case File.rm(Path.join(dir, "tay_storage_helper_test")) do
-        :ok -> :ok
-        {:error, :enoent} -> :ok
-        {:error, _} -> Mix.raise("Cannot remove stale generated test helper from build output")
-      end
-    end
-
-    builds =
-      if Mix.env() == :test,
-        do: [{"tay_storage_helper", []}, {"tay_storage_helper_test", ["-DTAY_TEST_FAULTS"]}],
-        else: [{"tay_storage_helper", []}]
-
-    Enum.each(builds, fn {name, defines} ->
-      sanitizer =
-        if System.get_env("TAY_NATIVE_SANITIZE") == "1",
-          do: ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"],
-          else: []
-
-      args =
-        ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-Wformat=2"] ++
-          sanitizer ++
-          defines ++
-          [Path.join(__DIR__, "c_src/tay_storage_helper.c"), "-o", Path.join(dir, name)]
-
-      case System.cmd(cc, args, stderr_to_stdout: true) do
-        {_, 0} ->
-          stat = File.stat!(Path.join(dir, name))
-
-          unless stat.type == :regular and (stat.mode &&& 0o111) != 0,
-            do: Mix.raise("Native compiler did not produce an executable regular helper")
-
-        {output, code} ->
-          Mix.raise("Native helper compilation failed (#{code}):\n#{output}")
-      end
-    end)
-
-    {:ok, []}
-  end
-end
+Code.require_file("mix_helpers/tay_native.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
@@ -110,7 +55,7 @@ defmodule Tay.MixProject do
   defp package,
     do: [
       name: "tay",
-      files: ["lib", "c_src", "mix.exs", "README.md"],
+      files: ["lib", "c_src", "mix_helpers", "mix.exs", "README.md"],
       build_tools: ["mix"],
       links: %{"Source" => @source_url},
       licenses: ["Elastic-2.0"]

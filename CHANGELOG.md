@@ -19,6 +19,8 @@
 
 - Ensured clean umbrella compile and test runs build both native storage helpers
   before Tay starts, instead of depending on artifacts from a child build.
+- Loaded custom Mix tasks from require-once helper files so long-running
+  language servers do not report false module-redefinition diagnostics.
 
 ## 1.5.3 — 2026-10-18
 
