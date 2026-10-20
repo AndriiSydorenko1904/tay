@@ -11,6 +11,7 @@ on:
       - standalone/**
       - examples/standalone/**
       - lib/**
+      - mix_helpers/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md
@@ -28,6 +29,7 @@ on:
       - standalone/**
       - examples/standalone/**
       - lib/**
+      - mix_helpers/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md

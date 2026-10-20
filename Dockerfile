@@ -18,6 +18,7 @@ WORKDIR /build
 RUN mix local.hex --force && mix local.rebar --force
 
 COPY mix.exs mix.lock ./
+COPY mix_helpers ./mix_helpers
 COPY config ./config
 COPY c_src ./c_src
 COPY standalone/mix.exs standalone/mix.lock standalone/
