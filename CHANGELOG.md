@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- Avoided redefining the native Mix compiler task when Tay is loaded more than
+  once as a path or Hex dependency.
 - Preserved JSON `null` worker results across Unix-socket and HTTP transports
   by canonicalizing them to Elixir `nil` at the protocol boundary.
 

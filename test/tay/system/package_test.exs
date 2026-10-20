@@ -50,6 +50,7 @@ defmodule Tay.System.PackageTest do
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))
 
     assert File.regular?(Path.join(vendor, "c_src/README.md"))
+    assert File.regular?(Path.join(vendor, "mix_helpers/tay_native.exs"))
 
     for forbidden <- ["test", "priv", "config", ".git", "_build", "deps"],
         do: refute(File.exists?(Path.join(vendor, forbidden)))
