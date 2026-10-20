@@ -39,17 +39,6 @@ Tay can be used in three ways:
 The optional **Tay Dashboard** adds a Phoenix LiveView operational UI and is
 also published as a ready-to-run container image.
 
-The Elixir codebase is an umbrella with deliberately one-way dependencies:
-
-| Package | Responsibility | Framework dependency |
-| --- | --- | --- |
-| `tay_core` | durable engine, application/service layer, Unix transport | none |
-| `tay_http` | HTTP/JSON producer and worker transport | Bandit |
-| `tay` | complete HTTP stack and operational web UI | Phoenix/LiveView |
-
-Dependencies flow in one direction: `tay` → `tay_http` → `tay_core`.
-Core never depends on either adapter.
-
 > Tay is intentionally single-node and single-writer. It is designed for cases
 > where durable background execution is needed without operating a separate
 > database or distributed broker. It is not a replacement for a distributed
@@ -63,14 +52,6 @@ Pull the standalone image:
 
 ```sh
 docker pull ghcr.io/andriisydorenko1904/tay:latest
-```
-
-Capability-specific releases are also available: `tay_core` contains only the
-engine and Unix socket, while `tay_http` adds HTTP without Phoenix.
-
-```sh
-docker pull ghcr.io/andriisydorenko1904/tay_core:latest
-docker pull ghcr.io/andriisydorenko1904/tay_http:latest
 ```
 
 For a ready-made Tay deployment example:
@@ -102,7 +83,7 @@ Then open:
 http://localhost:4000/tay
 ```
 
-The default `tay` image includes the dashboard; enable the UI with
+The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
@@ -183,37 +164,20 @@ Engine can run directly inside the application's supervision tree.
 Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
 building.
 
-Choose the highest layer your application needs. For the framework-free core
-and Unix socket only:
+Add Tay to your application's Mix dependencies:
 
 ```elixir
 defp deps do
   [
-    {:tay_core, "~> 1.6"}
+    {:tay, "~> 1.0"}
   ]
 end
 ```
 
-For HTTP(S) or the complete dashboard bundle, use one of these instead; lower
-layers are installed transitively:
-
-```elixir
-{:tay_http, "~> 1.6"}  # HTTP(S), core, and the Unix socket
-{:tay, "~> 1.6"}       # dashboard plus HTTP(S), core, and the Unix socket
-```
-
-Installing `tay` makes the complete bundle available but does not
-start or expose a web endpoint. In a host Phoenix application, mount
-`tay_dashboard/2`; it uses the host endpoint's existing `secret_key_base`, so
-the standalone-only `TAY_ENABLE_DASHBOARD` and
-`TAY_DASHBOARD_SECRET_KEY_BASE` variables are unnecessary. The bundled
-standalone/container endpoint remains disabled by default and requires both
-variables when enabled.
-
 Or use the local checkout:
 
 ```elixir
-{:tay_core, path: "../tay/apps/tay_core"}
+{:tay, path: "../tay"}
 ```
 
 Then run:
@@ -298,7 +262,7 @@ Jobs are persistent by default. Selective durability is resolved from the
 individual insertion, then the worker default, then the global default:
 
 ```elixir
-config :tay_core,
+config :tay,
   durability: :persistent,
   journal: [batch: [max_events: 100, interval_ms: 10]]
 
@@ -338,9 +302,8 @@ List and summarize jobs through the bounded public inspection API:
 {:ok, queues} = Tay.queues()
 ```
 
-The `tay` package provides a Phoenix LiveView dashboard for these APIs
-and transitively includes the `tay_http` Bandit transport. The core `tay_core`
-package depends on neither Phoenix nor Bandit. See the
+The `tay` package includes a Phoenix LiveView dashboard for these APIs.
+Its modules live under `lib/tay/dashboard/`; see the
 [dashboard guide](docs/dashboard.md) for router mounting and access control.
 For Prometheus metrics, OpenTelemetry command spans, gauge polling, event names,
 and label-cardinality guarantees, see the
@@ -496,16 +459,11 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.6.1
+ghcr.io/andriisydorenko1904/tay:1.7.0
 ghcr.io/andriisydorenko1904/tay:latest
-ghcr.io/andriisydorenko1904/tay_http:1.6.1
-ghcr.io/andriisydorenko1904/tay_http:latest
-ghcr.io/andriisydorenko1904/tay_core:1.6.1
-ghcr.io/andriisydorenko1904/tay_core:latest
 ```
 
-Each image contains only its transitive application layer: `tay_core` is
-core/socket, `tay_http` adds Bandit HTTP, and `tay` adds Phoenix LiveView.
+It includes the Erlang VM and Tay runtime.
 
 The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 

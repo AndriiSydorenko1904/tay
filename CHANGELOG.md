@@ -1,49 +1,26 @@
 # Changelog
 
-## 1.6.1 — 2026-10-19
+## 1.7.0 — 2026-10-20
 
 ### Changed
 
-- Renamed the minimal engine package and image to `tay_core`, and made `tay`
-  the complete dashboard bundle. Dependencies now flow `tay` → `tay_http` →
-  `tay_core`.
-- Split OCI publication into dependency-bounded `tay_core`, `tay_http`, and
-  `tay` images.
-- Selected standalone dependencies and compiled sources according to the
-  requested release flavor.
+- Returned to one complete `tay` Hex package and one `tay` OCI image. HTTP and
+  Dashboard remain bundled, while the standalone Dashboard stays disabled by
+  default and starts only when `TAY_ENABLE_DASHBOARD=true`.
+- Retained the transport-independent Protocol v1 and execution-boundary
+  improvements developed during the 1.6 series.
 
 ### Fixed
 
-- Ensured the HTTP-only image excludes `tay`, Phoenix, LiveView, and
-  Phoenix PubSub, with automated release-content verification.
+- Preserved JSON `null` worker results across Unix-socket and HTTP transports
+  by canonicalizing them to Elixir `nil` at the protocol boundary.
 
-## 1.6.0 — 2026-10-19
+## 1.6.x — Experimental, withdrawn
 
-### Changed
-
-- Converted the repository into an umbrella with independently publishable
-  `tay`, `tay_http`, and `tay_dashboard` applications.
-- Made installation transitive: `tay_http` installs core `tay`, while
-  `tay_dashboard` installs the complete `tay_http` → `tay` stack.
-- Removed Bandit, Phoenix, and LiveView from the core `tay` dependency graph;
-  HTTP and dashboard users now opt into their corresponding adapter package.
-- Moved HTTP worker-session state into the core executor boundary and kept the
-  Protocol v1 application service transport-independent.
-- Updated standalone releases, OCI builds, qualification workflows, package
-  tests, and documentation for the three-application layout.
-
-### Fixed
-
-- Ensured clean umbrella compile and test runs build both native storage helpers
-  before Tay starts, instead of depending on artifacts from a child build.
-- Loaded custom Mix tasks from require-once helper files so long-running
-  language servers do not report false module-redefinition diagnostics.
-- Kept Hex publication subprocesses attached to the terminal so two-factor
-  authentication prompts remain interactive through `mix tay.hex.publish`.
-- Combined each adapter package and documentation upload into one Hex publish
-  command, avoiding a separate OTP prompt for HexDocs.
-- Included the core native compiler helper in the staged Docker build context
-  before Mix loads the umbrella applications during dependency resolution.
+- The `tay_core` / `tay_http` / `tay` package split was an unsuccessful
+  experiment: its operational and release complexity outweighed the small RAM
+  reduction. The 1.6 series is not recommended for production use. Stay on
+  1.5.3 until 1.7.0 is released, then upgrade directly to 1.7.x.
 
 ## 1.5.3 — 2026-10-18
 

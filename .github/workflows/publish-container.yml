@@ -18,16 +18,6 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: tay_core
-            target: tay_core
-          - image: tay_http
-            target: tay_http
-          - image: tay
-            target: tay
     permissions:
       contents: read
       packages: write
@@ -44,7 +34,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay_core/mix.exs)
+          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$version"
           test "$RELEASE_TAG" = "v$version"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
@@ -66,24 +56,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: meta
+      - name: Generate core image metadata
+        id: meta_core
         uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.stable == 'true' }}
             type=raw,value=latest,enable=${{ steps.version.outputs.stable == 'true' }}
 
-      - name: Build and publish images
+      - name: Build and publish core image
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
-          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_core.outputs.tags }}
+          labels: ${{ steps.meta_core.outputs.labels }}
           provenance: mode=max
           sbom: true

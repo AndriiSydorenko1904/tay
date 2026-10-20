@@ -1,9 +1,8 @@
 #!/bin/sh
 set -eu
 
-core_image=${1:?usage: worker_execution_container.sh CORE_IMAGE HTTP_IMAGE WORKER_IMAGE}
-http_image=${2:?usage: worker_execution_container.sh CORE_IMAGE HTTP_IMAGE WORKER_IMAGE}
-worker_image=${3:?usage: worker_execution_container.sh CORE_IMAGE HTTP_IMAGE WORKER_IMAGE}
+image=${1:?usage: worker_execution_container.sh TAY_IMAGE WORKER_IMAGE}
+worker_image=${2:?usage: worker_execution_container.sh TAY_IMAGE WORKER_IMAGE}
 suffix=$$
 container="tay-worker-execution-$suffix"
 data_volume="tay-worker-execution-data-$suffix"
@@ -43,7 +42,7 @@ docker run -d --name "$container" \
   -e TAY_INITIALIZE_IF_MISSING=true \
   -v "$data_volume:/var/lib/tay" \
   -v "$socket_volume:/run/tay" \
-  "$core_image" >/dev/null
+  "$image" >/dev/null
 wait_healthy
 docker run --rm \
   -v "$socket_volume:/run/tay" \
@@ -59,7 +58,7 @@ docker run -d --name "$container" \
   -e TAY_SOCKET_PATH=off \
   -e TAY_HTTP_PORT=8080 \
   -v "$data_volume:/var/lib/tay" \
-  "$http_image" >/dev/null
+  "$image" >/dev/null
 wait_healthy
 docker run --rm --network "container:$container" \
   "$worker_image" python /app/volatile_execution.py http http://127.0.0.1:8080

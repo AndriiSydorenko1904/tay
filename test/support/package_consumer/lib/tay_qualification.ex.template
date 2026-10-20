@@ -1,0 +1,128 @@
+defmodule TayQualification.Worker do
+  use Tay.Worker, key: "package.qualification.v1"
+  @impl true
+  def perform(job) do
+    File.write!(System.fetch_env!("TAY_PACKAGE_EFFECT"), job.id <> "\n", [:append])
+    :ok
+  end
+end
+
+defmodule TayQualification.Probe do
+  import Bitwise
+
+  def verify do
+    {:ok, _} = Application.ensure_all_started(:tay_qualification)
+    [] = Supervisor.which_children(Tay.Supervisor)
+    %{state: :unavailable} = Tay.status()
+    true = is_nil(System.find_executable("cc"))
+    true = is_nil(System.find_executable("mix"))
+    {:error, :nofile} = Code.ensure_loaded(Mix)
+    {:error, :nofile} = Code.ensure_loaded(Tay.Test.ExecutionWorker)
+    {:error, :nofile} = Code.ensure_loaded(Tay.Test.RecoveryDecoder)
+    {:error, :nofile} = Code.ensure_loaded(StreamData)
+    {:module, Tay.Storage.Writer} = Code.ensure_loaded(Tay.Storage.Writer)
+    {:module, Tay.Storage.Native} = Code.ensure_loaded(Tay.Storage.Native)
+
+    for arity <- 4..6 do
+      false = function_exported?(Tay.Storage.Writer, :inject_fault, arity)
+      false = function_exported?(Tay.Storage.Native, :fault, arity)
+    end
+
+    for option <- [
+          [durability: :write],
+          [test_execution: false],
+          [test_clock: Tay.Execution.Clock],
+          [test_terminate: fn _ -> :ok end],
+          [test_hook: fn _ -> :ok end]
+        ] do
+      {:error, _} = Tay.Engine.Config.new([data_dir: System.fetch_env!("TAY_PACKAGE_STORE")] ++ option)
+    end
+
+    priv = Application.app_dir(:tay, "priv")
+    helper = Path.join(priv, "tay_storage_helper")
+    true = File.regular?(helper)
+    true = (File.stat!(helper).mode &&& 0o111) != 0
+    false = File.exists?(Path.join(priv, "tay_storage_helper_test"))
+    false = File.exists?(Application.app_dir(:tay, "test"))
+    false = Enum.any?(:code.get_path(), &String.contains?(List.to_string(&1), "/vendor/"))
+    :ok = rejects_fault_opcode(helper)
+
+    {:ok, frame} = Tay.Storage.Record.encode(%Tay.Storage.Record{
+      record_type: 47,
+      payload_schema_version: 3,
+      sequence: 1,
+      payload: "opaque"
+    })
+    {:ok, %{record_type: 47, payload: "opaque"}, <<>>} = Tay.Storage.Record.decode(frame)
+
+    if System.get_env("TAY_TEST_SYNC") == "1", do: sync_lifecycle()
+    IO.puts("TAY_PACKAGE_RELEASE_OK " <> List.to_string(:erlang.system_info(:system_architecture)))
+  end
+
+  defp rejects_fault_opcode(helper) do
+    port = Port.open({:spawn_executable, String.to_charlist(helper)}, [:binary, :exit_status, :use_stdio, {:packet, 4}])
+    true = Port.command(port, <<1, 240, 1::64, 0::144>>)
+
+    receive do
+      {^port, {:data, <<1, 240, 1::64, 1, _errno::32, 0::64, "invalid_protocol">>}} -> :ok
+    after
+      5000 -> raise "production helper accepted or failed to reject the test-only opcode"
+    end
+
+    Port.close(port)
+    :ok
+  end
+
+  defp sync_lifecycle do
+    path = System.fetch_env!("TAY_PACKAGE_STORE")
+    {:unix, :linux} = :os.type()
+    false = File.exists?(path)
+    {:ok, _} = Tay.Storage.initialize(data_dir: path, durability: :sync, validated_filesystem: true)
+    options = [data_dir: path, durability: :sync, validated_filesystem: true, workers: %{"package.qualification.v1" => TayQualification.Worker}, queues: [default: 1]]
+    {:ok, root} = start_owned(options)
+    {:ok, intent} = TayQualification.Worker.new(%{"from" => "detached release"})
+    {:ok, _} = Tay.insert(intent)
+    completed = completed(intent.id)
+    :completed = completed.state
+    true = File.read!(System.fetch_env!("TAY_PACKAGE_EFFECT")) == intent.id <> "\n"
+    :ok = Supervisor.stop(root)
+    {:ok, next} = start_owned(options)
+    {:ok, recovered} = Tay.get_job(intent.id)
+    :completed = recovered.state
+    true = recovered.definition == completed.definition
+    true = File.read!(System.fetch_env!("TAY_PACKAGE_EFFECT")) == intent.id <> "\n"
+    :ok = Supervisor.stop(next)
+    IO.puts("TAY_PACKAGE_SYNC_LIFECYCLE_OK")
+  end
+
+  # Only the qualification assertion waits for a known asynchronously releasing
+  # flock; it never retries a submitted mutation or an unknown operation result.
+  defp start_owned(options), do: start_owned(options, System.monotonic_time(:millisecond) + 5000)
+  defp start_owned(options, deadline) do
+    result = Tay.start_link(options)
+
+    if busy?(result) and System.monotonic_time(:millisecond) < deadline do
+      Process.sleep(10)
+      start_owned(options, deadline)
+    else
+      result
+    end
+  end
+
+  defp busy?({:error, nested}), do: busy?(nested)
+  defp busy?({:shutdown, nested}), do: busy?(nested)
+  defp busy?({:failed_to_start_child, Tay.Engine, nested}), do: busy?(nested)
+  defp busy?(%Tay.Error{reason: {:recovery, %{kind: :ownership_busy}}}), do: true
+  defp busy?(_), do: false
+
+  defp completed(id), do: completed(id, System.monotonic_time(:millisecond) + 10_000)
+  defp completed(id, deadline) do
+    case Tay.get_job(id) do
+      {:ok, %{state: :completed} = job} -> job
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline, do: raise("release callback did not complete")
+        Process.sleep(10)
+        completed(id, deadline)
+    end
+  end
+end

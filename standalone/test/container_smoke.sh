@@ -41,6 +41,16 @@ done
 
 test "$(docker inspect --format '{{.Config.User}}' "$container")" = "10001:10001"
 
+docker exec "$container" bin/tay_standalone rpc '
+  case {
+    Process.whereis(Tay.Dashboard.Standalone.Endpoint),
+    Process.whereis(Tay.Dashboard.Standalone.PubSub)
+  } do
+    {nil, nil} -> :ok
+    processes -> raise "dashboard started while disabled: #{inspect(processes)}"
+  end
+' >/dev/null
+
 job_id=
 if test -n "$worker_image"; then
   docker run -d --name "$worker_container" \

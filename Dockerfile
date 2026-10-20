@@ -6,7 +6,7 @@ ARG DEBIAN_VERSION=trixie-20260623-slim
 ARG BUILDER_IMAGE=hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}
 ARG RUNNER_IMAGE=debian:${DEBIAN_VERSION}
 
-FROM ${BUILDER_IMAGE} AS build-base
+FROM ${BUILDER_IMAGE} AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential ca-certificates git \
@@ -19,50 +19,19 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY mix.exs mix.lock ./
 COPY config ./config
-COPY apps/tay_core/mix.exs apps/tay_core/README.md apps/tay_core/
-COPY apps/tay_core/mix_helpers apps/tay_core/mix_helpers
-COPY apps/tay_http/mix.exs apps/tay_http/README.md apps/tay_http/
-COPY apps/tay/mix.exs apps/tay/README.md apps/tay/
+COPY c_src ./c_src
 COPY standalone/mix.exs standalone/mix.lock standalone/
 COPY standalone/config standalone/config
-
-FROM build-base AS build-core
-ENV TAY_STANDALONE_FLAVOR=core
 WORKDIR /build/standalone
 RUN mix deps.get --only prod --check-locked
-WORKDIR /build
-COPY apps/tay_core/lib apps/tay_core/lib
-COPY apps/tay_core/c_src apps/tay_core/c_src
-COPY standalone/lib/tay/standalone standalone/lib/tay/standalone
-WORKDIR /build/standalone
-RUN mix compile --warnings-as-errors && mix release tay_standalone
 
-FROM build-base AS build-http
-ENV TAY_STANDALONE_FLAVOR=http
-WORKDIR /build/standalone
-RUN mix deps.get --only prod --check-locked
 WORKDIR /build
-COPY apps/tay_core/lib apps/tay_core/lib
-COPY apps/tay_core/c_src apps/tay_core/c_src
-COPY apps/tay_http/lib apps/tay_http/lib
-COPY standalone/lib/tay/standalone standalone/lib/tay/standalone
-WORKDIR /build/standalone
-RUN mix compile --warnings-as-errors && mix release tay_standalone
-
-FROM build-base AS build-dashboard
-ENV TAY_STANDALONE_FLAVOR=dashboard
-WORKDIR /build/standalone
-RUN mix deps.get --only prod --check-locked
-WORKDIR /build
-COPY apps/tay_core/lib apps/tay_core/lib
-COPY apps/tay_core/c_src apps/tay_core/c_src
-COPY apps/tay_http/lib apps/tay_http/lib
-COPY apps/tay/lib apps/tay/lib
+COPY lib ./lib
 COPY standalone/lib standalone/lib
 WORKDIR /build/standalone
 RUN mix compile --warnings-as-errors && mix release tay_standalone
 
-FROM ${RUNNER_IMAGE} AS runtime-base
+FROM ${RUNNER_IMAGE} AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libsctp1 libstdc++6 libssl3 ncurses-base \
@@ -73,6 +42,7 @@ RUN apt-get update \
     && install -d -o tay -g tay -m 0700 /tmp/tay
 
 WORKDIR /opt/tay
+COPY --from=build --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
 
 USER 10001:10001
 
@@ -101,14 +71,3 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=15m --retries=12 \
 
 ENTRYPOINT ["/opt/tay/bin/tay_standalone"]
 CMD ["start"]
-
-FROM runtime-base AS tay_core
-COPY --from=build-core --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
-
-FROM runtime-base AS tay_http
-COPY --from=build-http --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
-
-FROM runtime-base AS tay
-COPY --from=build-dashboard --chown=tay:tay /build/standalone/_build/prod/rel/tay_standalone ./
-
-FROM tay AS runtime

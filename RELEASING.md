@@ -1,10 +1,8 @@
 # Releasing Tay
 
-Tay publishes four independent public artifacts from this repository:
+Tay publishes two independent public packages from this repository:
 
-- `tay_core` on Hex.pm for the core Elixir engine;
-- `tay_http` on Hex.pm for the Bandit transport;
-- `tay` on Hex.pm for the complete Phoenix LiveView bundle;
+- `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
 - `tay-client` on PyPI for the Python SDK (`import tay`).
 
 Their versions are independent. A Tay release publishes `tay-client` only when
@@ -17,7 +15,7 @@ public.
 
 ## Prepare
 
-1. Set the same Tay release version in each `apps/*/mix.exs`. If `clients/python/` changed, also
+1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
 3. Update versioned GitHub documentation links in package metadata, the pinned
@@ -36,8 +34,8 @@ mix format --check-formatted
 mix compile --warnings-as-errors
 mix dialyzer
 mix test --warnings-as-errors
-TAY_PACKAGE_TEST=1 MIX_ENV=test mix do --app tay_core test test/tay/system/package_test.exs --warnings-as-errors
-mix tay.hex.build
+TAY_PACKAGE_TEST=1 mix test test/tay/system/package_test.exs --warnings-as-errors
+mix hex.build
 
 uvx ruff check clients/python
 uvx ruff format --check clients/python
@@ -57,28 +55,8 @@ and publish the package and HexDocs:
 
 ```sh
 mix hex.user auth
-mix tay.hex.publish --dry-run
-mix tay.hex.publish
+mix hex.publish
 ```
-
-The dry run exercises the same package order and metadata switching without
-uploading artifacts or requesting a two-factor code. During real publication,
-the child Hex processes inherit the terminal so interactive OTP prompts work.
-Adapter packages resolve their just-published upstream package inside a
-disposable build workspace; the repository lockfile and dependency directory
-remain unchanged. Each package and its HexDocs are published by one Hex command,
-so a normal release requires one successful OTP authentication per package.
-
-To replace HexDocs for an already published version without republishing the
-immutable package tarball, publish only docs from the corresponding child:
-
-```sh
-mix tay.hex.publish docs
-```
-
-The repository tasks publish in dependency order and switch adapter package
-metadata from umbrella paths to published Hex dependencies internally; no
-`TAY_HEX_BUILD` environment variable is required at the command line.
 
 Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow
 and PyPI Trusted Publishing. For the first release, configure a pending GitHub

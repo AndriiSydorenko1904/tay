@@ -7,9 +7,10 @@ on:
       - .dockerignore
       - .github/workflows/standalone.yml
       - config/**
-      - apps/**
+      - c_src/**
       - standalone/**
       - examples/standalone/**
+      - lib/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md
@@ -23,9 +24,10 @@ on:
       - .dockerignore
       - .github/workflows/standalone.yml
       - config/**
-      - apps/**
+      - c_src/**
       - standalone/**
       - examples/standalone/**
+      - lib/**
       - compose.yml
       - README.md
       - docs/dashboard-container.md
@@ -47,14 +49,12 @@ jobs:
       - name: Verify published container references
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay_core/mix.exs)
+          version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$version"
-          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_core:latest' README.md
-          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md
-          grep -Fq 'docker pull ghcr.io/andriisydorenko1904/tay_http:latest' README.md
+          test "$(grep -Fc 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md)" -eq 3
+          test "$(grep -Ec '^docker pull ghcr.io/andriisydorenko1904/tay:' README.md)" -eq 3
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" compose.yml
-          grep -Fq "ghcr.io/andriisydorenko1904/tay_core:$version" docs/standalone.md
-          grep -Fq "ghcr.io/andriisydorenko1904/tay_http:$version" docs/standalone.md
+          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/standalone.md
           grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/dashboard-container.md
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
@@ -72,13 +72,8 @@ jobs:
           MIX_ENV=prod mix release tay_standalone
       - name: Exercise fresh start, readiness, stop, and recovery
         run: standalone/test/release_smoke.sh
-      - name: Build the production images
-        run: |
-          docker build --target tay_core --tag tay-core:test .
-          docker build --target tay_http --tag tay-http:test .
-          docker build --target tay --tag tay-standalone:test .
-      - name: Verify HTTP release excludes Dashboard and Phoenix
-        run: standalone/test/http_release_contents.sh tay-http:test
+      - name: Build the production image
+        run: docker build --tag tay-standalone:test .
       - name: Build the example Python worker
         run: >-
           docker build --file examples/standalone/worker.Dockerfile
@@ -86,12 +81,12 @@ jobs:
       - name: Exercise volatile Python workers over socket and HTTP
         run: >-
           standalone/test/worker_execution_container.sh
-          tay-core:test tay-http:test tay-standalone-worker:test
+          tay-standalone:test tay-standalone-worker:test
       - name: Exercise the production image with named volumes
         run: >-
           standalone/test/container_smoke.sh
           tay-standalone:test tay-standalone-worker:test
-      - name: Exercise the Dashboard image
+      - name: Exercise the optional dashboard in the same image
         run: standalone/test/dashboard_container_smoke.sh tay-standalone:test
       - name: Exercise HTTP-only mode without a Unix socket
-        run: standalone/test/http_only_container_smoke.sh tay-http:test
+        run: standalone/test/http_only_container_smoke.sh tay-standalone:test

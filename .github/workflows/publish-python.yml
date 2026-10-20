@@ -37,7 +37,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
+          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$mix_version"
           test "$RELEASE_TAG" = "v$mix_version"
 
@@ -85,7 +85,7 @@ jobs:
           PREVIOUS_TAG: ${{ needs.changes.outputs.previous_tag }}
         run: |
           set -euo pipefail
-          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' apps/tay/mix.exs)
+          mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$mix_version"
           test "$RELEASE_TAG" = "v$mix_version"
           package_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("clients/python/pyproject.toml").read_text())["project"]["version"])')

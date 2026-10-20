@@ -1,2 +1,0 @@
-import Config
-config :tay_core, data_dir: System.fetch_env!("TAY_PACKAGE_STORE")
