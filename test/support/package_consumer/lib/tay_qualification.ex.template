@@ -22,6 +22,10 @@ defmodule TayQualification.Probe do
     {:error, :nofile} = Code.ensure_loaded(StreamData)
     {:module, Tay.Storage.Writer} = Code.ensure_loaded(Tay.Storage.Writer)
     {:module, Tay.Storage.Native} = Code.ensure_loaded(Tay.Storage.Native)
+    true = Tay.Storage.CRC32C.Native.available?()
+    0xE3069283 = Tay.Storage.CRC32C.checksum("123456789")
+    header_crc = Tay.Storage.CRC32C.checksum("1234")
+    {^header_crc, 0xE3069283} = Tay.Storage.CRC32C.record_checksums("1234", "56789")
 
     for arity <- 4..6 do
       false = function_exported?(Tay.Storage.Writer, :inject_fault, arity)

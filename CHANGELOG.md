@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.8.0-rc1 — 2026-10-27
+
+### Changed
+
+- Updated Bandit to 1.14.
+- Updated Plug.Crypto to 2.2.1 to address CVE-2026-105963.
+- Accelerated CRC32C with a portable C NIF, retaining the original Elixir
+  implementation for historical comparisons, with no runtime fallback.
+  Large updates run on dirty CPU schedulers;
+  checksum values, incremental registers and storage formats are unchanged.
+- Compute Record header and full-record CRC32C in one NIF call during encoding,
+  continuing the payload checksum from the header register without concatenation.
+- Generate native editor metadata with `mix tay.native.editor`, independently
+  from native compilation and production builds.
+
 ## 1.7.0 — 2026-10-20
 
 ### Changed

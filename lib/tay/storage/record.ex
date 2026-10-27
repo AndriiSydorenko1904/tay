@@ -99,9 +99,7 @@ defmodule Tay.Storage.Record do
         <<@magic, version, type, flags, schema, sequence::unsigned-big-64,
           byte_size(payload)::unsigned-big-32>>
 
-      header_state = CRC32C.update(CRC32C.initial(), header)
-      header_crc = CRC32C.finalize(header_state)
-      record_crc = CRC32C.finalize(CRC32C.update(header_state, payload))
+      {header_crc, record_crc} = CRC32C.record_checksums(header, payload)
 
       {:ok,
        <<header::binary, header_crc::unsigned-big-32, payload::binary,

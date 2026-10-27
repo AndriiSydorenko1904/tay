@@ -49,6 +49,9 @@ defmodule Tay.System.PackageTest do
     assert File.read!(Path.join(vendor, "c_src/tay_storage_helper.c")) ==
              File.read!(Path.join(@checkout, "c_src/tay_storage_helper.c"))
 
+    assert File.read!(Path.join(vendor, "c_src/tay_crc32c.c")) ==
+             File.read!(Path.join(@checkout, "c_src/tay_crc32c.c"))
+
     assert File.regular?(Path.join(vendor, "c_src/README.md"))
     assert File.regular?(Path.join(vendor, "mix_helpers/tay_native.exs"))
 
@@ -85,7 +88,12 @@ defmodule Tay.System.PackageTest do
     [helper] = Path.wildcard(Path.join(deployed, "lib/tay-*/priv/tay_storage_helper"))
     assert File.regular?(helper)
     assert (File.stat!(helper).mode &&& 0o111) != 0
-    assert Path.wildcard(Path.join(deployed, "lib/tay-*/priv/*")) == [helper]
+    [crc] = Path.wildcard(Path.join(deployed, "lib/tay-*/priv/tay_crc32c.so"))
+    assert File.regular?(crc)
+
+    assert Enum.sort(Path.wildcard(Path.join(deployed, "lib/tay-*/priv/*"))) ==
+             Enum.sort([helper, crc])
+
     assert Path.wildcard(Path.join(deployed, "lib/tay-*/scripts")) == []
     {architecture, 0} = System.cmd("file", [helper])
     assert architecture =~ "executable"

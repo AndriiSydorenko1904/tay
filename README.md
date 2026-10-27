@@ -459,7 +459,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.7.0
+ghcr.io/andriisydorenko1904/tay:1.8.0-rc1
 ghcr.io/andriisydorenko1904/tay:latest
 ```
 

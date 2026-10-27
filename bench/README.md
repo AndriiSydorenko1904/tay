@@ -1,5 +1,16 @@
 # Qualification benchmark harness
 
+For an isolated comparison of native CRC32C against the original Elixir
+implementation, run `mix run --no-start bench/crc32c.exs`. It checks matching
+checksums and reports median throughput for buffers from 20 bytes to 16 MiB,
+including both sides of the 4096-byte dirty-scheduler threshold. These figures
+measure checksum work only, not completed-job throughput.
+
+`mix run --no-start bench/record_crc32c.exs` compares the previous two-NIF-call
+record checksums against the combined one-call operation, with a 20-byte record
+header and payloads from zero bytes to 16 MiB. It includes the per-buffer
+dirty-scheduler boundary and reports median time per record.
+
 ## One-command local profiles
 
 For a quick local check, use the profile runner. It creates a unique disposable

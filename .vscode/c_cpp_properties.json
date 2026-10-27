@@ -1,0 +1,12 @@
+{
+  "configurations": [
+    {
+      "name": "Tay",
+      "compilerPath": "/usr/bin/cc",
+      "includePath": ["${workspaceFolder}/_build/dev/tay_erl_include"],
+      "compileCommands": ["${workspaceFolder}/_build/dev/tay_compile_commands.json"],
+      "cStandard": "c11"
+    }
+  ],
+  "version": 4
+}

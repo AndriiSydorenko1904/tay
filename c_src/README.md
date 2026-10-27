@@ -2,9 +2,63 @@
 
 `mix compile` builds `tay_storage_helper.c` with the system C compiler into the
 application's build `priv/` directory. Releases must include that executable.
-No compiler is needed on the release host. CRC32C stays in Elixir. A test build
+No compiler is needed on the release host. A test build
 also produces `tay_storage_helper_test`; only that binary accepts opcode 240.
 `TAY_NATIVE_SANITIZE=1` enables AddressSanitizer and UndefinedBehaviorSanitizer.
+
+## CRC32C NIF
+
+The same compiler task builds `tay_crc32c.c` into `priv/tay_crc32c.so`, using
+the build host's Erlang NIF headers. Both native artifacts must be included
+in releases; source packages contain the C sources and compile on the consumer
+host. Linux and macOS builds are supported.
+
+`Tay.Storage.CRC32C` preserves the existing unfinalized-register API and wire
+checksums. The NIF uses portable slicing-by-eight Castagnoli tables without
+CPU-specific instructions, alignment assumptions, I/O, or explicit payload copies.
+Updates up to 4096 bytes run on ordinary schedulers; larger updates are
+scheduled as dirty CPU work. The lookup tables are initialized at load time
+and remain read-only while checksums execute.
+
+`record_checksums/2` receives the header and payload as separate binaries and
+returns `{header_crc, record_crc}` in one NIF call. It continues the payload
+checksum from the header's unfinalized register without concatenating the inputs
+or hashing the header twice. Either input exceeding 4096 bytes requires dirty
+CPU scheduling. This preserves the existing per-buffer threshold, bounding
+ordinary-scheduler work to 8192 bytes for this two-buffer operation.
+`Record.encode/1` uses this operation;
+the encoded bytes and the incremental `update/2` API are unchanged.
+
+Loading the library is required: on failure, `Tay.Storage.CRC32C.Native` fails
+to load and CRC calls fail instead of switching to Elixir.
+`Tay.Storage.CRC32C.Reference` retains the historical implementation for tests
+and benchmarks only. The separate `Tay.Storage.CRC32C` API delegates updates to
+the NIF loader module. Checksum values and on-disk formats are unchanged.
+The sanitizer switch above applies to
+the filesystem Port; it does not inject sanitizer runtimes into the BEAM NIF.
+
+Compare both implementations with `mix run --no-start bench/crc32c.exs`.
+Compare two update calls against the combined record operation with
+`mix run --no-start bench/record_crc32c.exs`.
+The microbenchmark excludes buffer construction and reports median throughput;
+it does not establish end-to-end job throughput or storage durability.
+
+## Editor configuration
+
+Run `mix tay.native.editor` in the repository root to generate
+`_build/dev/tay_compile_commands.json` with the C
+compilation flags, including the active Erlang installation's NIF include
+directory. Linker-only flags are excluded so editor preprocessing queries work
+under `-Werror`. The checked-in VS Code C/C++ configuration reads this database to
+resolve `erl_nif.h` without hardcoded machine paths. Run `mix tay.native.editor` after
+changing the Erlang installation, or after cleaning the build directory.
+An explicit editor `includePath` also uses `_build/dev/tay_erl_include`, a symlink
+to the same Erlang headers, so base IntelliSense configuration works even when
+the compilation database is not selected for the file.
+Other Mix environments write the database under their corresponding build path.
+The task shares compiler flags with the native build but does not compile C or
+start Tay. `mix compile` continues to build native artifacts without creating
+or updating editor metadata or symlinks.
 
 The supervised `Tay.Storage.Writer` GenServer owns the linked Port. The helper
 owns the OS lock, pinned directory descriptors, one optional read descriptor,
