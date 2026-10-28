@@ -13,7 +13,7 @@
 - Extract Engine state and execution operations, Native Port framing and metadata
   codecs, and explicit compaction-publication stages without changing wire or
   storage formats. Clarify CRC32C implementation and native descriptor ownership.
-- Update `tay-client` to 1.4.1rc2 with shared task invocation and error formatting.
+- Update `tay-client` to 1.4.1 with shared task invocation and error formatting.
 
 ### Fixed
 
