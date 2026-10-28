@@ -242,3 +242,12 @@ control bodies, trailing bytes, and invalid versions must fail before filesystem
 effects. Unowned-request fixtures cover protocol/permission boundaries; the
 Native, Store-v2 and cold-copy integration suites cover successful filesystem
 operations and their fault paths.
+
+Successful payloads are frozen separately in
+`test/fixtures/native/port_v1_success.json`: bounded reads (including EOF),
+directory entries, file identities, write receipts, owner information and free
+space. Tests compare codec and Native API decoding to these packets, and run
+requests in real production-helper ownership sessions. Only OS-generated
+process IDs, filesystem identities and free-space counters are normalized;
+actual identities are checked against filesystem metadata, while data, flags,
+lengths, field order and acknowledged write counts remain exact.

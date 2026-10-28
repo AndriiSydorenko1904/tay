@@ -72,6 +72,30 @@ defmodule Tay.Storage.Native.Codec do
     end
   end
 
+  def acquisition(<<created, filesystem::64, pid::64>>) when created in [0, 1] and pid > 0,
+    do: {:ok, %{created: created == 1, filesystem: filesystem, os_pid: pid}}
+
+  def acquisition(_), do: :error
+
+  def info(
+        <<pid::64, writable, readable, filesystem::64, ancestor_syncs::32, root_device::64,
+          root_inode::64, segments_device::64, segments_inode::64>>
+      )
+      when pid > 0 and readable in [0, 1] do
+    {:ok,
+     %{
+       os_pid: pid,
+       writable: writable,
+       readable: readable == 1,
+       filesystem: filesystem,
+       ancestor_syncs: ancestor_syncs,
+       root: %{device: root_device, inode: root_inode},
+       segments: %{device: segments_device, inode: segments_inode}
+     }}
+  end
+
+  def info(_), do: :error
+
   def identity(
         <<size::64, device::64, inode::64, links::64, type, mode::32, mtime_ns::64, ctime_ns::64,
           rest::binary>>,

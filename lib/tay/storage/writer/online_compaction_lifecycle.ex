@@ -3,7 +3,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
 
   alias Tay.Storage.{Native, Segment}
   alias Tay.Storage.V2.{CompactionControl, Publisher, Reader, Reclaimer, Reducer, Retention}
-  alias Tay.Storage.Writer.{OnlineCompaction, SegmentOps, State}
+  alias Tay.Storage.Writer.{OnlineCompaction, SegmentOps, Session}
 
   @maintenance_io_timeout_ms 120_000
   @reacquire_timeout_ms 5_000
@@ -92,7 +92,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
     else
       error ->
         GenServer.reply(freeze_from, error)
-        {:reply, error, State.poison(state, error)}
+        {:reply, error, Session.poison(state, error)}
     end
   end
 
@@ -135,7 +135,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
 
       error ->
         send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, State.poison(state, error)}
+        {:noreply, Session.poison(state, error)}
     end
   end
 
@@ -243,7 +243,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
     if native, do: Native.shutdown(native)
     error = {:compaction_reconciliation_failed, reason, reconciliation_error}
     send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-    {:noreply, State.poison(state, error)}
+    {:noreply, Session.poison(state, error)}
   end
 
   defp reacquire(path, options) do
@@ -273,7 +273,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
       abort_preparation(state, online, error)
     else
       send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-      {:noreply, State.poison(state, error)}
+      {:noreply, Session.poison(state, error)}
     end
   end
 
@@ -370,7 +370,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
       {:error, abort_reason} ->
         error = {:compaction_abort_failed, reason, abort_reason}
         send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, State.poison(state, error)}
+        {:noreply, Session.poison(state, error)}
     end
   end
 
@@ -388,7 +388,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
       rollback_error ->
         error = {:compaction_source_resume_failed, reason, rollback_error}
         send(online.notify, {:compact_online_result, self(), online.token, {:error, error}})
-        {:noreply, State.poison(state, error)}
+        {:noreply, Session.poison(state, error)}
     end
   end
 

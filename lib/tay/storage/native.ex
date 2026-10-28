@@ -158,21 +158,24 @@ defmodule Tay.Storage.Native do
              request(native, operation, <<mode, validated, budget::binary, string(path)::binary>>)
 
     case result do
-      {:ok, <<created, filesystem::64, pid::64>>, 0}
-      when operation == :acquire or
-             (operation == :acquire_if_missing and created in [0, 1] and pid > 0) or
-             (operation == :acquire_existing and created == 0 and pid > 0) ->
-        Process.put(
-          {__MODULE__, port, :capability},
-          if(
-            operation == :acquire_existing or
-              (operation == :acquire_if_missing and created == 0),
-            do: :inspection,
-            else: :mutation
-          )
-        )
+      {:ok, bytes, 0} ->
+        case Tay.Storage.Native.Codec.acquisition(bytes) do
+          {:ok, facts} when operation != :acquire_existing or facts.created == false ->
+            Process.put(
+              {__MODULE__, port, :capability},
+              if(
+                operation == :acquire_existing or
+                  (operation == :acquire_if_missing and not facts.created),
+                do: :inspection,
+                else: :mutation
+              )
+            )
 
-        {:ok, %{native | facts: %{created: created == 1, filesystem: filesystem, os_pid: pid}}}
+            {:ok, %{native | facts: facts}}
+
+          _ ->
+            uncertain(native, :invalid_acquire_reply)
+        end
 
       {:error, _} = error ->
         shutdown(native)
@@ -512,19 +515,11 @@ defmodule Tay.Storage.Native do
 
   def info(native) do
     case request(native, :info, <<>>) do
-      {:ok,
-       <<pid::64, writable, readable, filesystem::64, ancestor_syncs::32, root_device::64,
-         root_inode::64, segments_device::64, segments_inode::64>>, 0} ->
-        {:ok,
-         %{
-           os_pid: pid,
-           writable: writable,
-           readable: readable == 1,
-           filesystem: filesystem,
-           ancestor_syncs: ancestor_syncs,
-           root: %{device: root_device, inode: root_inode},
-           segments: %{device: segments_device, inode: segments_inode}
-         }}
+      {:ok, bytes, 0} ->
+        case Tay.Storage.Native.Codec.info(bytes) do
+          {:ok, facts} -> {:ok, facts}
+          :error -> uncertain(native, :invalid_info_reply)
+        end
 
       {:error, _} = error ->
         error

@@ -2,7 +2,7 @@ defmodule Tay.Storage.Writer.GroupCommit do
   @moduledoc false
 
   alias Tay.Storage.Native
-  alias Tay.Storage.Writer.State
+  alias Tay.Storage.Writer.Session
 
   @enforce_keys [:owner, :reference]
   defstruct [:owner, :reference, count: 0]
@@ -59,10 +59,10 @@ defmodule Tay.Storage.Writer.GroupCommit do
          Map.delete(state, :group_commit)}
 
       {:error, reason} ->
-        {:reply, {:error, {:uncertain, reason}}, State.poison(state, reason)}
+        {:reply, {:error, {:uncertain, reason}}, Session.poison(state, reason)}
     end
   end
 
   defp finish_sync(state, {:error, reason}, _count, _duration),
-    do: {:reply, {:error, {:uncertain, reason}}, State.poison(state, reason)}
+    do: {:reply, {:error, {:uncertain, reason}}, Session.poison(state, reason)}
 end

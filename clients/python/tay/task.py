@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
-from .errors import ModeError, ValidationError
-from .job_options import merge_enqueue_options
+from .errors import ModeError, TaskRegistrationError, ValidationError
+from .job_options import merge_enqueue_options, validate_execution_options
 from .protocol import normalize_json, validate_task_name
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -57,6 +57,9 @@ class TaskConfig:
     every: Mapping[str, Any] | None = None
     overlap: str | None = None
     declaration_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_execution_options(self.execution_options())
 
     def execution_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
@@ -141,7 +144,7 @@ class Task:
                     f"cannot serialize positional arguments for task {self.name!r}; "
                     "the callable has no inspectable signature"
                 )
-            return normalize_json(dict(kwargs))
+            return cast(dict[str, Any], normalize_json(dict(kwargs)))
 
         try:
             bound = self.signature.bind(*args, **kwargs)
@@ -161,7 +164,7 @@ class Task:
             elif parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 value = dict(value)
             arguments[parameter_name] = value
-        return normalize_json(arguments)
+        return cast(dict[str, Any], normalize_json(arguments))
 
     def _call_from_arguments(self, arguments: Any) -> Any:
         """Invoke the wrapped function from a protocol argument object."""
@@ -292,4 +295,34 @@ class Task:
             digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
             declaration_id = f"python:{self.name}:{digest}"
         schedule["declaration_id"] = declaration_id
-        return normalize_json(schedule)
+        return cast(dict[str, Any], normalize_json(schedule))
+
+
+def register_task(
+    owner: _TaskOwner,
+    registry: dict[str, Task],
+    function: Callable[..., Any],
+    *,
+    name: str | None,
+    config: TaskConfig,
+) -> Task:
+    """Apply the same callable identity and collision rules for every worker."""
+    if not callable(function):
+        raise TaskRegistrationError("only callables can be registered as tasks")
+    if name is None:
+        module = getattr(function, "__module__", None)
+        function_name = getattr(function, "__name__", None)
+        if not isinstance(module, str) or not isinstance(function_name, str):
+            raise TaskRegistrationError("this callable requires an explicit task name")
+        name = f"{module}.{function_name}"
+    key = validate_task_name(name)
+    existing = registry.get(key)
+    if existing is not None:
+        if existing.function is function:
+            return existing
+        raise TaskRegistrationError(
+            f"task name {key!r} is already registered to another callable"
+        )
+    task = Task(owner, function, name=key, config=config)
+    registry[key] = task
+    return task

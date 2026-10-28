@@ -12,7 +12,6 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
       deadline: 25,
       owner: self(),
       from: from,
-      force: false,
       cancel_flag: :atomics.new(1, [])
     }
   end
@@ -29,7 +28,10 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
       table: table,
       root: self(),
       config: %{compaction: %{terminal_retention: {:hours, 24}}},
-      meta: %{generation: make_ref(), status: %{state: :compacting, durability: :write}},
+      meta: %{
+        generation: make_ref(),
+        status: %{state: :compacting, phase: :preparing, durability: :write}
+      },
       engine: self(),
       operation: operation
     }
@@ -107,6 +109,7 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
 
     assert completed.operation == nil
     assert completed.meta.status.state == :ready
+    refute Map.has_key?(completed.meta.status, :phase)
     assert [{:operation, nil, nil, :free, 0}] = :ets.lookup(completed.table, :operation)
     refute_receive {^ref, _}
   end
@@ -124,10 +127,28 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
 
     assert next.operation == nil
     assert next.meta.status.state == :ready
+    refute Map.has_key?(next.meta.status, :phase)
     generation = state.meta.generation
     token = operation.token
     assert_receive {:policy_drain_cancel, ^generation, ^token, _}
     refute_receive {:lifecycle_compact, _, _, _, _, _, _, _}
+  end
+
+  test "source changes clear compaction phases in both online and offline drains" do
+    for phase <- [:draining, :compacting] do
+      operation = operation(:compact, phase)
+      state = state(operation)
+
+      assert {:noreply, next} =
+               Lifecycle.handle_info(
+                 {:operation_source_changed, self(), operation.token},
+                 state
+               )
+
+      assert next.operation == nil
+      assert next.meta.status.state == :ready
+      refute Map.has_key?(next.meta.status, :phase)
+    end
   end
 
   test "stale tokens and wrong senders never advance or release a newer operation" do

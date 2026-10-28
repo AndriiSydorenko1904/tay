@@ -63,11 +63,15 @@ def error_details(
     max_type_characters: int | None = None,
     max_message_characters: int | None = None,
 ) -> dict[str, Any]:
-    message = str(exc)
+    try:
+        message = str(exc)
+    except Exception:  # noqa: BLE001 - arbitrary user exception formatters
+        message = "<exception message unavailable>"
+    message = _safe_text(message)
     if fallback_message and not message:
-        message = type(exc).__name__
+        message = _safe_text(type(exc).__name__)
     return {
-        "type": type(exc).__name__[:max_type_characters],
+        "type": _safe_text(type(exc).__name__)[:max_type_characters],
         "message": message[:max_message_characters],
     }
 
@@ -79,9 +83,12 @@ def bounded_error(
         raise ValidationError("error byte limit must fit a JSON object")
     error = error_details(exc, fallback_message=True)
     if include_traceback:
-        error["traceback"] = "".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        )
+        try:
+            error["traceback"] = _safe_text(
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+        except Exception:  # noqa: BLE001 - traceback formatting can invoke user code
+            error["traceback"] = "<traceback unavailable>"
     # Every field is text. Shrink all fields, including exception class names,
     # until the actual UTF-8 JSON fits; even the smallest fallback is measured.
     while len(json_bytes(error)) > max_bytes:
@@ -98,3 +105,7 @@ def _truncate_text(value: str) -> str:
     if len(value) <= 2:
         return ""
     return value[: max(1, len(value) // 2 - 1)] + "…"
+
+
+def _safe_text(value: str) -> str:
+    return str.encode(value, "utf-8", errors="replace").decode("utf-8")

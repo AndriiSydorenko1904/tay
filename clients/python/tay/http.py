@@ -38,22 +38,22 @@ except ModuleNotFoundError as exc:
     if missing != "cryptography" and not missing.startswith("cryptography."):
         raise
 
-from .client import (
-    _extract_identifier,
-    _extract_job_durability,
-    _server_error_from_payload,
-)
 from .errors import (
     ConnectionLost,
     ProtocolError,
     ServerError,
-    TaskRegistrationError,
     ValidationError,
 )
 from .execution import cancel_async_execution, error_details, run_task
-from .job_options import enqueue_payload, validate_durability
+from .job_options import enqueue_payload
 from .protocol import json_bytes, validate_task_name
-from .task import Durability, Task, TaskConfig
+from .responses import (
+    _extract_identifier,
+    _extract_job_durability,
+    _server_error_from_payload,
+)
+from .task import Durability, Task, TaskConfig, register_task
+from .validation import identifier, positive_finite
 
 # Buffer at most one MB plus one byte to detect an oversized response.
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
@@ -67,7 +67,15 @@ _MAX_ERROR_MESSAGE_CHARACTERS = 1_024
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
         return None
 
 
@@ -123,8 +131,7 @@ class TayHTTP:
             raise ValidationError("base_url must contain a valid port") from exc
         if port is not None and not 1 <= port <= 65535:
             raise ValidationError("base_url must contain a valid port")
-        if request_timeout <= 0:
-            raise ValidationError("request_timeout must be positive")
+        request_timeout = positive_finite(request_timeout, "request_timeout")
         files = (tls_ca_file, tls_cert_file, tls_key_file)
         if tls_pkcs12_file is not None and any(item is not None for item in files):
             raise ValidationError("use either PKCS#12 or PEM credentials")
@@ -274,7 +281,10 @@ class TayHTTPWorker(TayHTTP):
             )
         self.queue = validate_task_name(queue)
         self.capacity = capacity
-        self.runtime_id = runtime_id or f"http-worker-{uuid.uuid4().hex}"
+        self.runtime_id = identifier(
+            f"http-worker-{uuid.uuid4().hex}" if runtime_id is None else runtime_id,
+            "runtime_id",
+        )
         self._tasks: dict[str, Task] = {}
         self._token: str | None = None
         self._executions: dict[str, asyncio.Task[None]] = {}
@@ -300,30 +310,10 @@ class TayHTTPWorker(TayHTTP):
     ) -> Task | Callable[[Callable[..., Any]], Task]:
         """Register a callable, either as ``@worker.task`` or ``@worker.task(...)``."""
 
-        if retries is not None and (
-            type(retries) is not int or retries not in range(65_535)
-        ):
-            raise ValidationError("retries must be an integer in 0..65534")
-        if backoff is not None and backoff != "exponential":
-            raise ValidationError("backoff must be 'exponential'")
-        validate_durability(durability)
-
         config = TaskConfig(retries=retries, backoff=backoff, durability=durability)
 
         def register(fn: Callable[..., Any]) -> Task:
-            if not callable(fn):
-                raise TaskRegistrationError("only callables can be registered as tasks")
-            key = validate_task_name(name or f"{fn.__module__}.{fn.__name__}")
-            existing = self._tasks.get(key)
-            if existing is not None:
-                if existing.function is fn:
-                    return existing
-                raise TaskRegistrationError(
-                    f"task name {key!r} is already registered to another callable"
-                )
-            declared = Task(self, fn, name=key, config=config)
-            self._tasks[key] = declared
-            return declared
+            return register_task(self, self._tasks, fn, name=name, config=config)
 
         return register(function) if function is not None else register
 
@@ -409,7 +399,6 @@ class TayHTTPWorker(TayHTTP):
         self._closing = False
         self._serve_task = asyncio.current_task()
         try:
-            await self.register()
             await self._run_loop()
         finally:
             try:
@@ -429,6 +418,7 @@ class TayHTTPWorker(TayHTTP):
     async def _run_loop(self) -> None:
         while not self._closing:
             try:
+                await self.register()
                 message = await self._worker_request(
                     "POST", f"/queues/{self.queue}/claim"
                 )
@@ -442,7 +432,6 @@ class TayHTTPWorker(TayHTTP):
                     return
                 if exc.code == "unknown_worker":
                     self._token = None
-                    await self.register()
                     continue
                 if exc.code == "claim_in_progress":
                     await asyncio.sleep(_WORKER_RETRY_DELAY_SECONDS)

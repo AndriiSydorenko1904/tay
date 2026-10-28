@@ -29,6 +29,17 @@
 
 ### Fixed
 
+- Retry HTTP worker registration after connection loss, both at startup and
+  after session expiry, without replaying execution outcomes.
+- Safely serialize task exceptions with invalid Unicode or failing `__str__`.
+  Apply finite positive transport timeouts and the same registration/retry
+  validation to HTTP and Unix-socket clients.
+- Clear completed administrative phases from lifecycle status. Separate
+  operation coordination from command admission and Writer session/bootstrap
+  I/O from pure state construction. Remove the unused operation force field.
+- Add successful Native Port payload contracts for reads, directory entries,
+  identities, write receipts, owner facts and filesystem space, exercised
+  against both the Native APIs and the production helper.
 - Require Bandit 1.14.1 to address the HTTP/2 memory-amplification advisory
   CVE-2026-116078.
 - Keep result-delivery failures separate from user task failures; a lost success

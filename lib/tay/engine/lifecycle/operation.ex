@@ -13,7 +13,6 @@ defmodule Tay.Engine.Lifecycle.Operation do
     :deadline,
     :phase,
     :cancel_flag,
-    :force,
     :from,
     :timer,
     :driver,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from .errors import ValidationError
 from .protocol import normalize_json
@@ -18,12 +18,24 @@ def validate_durability(value: Any) -> None:
         raise ValidationError(f"durability must be one of {sorted(DURABILITY_MODES)}")
 
 
+def validate_execution_options(options: Mapping[str, Any]) -> None:
+    retries = options.get("retries")
+    if retries is not None and (type(retries) is not int or not 0 <= retries <= 65_534):
+        raise ValidationError("retries must be an integer in 0..65534")
+    backoff = options.get("backoff")
+    if backoff is not None and (
+        not isinstance(backoff, str) or backoff != "exponential"
+    ):
+        raise ValidationError("Protocol v1 supports only backoff='exponential'")
+    validate_durability(options.get("durability"))
+
+
 def job_arguments(args: Mapping[str, Any] | None, *, operation: str) -> dict[str, Any]:
     if args is None:
         args = {}
     if not isinstance(args, Mapping):
         raise ValidationError(f"{operation} args must be a JSON object")
-    return normalize_json(args)
+    return cast(dict[str, Any], normalize_json(args))
 
 
 def merge_enqueue_options(
@@ -42,12 +54,7 @@ def merge_enqueue_options(
         if "durability" in merged:
             raise ValidationError("enqueue option supplied twice: durability")
         merged["durability"] = durability
-    backoff = merged.get("backoff")
-    if backoff is not None and (
-        not isinstance(backoff, str) or backoff != "exponential"
-    ):
-        raise ValidationError("Protocol v1 supports only backoff='exponential'")
-    validate_durability(merged.get("durability"))
+    validate_execution_options(merged)
     return merged
 
 

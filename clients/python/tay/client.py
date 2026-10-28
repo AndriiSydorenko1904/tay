@@ -12,21 +12,19 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, ClassVar, Self, cast
+from typing import Any, ClassVar, Self
 
 from .errors import (
     ConnectionLost,
     ModeError,
     ProtocolError,
-    RemoteTaskError,
     ServerError,
     TaskNotRegistered,
     TaskRegistrationError,
     ValidationError,
 )
 from .execution import bounded_error, cancel_async_execution, run_task
-from .job_options import DURABILITY_MODES as _DURABILITY_MODES
-from .job_options import enqueue_payload, job_arguments, validate_durability
+from .job_options import enqueue_payload, job_arguments, merge_enqueue_options
 from .protocol import (
     DEFAULT_MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
@@ -35,15 +33,20 @@ from .protocol import (
     read_frame,
     validate_task_name,
 )
+from .responses import (
+    _extract_identifier,
+    _extract_job_durability,
+    _server_error_from_payload,
+)
 from .socket_path import resolve_socket_path
-from .task import Durability, Task, TaskConfig
+from .task import Durability, Task, TaskConfig, register_task
+from .validation import identifier, positive_finite
 
 DEFAULT_MAX_RESULT_BYTES = 65_536
 DEFAULT_MAX_ERROR_BYTES = 8_192
 _MODES = frozenset({"client", "embedded", "worker"})
 # Event-v1 freezes a single durable retry curve. Keep the SDK's accepted surface
 # aligned with the listener rather than accepting values it cannot represent.
-_BACKOFF_MODES = frozenset({"exponential"})
 _OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
 _CATCH_UP_POLICIES = frozenset({"latest", "all"})
 _TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
@@ -91,26 +94,6 @@ class ScheduleHandle:
         return reply.get("schedule", reply.get("status", reply))
 
 
-def _server_error_from_payload(payload: Any) -> ServerError:
-    if isinstance(payload, Mapping):
-        code = payload.get("code") or payload.get("type")
-        message = payload.get("message") or payload.get("reason")
-        if not message:
-            message = (
-                f"Tay rejected the request ({code})"
-                if code
-                else "Tay rejected the request"
-            )
-        if payload.get("remote_task") or code in {"task_failed", "TaskFailed"}:
-            return RemoteTaskError(
-                str(message), code=str(code) if code else None, details=dict(payload)
-            )
-        return ServerError(
-            str(message), code=str(code) if code else None, details=dict(payload)
-        )
-    return ServerError(str(payload))
-
-
 class Tay:
     """A small, stdlib-only Tay producer and executor.
 
@@ -151,29 +134,24 @@ class Tay:
             raise ValidationError("max_result_bytes must be a positive integer")
         if type(max_error_bytes) is not int or max_error_bytes < 128:
             raise ValidationError("max_error_bytes must be an integer of at least 128")
-        if request_timeout <= 0 or connect_timeout <= 0:
-            raise ValidationError(
-                "request_timeout and connect_timeout must be positive"
-            )
-        if (
-            reconnect_initial_delay <= 0
-            or reconnect_max_delay < reconnect_initial_delay
-        ):
+        request_timeout = positive_finite(request_timeout, "request_timeout")
+        connect_timeout = positive_finite(connect_timeout, "connect_timeout")
+        reconnect_initial_delay = positive_finite(
+            reconnect_initial_delay, "reconnect_initial_delay"
+        )
+        reconnect_max_delay = positive_finite(
+            reconnect_max_delay, "reconnect_max_delay"
+        )
+        if reconnect_max_delay < reconnect_initial_delay:
             raise ValidationError("invalid reconnect delay configuration")
 
         self.mode = mode
         self.socket_path = resolve_socket_path(socket_path)
         self.capacity = capacity
-        self.client_id = client_id or f"python-{uuid.uuid4().hex}"
-        if (
-            type(self.client_id) is not str
-            or not self.client_id
-            or "\x00" in self.client_id
-            or len(self.client_id.encode("utf-8")) > 128
-        ):
-            raise ValidationError(
-                "client_id must be a non-empty UTF-8 string of at most 128 bytes"
-            )
+        self.client_id = identifier(
+            f"python-{uuid.uuid4().hex}" if client_id is None else client_id,
+            "client_id",
+        )
         self.max_frame_bytes = max_frame_bytes
         self.max_result_bytes = max_result_bytes
         self.max_error_bytes = max_error_bytes
@@ -256,22 +234,8 @@ class Tay:
         )
 
         def decorate(candidate: Callable[..., Any]) -> Task:
-            if not callable(candidate):
-                raise TaskRegistrationError("only callables can be registered as tasks")
-            # Keep the implicit identity easy to discover and stable across
-            # restarts.  Nested/local functions should use an explicit name,
-            # because their lexical path is an implementation detail.
-            task_name = name or f"{candidate.__module__}.{candidate.__name__}"
-            task_name = validate_task_name(task_name)
-            existing = self._tasks.get(task_name)
-            if existing is not None:
-                if existing.function is candidate:
-                    return existing
-                raise TaskRegistrationError(
-                    f"task name {task_name!r} is already registered to another callable"
-                )
-            task = Task(self, candidate, name=task_name, config=config)
-            self._tasks[task_name] = task
+            task = register_task(self, self._tasks, candidate, name=name, config=config)
+            task_name = task.name
             self._registered_task_names.add(task_name)
             return task
 
@@ -280,22 +244,7 @@ class Tay:
         return decorate(function)
 
     def _task_config(self, **raw: Any) -> TaskConfig:
-        retries = raw["retries"]
-        if retries is not None and (type(retries) is not int or retries < 0):
-            raise ValidationError("retries must be a non-negative integer")
-
-        backoff = raw["backoff"]
-        if isinstance(backoff, str):
-            if backoff not in _BACKOFF_MODES:
-                raise ValidationError(
-                    f"backoff must be one of {sorted(_BACKOFF_MODES)}"
-                )
-        elif backoff is not None:
-            raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
-
-        durability = raw["durability"]
-        validate_durability(durability)
-
+        retries, backoff, durability = raw["retries"], raw["backoff"], raw["durability"]
         cron = raw["cron"]
         every = raw["every"]
         if cron is not None and every is not None:
@@ -785,7 +734,7 @@ class Tay:
             "cron": cron,
             "timezone": timezone,
             "catch_up": catch_up,
-            "options": normalize_json(options),
+            "options": normalize_json(merge_enqueue_options(options, {})),
         }
         if declaration_id is not None:
             payload["declaration_id"] = declaration_id
@@ -850,7 +799,7 @@ class Tay:
             ),
             "every": every,
             "catch_up": catch_up,
-            "options": normalize_json(options),
+            "options": normalize_json(merge_enqueue_options(options, {})),
         }
         if declaration_id is not None:
             payload["declaration_id"] = declaration_id
@@ -1100,23 +1049,3 @@ class Tay:
             max_bytes=self.max_error_bytes,
             include_traceback=self.include_traceback,
         )
-
-
-def _extract_identifier(reply: Mapping[str, Any], field: str, nested_field: str) -> str:
-    identifier = reply.get(field)
-    if identifier is None:
-        nested = reply.get(nested_field)
-        if isinstance(nested, Mapping):
-            identifier = nested.get("id")
-    if type(identifier) is not str or not identifier:
-        raise ProtocolError(f"Tay reply did not include a valid {field}")
-    return identifier
-
-
-def _extract_job_durability(reply: Mapping[str, Any]) -> Durability | None:
-    job = reply.get("job")
-    if isinstance(job, Mapping):
-        durability = job.get("durability")
-        if isinstance(durability, str) and durability in _DURABILITY_MODES:
-            return cast(Durability, durability)
-    return None

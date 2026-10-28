@@ -18,6 +18,7 @@ defmodule Tay.Storage.Writer do
   alias Tay.Storage.V2.Publisher
 
   alias Tay.Storage.Writer.{
+    Bootstrap,
     Compaction,
     Config,
     GroupCommit,
@@ -27,6 +28,8 @@ defmodule Tay.Storage.Writer do
     SegmentOps,
     State
   }
+
+  alias Tay.Storage.Writer.Session
 
   @test Mix.env() == :test
 
@@ -219,12 +222,12 @@ defmodule Tay.Storage.Writer do
   end
 
   defp init_opened(native, options, initialize_only) do
-    state = State.physical(native, options, initialize_only)
+    state = State.physical(native, options, initialize_only, Session.inspection_cache())
 
     prepare =
       if initialize_only,
-        do: State.prepare_initialization(state),
-        else: State.prepare(state)
+        do: Bootstrap.prepare_initialization(state),
+        else: Bootstrap.prepare(state)
 
     case prepare do
       {:ok, state} ->
@@ -713,7 +716,7 @@ defmodule Tay.Storage.Writer do
 
   @impl true
   def terminate(_reason, state) do
-    State.notify_lifecycle(state, :closed)
+    Session.notify_lifecycle(state, :closed)
     Native.shutdown(state.native)
   end
 
@@ -795,5 +798,5 @@ defmodule Tay.Storage.Writer do
     defp hook(_, _), do: :ok
   end
 
-  defp poison(state, reason), do: State.poison(state, reason)
+  defp poison(state, reason), do: Session.poison(state, reason)
 end
