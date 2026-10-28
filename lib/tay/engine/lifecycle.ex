@@ -330,7 +330,7 @@ defmodule Tay.Engine.Lifecycle do
         %{operation: %{token: token, driver: driver, phase: :closing}} = s
       ) do
     s = reset_generation(s)
-    operation = %{s.operation | phase: :starting}
+    {:ok, operation} = Operation.advance(s.operation, :starting, now())
     :ets.insert(s.table, {:operation, token, operation.owner, :starting, operation.deadline})
     {:reply, :ok, %{s | operation: operation}}
   end
@@ -507,12 +507,10 @@ defmodule Tay.Engine.Lifecycle do
       component
       when component in [:engine, :writer, :runtime, :fence] and
              is_map(s.operation) and s.operation.phase == :compacting ->
-        kind = s.operation.kind
-
         next =
           finish_operation(
             s,
-            {:error, Error.new(:unknown_outcome, {:generation_lost, component}, nil, kind)}
+            {:error, Operation.failure(s.operation, {:generation_lost, component})}
           )
 
         {:noreply, revoke(next, :generation_lost)}
@@ -528,7 +526,7 @@ defmodule Tay.Engine.Lifecycle do
         {:noreply,
          finish_operation(
            next,
-           {:error, Error.new(:unknown_outcome, :lifecycle_driver_lost, nil, s.operation.kind)}
+           {:error, Operation.failure(s.operation, :lifecycle_driver_lost)}
          )}
 
       {:owner, slot, token} ->
@@ -548,7 +546,7 @@ defmodule Tay.Engine.Lifecycle do
         {:online_compaction_unsupported, engine, token},
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting} = op} = s
       ) do
-    operation = %{op | phase: :draining}
+    {:ok, operation} = Operation.advance(op, :offline_fallback, now())
 
     s =
       publish(
@@ -600,26 +598,21 @@ defmodule Tay.Engine.Lifecycle do
         {:operation_drained, engine, token},
         %{engine: engine, operation: %{token: token, phase: :draining} = operation} = s
       ) do
-    # A delayed timer delivery is not extra authorization to start shutdown
-    # after the graceful request's monotonic deadline.
-    if System.monotonic_time(:millisecond) < operation.deadline do
-      if operation.kind == :compact do
+    case Operation.advance(operation, :drained, now()) do
+      {:ok, %{phase: :compacting} = next} ->
         send(
           engine,
-          {:lifecycle_compact, s.meta.generation, token, self(), operation.deadline,
-           operation.terminal_retention, operation.expected_source, operation.cancel_flag}
+          {:lifecycle_compact, s.meta.generation, token, self(), next.deadline,
+           next.terminal_retention, next.expected_source, next.cancel_flag}
         )
 
-        {:noreply, %{s | operation: %{operation | phase: :compacting}}}
-      else
-        {:noreply, begin_closing(s)}
-      end
-    else
-      {:noreply,
-       finish_operation(
-         s,
-         {:error, Error.new(:timeout, :draining, nil, operation.kind)}
-       )}
+        {:noreply, %{s | operation: next}}
+
+      {:ok, %{phase: :closing} = next} ->
+        {:noreply, close_generation(s, next)}
+
+      {:error, :draining_deadline} ->
+        expire_operation(s)
     end
   end
 
@@ -641,32 +634,8 @@ defmodule Tay.Engine.Lifecycle do
     {:noreply, begin_closing(%{settled_shutdown(s) | operation: %{op | stats: {:error, reason}}})}
   end
 
-  def handle_info({:operation_deadline, token}, %{operation: %{token: token} = operation} = s) do
-    if operation.phase == :draining do
-      s =
-        if operation.owner == s.policy do
-          send(s.engine, {:policy_drain_cancel, s.meta.generation, token, self()})
-          publish(s, Map.put(s.meta.status, :state, :ready))
-        else
-          s
-        end
-
-      {:noreply,
-       finish_operation(
-         s,
-         {:error, Error.new(:timeout, :draining, nil, operation.kind)}
-       )}
-    else
-      if operation.from,
-        do:
-          GenServer.reply(
-            operation.from,
-            {:error, Error.new(:unknown_outcome, :lifecycle_in_progress, nil, operation.kind)}
-          )
-
-      {:noreply, %{s | operation: %{operation | from: nil}}}
-    end
-  end
+  def handle_info({:operation_deadline, token}, %{operation: %{token: token}} = s),
+    do: expire_operation(s)
 
   def handle_info({:cancel_operation_claim, owner, token}, s) do
     case :ets.lookup(s.table, :operation) do
@@ -701,6 +670,10 @@ defmodule Tay.Engine.Lifecycle do
              {:error, Error.new(:unavailable, :restart_failed, nil, :restart)}}
           end
 
+        {:restart, {:error, reason}} when reason in [:recovery_failed, :runtime_start_failed] ->
+          {revoke(s, :lifecycle_failed),
+           {:error, Error.new(:unavailable, :lifecycle_failed, nil, :restart)}}
+
         {:compact, :ok} ->
           if s.meta.status.state == :ready and Process.alive?(s.engine) and
                Process.alive?(s.writer) and runtime_live?(s) do
@@ -722,7 +695,7 @@ defmodule Tay.Engine.Lifecycle do
 
         _ ->
           {revoke(s, :lifecycle_failed),
-           {:error, Error.new(:unavailable, :lifecycle_failed, nil, operation.kind)}}
+           {:error, Operation.failure(operation, :lifecycle_failed)}}
       end
 
     {:noreply, finish_operation(s, reply)}
@@ -869,8 +842,11 @@ defmodule Tay.Engine.Lifecycle do
     do: %{s | delivery: CommandDelivery.complete(s.delivery, permit)}
 
   defp begin_closing(s) do
-    operation = %{s.operation | phase: :closing}
+    {:ok, operation} = Operation.advance(s.operation, :close, now())
+    close_generation(s, operation)
+  end
 
+  defp close_generation(s, %{phase: :closing} = operation) do
     :ets.insert(
       s.table,
       {:operation, operation.token, operation.owner, :closing, operation.deadline}
@@ -921,6 +897,31 @@ defmodule Tay.Engine.Lifecycle do
     s = clear_generation(s)
     s = %{s | meta: %{s.meta | generation: make_ref()}}
     publish(s, %{state: :recovering, durability: s.config.durability, jobs: 0, blocked_jobs: 0})
+  end
+
+  defp now, do: System.monotonic_time(:millisecond)
+
+  defp expire_operation(s) do
+    case Operation.expire(s.operation) do
+      {:finish, reply} ->
+        s =
+          if s.operation.owner == s.policy do
+            send(s.engine, {:policy_drain_cancel, s.meta.generation, s.operation.token, self()})
+            publish(s, Map.put(s.meta.status, :state, :ready))
+          else
+            s
+          end
+
+        {:noreply, finish_operation(s, reply)}
+
+      {:pending, operation, notification} ->
+        if notification do
+          {from, reply} = notification
+          GenServer.reply(from, reply)
+        end
+
+        {:noreply, %{s | operation: operation}}
+    end
   end
 
   defp finish_operation(s, reply) do

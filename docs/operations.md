@@ -67,6 +67,15 @@ a fresh ownership, recovery, projection, and execution generation:
 :ok = Tay.restart(timeout: 30_000)
 ```
 
+For stop, restart, and compaction, the guardian classifies expiry while still
+draining as `timeout` and cannot authorize a later shutdown. Once closing,
+replacement, or compaction has begun, expiry returns `unknown_outcome` and
+retains the operation slot until the actual work finishes. A lost driver result
+after effects begin is also unknown; a confirmed failure to start a replacement
+remains `unavailable`. Losing the call/reply itself is `unknown_outcome`, even
+if the last observed phase was draining. Inspect status before making another
+explicit decision.
+
 An unknown outcome after a submitted insert or control call does not prove no
 change. Reconcile by stable job ID, original definition, status, or a new
 explicit control decision; do not automatically allocate another job ID.

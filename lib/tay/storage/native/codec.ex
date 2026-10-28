@@ -44,6 +44,9 @@ defmodule Tay.Storage.Native.Codec do
     fault: 240
   }
 
+  @doc false
+  def operations, do: @ops
+
   def opcode(operation), do: Map.fetch!(@ops, operation)
   def encode_request(operation, id, body), do: <<1, opcode(operation), id::64, body::binary>>
 

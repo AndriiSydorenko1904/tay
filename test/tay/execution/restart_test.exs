@@ -360,4 +360,36 @@ defmodule Tay.Execution.RestartTest do
     assert :ok = Tay.stop(name: @name)
     H.stop(root)
   end
+
+  test "an opaque driver failure after replacement cannot be reported as a safe retry", %{
+    path: path
+  } do
+    failed_once = :atomics.new(1, [])
+
+    root =
+      start(path,
+        test_hook: fn
+          {:operations, :pre_result} ->
+            if :atomics.compare_exchange(failed_once, 1, 0, 1) == :ok,
+              do: raise("lost driver result")
+
+            :ok
+
+          _ ->
+            :ok
+        end
+      )
+
+    old_generation = :sys.get_state(Process.whereis(@name)).meta.generation
+
+    assert {:error, %{kind: :unknown_outcome, reason: :lifecycle_failed}} =
+             Tay.restart(name: @name, force: true)
+
+    assert Tay.status(name: @name).state == :failed
+    assert :sys.get_state(Process.whereis(@name)).operation == nil
+    refute :sys.get_state(Process.whereis(@name)).meta.generation == old_generation
+    assert :ok = Tay.restart(name: @name, force: true)
+    assert Tay.status(name: @name).state == :ready
+    H.stop(root)
+  end
 end

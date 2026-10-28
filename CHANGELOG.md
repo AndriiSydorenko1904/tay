@@ -19,6 +19,11 @@
 - Isolate Lifecycle command delivery and explicit state/operation structures.
   Derive in-flight command counts from active permits and preserve FIFO, drain,
   and stale-acknowledgement behavior within the same owner process.
+- Define lifecycle operation transitions and model-check timeout/late-event
+  traces. Classify opaque driver failures after effects begin as unknown
+  outcomes, and cancel an expired policy drain consistently.
+- Freeze requests and replies for all Native Port opcodes, including the
+  production/fault-helper capability boundary and malformed message handling.
 - Avoid looking up the Unix UID for disabled, explicit, environment-selected,
   and shared-runtime sockets.
 

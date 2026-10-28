@@ -234,5 +234,11 @@ close order, first-error handling, and fault sites remain part of the contract.
 `Tay.Storage.Native.Codec` owns Port framing, operation numbers, and metadata
 encoding/decoding. `Tay.Storage.Native` owns the process/Port lifetime, deadlines,
 and uncertain outcomes; it never retries an uncertain filesystem mutation.
-Frozen packets in `test/fixtures/native/port_v1.json` are exercised against both
-the codec and the production helper.
+Frozen packets in `test/fixtures/native/port_v1.json` cover every opcode and
+are exercised against the codec and C helpers. Production refuses the test-only
+fault opcode; the fault-enabled helper has a separate fixture. Argument packing
+from delegated Native APIs is compared to the same frozen bodies. Truncated
+control bodies, trailing bytes, and invalid versions must fail before filesystem
+effects. Unowned-request fixtures cover protocol/permission boundaries; the
+Native, Store-v2 and cold-copy integration suites cover successful filesystem
+operations and their fault paths.
