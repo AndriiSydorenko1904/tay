@@ -24,8 +24,12 @@ from tay import TayHTTP
 
 async with TayHTTP("http://127.0.0.1:8080") as tay:
     job = await tay.enqueue("reports.rebuild.v1", {"report_id": "42"})
-    result = await job.result()
+    status = await job.status()
 ```
+
+`await job.result()` retrieves an available result; it does not wait for the
+job to finish. Check `await job.status()` for completion first. If a result is
+not ready, retrieval raises `ServerError` with code `result_not_ready`.
 
 For remote access, set `TAY_HTTP_IP` to a non-loopback address and configure
 the server certificate, key and client CA. Supply PEM client credentials:

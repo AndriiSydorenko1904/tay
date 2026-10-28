@@ -1,6 +1,7 @@
 defmodule Tay.Engine.Lifecycle do
   @moduledoc false
   use GenServer
+  alias Tay.Engine.Lifecycle.{CommandDelivery, State, Operation}
   alias Tay.Engine.Admission
   alias Tay.Storage.Writer
   alias Tay.Execution.LocalFence
@@ -35,7 +36,7 @@ defmodule Tay.Engine.Lifecycle do
     Process.send_after(self(), :reap, 100)
 
     {:ok,
-     %{
+     %State{
        table: table,
        config: config,
        root: hd(Process.get(:"$ancestors")),
@@ -49,14 +50,12 @@ defmodule Tay.Engine.Lifecycle do
        fence: nil,
        monitors: %{},
        permits: %{},
-       command_queue: :queue.new(),
-       commands_inflight: 0,
-       command_deliveries: MapSet.new()
+       delivery: CommandDelivery.new()
      }}
   end
 
   def handle_call({:attach_runtime, runtime}, {parent, _}, %{runtime: nil} = s) do
-    if parent == hd(Process.get(:"$ancestors")) do
+    if parent == s.root do
       monitor = Process.monitor(runtime)
       {:reply, :ok, %{s | runtime: runtime, monitors: Map.put(s.monitors, monitor, :runtime)}}
     else
@@ -264,7 +263,7 @@ defmodule Tay.Engine.Lifecycle do
               max(deadline - System.monotonic_time(:millisecond), 0)
             )
 
-          operation = %{
+          operation = %Operation{
             token: token,
             kind: kind,
             force: force,
@@ -842,30 +841,20 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp enqueue_command(s, command) do
-    s
-    |> Map.update!(:command_queue, &:queue.in(command, &1))
-    |> then(fn next -> dispatch_commands(next, engine_command_window(next)) end)
+    %{s | delivery: CommandDelivery.enqueue(s.delivery, command)}
+    |> dispatch_commands(engine_command_window(s))
   end
 
-  defp dispatch_commands(s, limit) when s.commands_inflight < limit do
-    case :queue.out(s.command_queue) do
-      {{:value, {generation, permit, payload, from}}, queue} ->
+  defp dispatch_commands(s, limit) do
+    case CommandDelivery.take(s.delivery, limit) do
+      {:ok, {generation, permit, payload, from}, delivery} ->
         send(s.engine, {:command, generation, permit, payload, from})
+        dispatch_commands(%{s | delivery: delivery}, limit)
 
-        %{
-          s
-          | command_queue: queue,
-            commands_inflight: s.commands_inflight + 1,
-            command_deliveries: MapSet.put(s.command_deliveries, permit)
-        }
-        |> dispatch_commands(limit)
-
-      {:empty, _} ->
+      :empty ->
         s
     end
   end
-
-  defp dispatch_commands(s, _limit), do: s
 
   defp engine_command_window(%{config: %{durability: :sync} = config}) do
     batch = config.journal_batch
@@ -874,20 +863,10 @@ defmodule Tay.Engine.Lifecycle do
 
   defp engine_command_window(_), do: 1
 
-  defp flush_commands(s),
-    do: dispatch_commands(s, s.commands_inflight + :queue.len(s.command_queue))
+  defp flush_commands(s), do: dispatch_commands(s, CommandDelivery.flush_limit(s.delivery))
 
-  defp finish_command_delivery(s, permit) do
-    if MapSet.member?(s.command_deliveries, permit) do
-      %{
-        s
-        | commands_inflight: max(s.commands_inflight - 1, 0),
-          command_deliveries: MapSet.delete(s.command_deliveries, permit)
-      }
-    else
-      s
-    end
-  end
+  defp finish_command_delivery(s, permit),
+    do: %{s | delivery: CommandDelivery.complete(s.delivery, permit)}
 
   defp begin_closing(s) do
     operation = %{s.operation | phase: :closing}
@@ -928,9 +907,7 @@ defmodule Tay.Engine.Lifecycle do
         runtime: nil,
         fence: nil,
         permits: %{},
-        command_queue: :queue.new(),
-        commands_inflight: 0,
-        command_deliveries: MapSet.new(),
+        delivery: CommandDelivery.new(),
         monitors: Map.filter(s.monitors, fn {_, kind} -> kind == :operation_driver end)
     }
   end
@@ -995,9 +972,7 @@ defmodule Tay.Engine.Lifecycle do
 
     %{
       s
-      | command_queue: :queue.new(),
-        commands_inflight: 0,
-        command_deliveries: MapSet.new()
+      | delivery: CommandDelivery.new()
     }
   end
 

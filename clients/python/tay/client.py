@@ -12,7 +12,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, cast
 
 from .errors import (
     ConnectionLost,
@@ -25,6 +25,8 @@ from .errors import (
     ValidationError,
 )
 from .execution import bounded_error, cancel_async_execution, run_task
+from .job_options import DURABILITY_MODES as _DURABILITY_MODES
+from .job_options import enqueue_payload, job_arguments, validate_durability
 from .protocol import (
     DEFAULT_MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
@@ -42,7 +44,6 @@ _MODES = frozenset({"client", "embedded", "worker"})
 # Event-v1 freezes a single durable retry curve. Keep the SDK's accepted surface
 # aligned with the listener rather than accepting values it cannot represent.
 _BACKOFF_MODES = frozenset({"exponential"})
-_DURABILITY_MODES = frozenset({"persistent", "volatile"})
 _OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
 _CATCH_UP_POLICIES = frozenset({"latest", "all"})
 _TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
@@ -140,7 +141,7 @@ class Tay:
         reconnect_max_delay: float = 2.0,
         include_traceback: bool = True,
     ) -> None:
-        if mode not in _MODES:
+        if not isinstance(mode, str) or mode not in _MODES:
             raise ValidationError(f"mode must be one of {sorted(_MODES)}, not {mode!r}")
         if type(capacity) is not int or capacity not in range(1, 65_536):
             raise ValidationError("capacity must be an integer in 1..65535")
@@ -293,10 +294,7 @@ class Tay:
             raise ValidationError(f"backoff must be one of {sorted(_BACKOFF_MODES)}")
 
         durability = raw["durability"]
-        if durability is not None and durability not in _DURABILITY_MODES:
-            raise ValidationError(
-                f"durability must be one of {sorted(_DURABILITY_MODES)}"
-            )
+        validate_durability(durability)
 
         cron = raw["cron"]
         every = raw["every"]
@@ -312,7 +310,9 @@ class Tay:
             every = self._validate_every_mapping(every)
 
         overlap = raw["overlap"]
-        if overlap is not None and overlap not in _OVERLAP_POLICIES:
+        if overlap is not None and (
+            not isinstance(overlap, str) or overlap not in _OVERLAP_POLICIES
+        ):
             raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
 
         declaration_id = raw["declaration_id"]
@@ -737,34 +737,7 @@ class Tay:
                 "worker mode only executes tasks; use embedded or client to enqueue"
             )
         task_name = self._task_name(task)
-        if args is None:
-            args = {}
-        if not isinstance(args, Mapping):
-            raise ValidationError("enqueue args must be a JSON object")
-        merged_options = dict(options or {})
-        if not isinstance(options or {}, Mapping):
-            raise ValidationError("enqueue options must be a mapping")
-        overlap = set(merged_options).intersection(option_keywords)
-        if overlap:
-            raise ValidationError(f"enqueue option supplied twice: {min(overlap)}")
-        merged_options.update(option_keywords)
-        if durability is not None:
-            if "durability" in merged_options:
-                raise ValidationError("enqueue option supplied twice: durability")
-            merged_options["durability"] = durability
-        backoff = merged_options.get("backoff")
-        if not (backoff is None or backoff == "exponential"):
-            raise ValidationError("Protocol v1 supports only backoff='exponential'")
-        durability = merged_options.get("durability")
-        if durability is not None and durability not in _DURABILITY_MODES:
-            raise ValidationError(
-                f"durability must be one of {sorted(_DURABILITY_MODES)}"
-            )
-        payload = {
-            "task": task_name,
-            "args": normalize_json(args),
-            "options": normalize_json(merged_options),
-        }
+        payload = enqueue_payload(task_name, args, options, option_keywords, durability)
         reply = await self._request("enqueue", payload)
         job_id = _extract_identifier(reply, "job_id", "job")
         return JobHandle(job_id, self, _extract_job_durability(reply))
@@ -806,7 +779,9 @@ class Tay:
         )
         payload: dict[str, Any] = {
             "task": self._task_name(task),
-            "args": normalize_json(kwargs if kwargs is not None else args or {}),
+            "args": job_arguments(
+                kwargs if kwargs is not None else args, operation="schedule"
+            ),
             "cron": cron,
             "timezone": timezone,
             "catch_up": catch_up,
@@ -870,7 +845,9 @@ class Tay:
         )
         payload: dict[str, Any] = {
             "task": self._task_name(task),
-            "args": normalize_json(kwargs if kwargs is not None else args or {}),
+            "args": job_arguments(
+                kwargs if kwargs is not None else args, operation="every"
+            ),
             "every": every,
             "catch_up": catch_up,
             "options": normalize_json(options),
@@ -914,11 +891,13 @@ class Tay:
             raise ValidationError(
                 "timezone must be UTC, Z, or an offset such as +01 or -02:30"
             )
-        if catch_up not in _CATCH_UP_POLICIES:
+        if not isinstance(catch_up, str) or catch_up not in _CATCH_UP_POLICIES:
             raise ValidationError(
                 f"catch_up must be one of {sorted(_CATCH_UP_POLICIES)}"
             )
-        if overlap is not None and overlap not in _OVERLAP_POLICIES:
+        if overlap is not None and (
+            not isinstance(overlap, str) or overlap not in _OVERLAP_POLICIES
+        ):
             raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
         if delay is not None and (
             type(delay) not in {int, float}
@@ -1049,6 +1028,9 @@ class Tay:
                 arguments,
                 synchronous=synchronous,
                 max_result_bytes=self.max_result_bytes,
+                on_awaitable=lambda: self._execution_is_sync.update(
+                    {execution_id: False}
+                ),
             )
         except asyncio.CancelledError:
             with contextlib.suppress(ConnectionLost, OSError):
@@ -1135,6 +1117,6 @@ def _extract_job_durability(reply: Mapping[str, Any]) -> Durability | None:
     job = reply.get("job")
     if isinstance(job, Mapping):
         durability = job.get("durability")
-        if durability in _DURABILITY_MODES:
-            return durability
+        if isinstance(durability, str) and durability in _DURABILITY_MODES:
+            return cast(Durability, durability)
     return None

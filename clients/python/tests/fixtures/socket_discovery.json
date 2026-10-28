@@ -126,5 +126,50 @@
     "directories": [],
     "usable": [],
     "error": true
+  },
+  {
+    "name": "explicit path does not require UID",
+    "setting": "/chosen/tay.sock",
+    "env": {},
+    "directories": [],
+    "usable": [],
+    "uid": -1,
+    "path": "/chosen/tay.sock",
+    "private": false
+  },
+  {
+    "name": "environment path does not require UID",
+    "setting": "auto",
+    "env": {
+      "TAY_SOCKET_PATH": "/env/tay.sock"
+    },
+    "directories": [],
+    "usable": [],
+    "uid": -1,
+    "path": "/env/tay.sock",
+    "private": false
+  },
+  {
+    "name": "shared path does not require UID",
+    "setting": "auto",
+    "env": {},
+    "directories": [
+      "/run/tay"
+    ],
+    "usable": [],
+    "uid": -1,
+    "path": "/run/tay/tay.sock",
+    "private": false
+  },
+  {
+    "name": "automatic per-user runtime requires UID",
+    "setting": "auto",
+    "env": {},
+    "directories": [],
+    "usable": [
+      "/tmp"
+    ],
+    "uid": -1,
+    "error": true
   }
 ]

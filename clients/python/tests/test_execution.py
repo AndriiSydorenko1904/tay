@@ -273,3 +273,75 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await asyncio.to_thread(finished.wait, 1)
         self.assertEqual(worker._worker_request.await_count, 1)
+
+
+class AwaitableCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_socket_sync_wrapper_becomes_cancellable_after_its_thread_returns(
+        self,
+    ):
+        client = Tay(socket_path="/tmp/tay-phase-test.sock")
+        client._send_event = AsyncMock()
+        waiting = asyncio.Event()
+
+        async def continuation():
+            waiting.set()
+            await asyncio.Event().wait()
+
+        @client.task
+        def wrapper():
+            return continuation()
+
+        task = asyncio.create_task(
+            client._run_execution("r", "e", "j", wrapper, {}, True)
+        )
+        client._executions["e"] = task
+        client._execution_is_sync["e"] = True
+        try:
+            await asyncio.wait_for(waiting.wait(), 1)
+            self.assertFalse(client._execution_is_sync["e"])
+            await client._cancel_execution({"execution_id": "e"})
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            completion = client._send_event.await_args.args
+            self.assertEqual(completion[0], "failed")
+            self.assertTrue(completion[1]["error"]["cancelled"])
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_http_sync_wrapper_becomes_cancellable_after_its_thread_returns(self):
+        worker = TayHTTPWorker("http://127.0.0.1:8080")
+        worker._worker_request = AsyncMock()
+        waiting = asyncio.Event()
+
+        async def continuation():
+            waiting.set()
+            await asyncio.Event().wait()
+
+        @worker.task
+        def wrapper():
+            return continuation()
+
+        task = asyncio.create_task(
+            worker._execute(
+                {
+                    "task": wrapper.name,
+                    "args": {},
+                    "reservation_id": "r",
+                    "execution_id": "e",
+                }
+            )
+        )
+        worker._executions["e"] = task
+        worker._execution_is_sync["e"] = True
+        try:
+            await asyncio.wait_for(waiting.wait(), 1)
+            self.assertFalse(worker._execution_is_sync["e"])
+            cancel_async_execution(task, worker._execution_is_sync["e"])
+            await asyncio.wait_for(task, 1)
+            completion = worker._worker_request.await_args.args
+            self.assertEqual(completion[1], "/workers/complete")
+            self.assertEqual(completion[2]["error"]["type"], "CancelledError")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

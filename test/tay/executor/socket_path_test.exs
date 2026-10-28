@@ -22,7 +22,7 @@ defmodule Tay.Executor.SocketPathTest do
       result =
         SocketPath.resolve(setting,
           env: fixture["env"],
-          uid: 4242,
+          uid: Map.get(fixture, "uid", 4242),
           directory_exists: &(&1 in fixture["directories"]),
           usable_directory: fn path, _ -> path in fixture["usable"] end
         )
@@ -99,5 +99,15 @@ defmodule Tay.Executor.SocketPathTest do
 
     assert {:error, :invalid_socket_path} =
              resolve(:auto, %{"TAY_SOCKET_PATH" => "/" <> String.duplicate("x", 101)})
+  end
+
+  test "disabled sockets do not require a UID or directory inspection" do
+    assert {:ok, %{path: nil, source: :disabled}} =
+             SocketPath.resolve(nil,
+               env: %{},
+               uid: -1,
+               directory_exists: fn _ -> flunk("directory inspected") end,
+               usable_directory: fn _, _ -> flunk("directory inspected") end
+             )
   end
 end

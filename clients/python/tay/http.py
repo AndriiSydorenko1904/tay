@@ -51,10 +51,9 @@ from .errors import (
     ValidationError,
 )
 from .execution import cancel_async_execution, error_details, run_task
-from .protocol import json_bytes, normalize_json, validate_task_name
+from .job_options import enqueue_payload, validate_durability
+from .protocol import json_bytes, validate_task_name
 from .task import Durability, Task, TaskConfig
-
-_DURABILITY_MODES = frozenset({"persistent", "volatile"})
 
 # Buffer at most one MB plus one byte to detect an oversized response.
 _MAX_HTTP_RESPONSE_BYTES = 1_048_576
@@ -190,33 +189,10 @@ class TayHTTP:
         durability: Durability | None = None,
         **option_keywords: Any,
     ) -> HTTPJobHandle:
-        if args is None:
-            args = {}
-        if not isinstance(args, Mapping) or not isinstance(options or {}, Mapping):
-            raise ValidationError("enqueue args and options must be JSON objects")
-        merged = dict(options or {})
-        if merged.keys() & option_keywords.keys():
-            raise ValidationError("enqueue option supplied twice")
-        merged.update(option_keywords)
-        if durability is not None:
-            if "durability" in merged:
-                raise ValidationError("enqueue option supplied twice")
-            merged["durability"] = durability
-        if merged.get("backoff") not in (None, "exponential"):
-            raise ValidationError("Protocol v1 supports only backoff='exponential'")
-        if merged.get("durability") not in (None, *_DURABILITY_MODES):
-            raise ValidationError(
-                f"durability must be one of {sorted(_DURABILITY_MODES)}"
-            )
-        reply = await self._request(
-            "POST",
-            "/jobs",
-            {
-                "task": validate_task_name(task),
-                "args": normalize_json(args),
-                "options": normalize_json(merged),
-            },
+        payload = enqueue_payload(
+            validate_task_name(task), args, options, option_keywords, durability
         )
+        reply = await self._request("POST", "/jobs", payload)
         return HTTPJobHandle(
             _extract_identifier(reply, "job_id", "job"),
             self,
@@ -330,10 +306,7 @@ class TayHTTPWorker(TayHTTP):
             raise ValidationError("retries must be an integer in 0..65534")
         if backoff is not None and backoff != "exponential":
             raise ValidationError("backoff must be 'exponential'")
-        if durability is not None and durability not in _DURABILITY_MODES:
-            raise ValidationError(
-                f"durability must be one of {sorted(_DURABILITY_MODES)}"
-            )
+        validate_durability(durability)
 
         config = TaskConfig(retries=retries, backoff=backoff, durability=durability)
 
@@ -557,6 +530,9 @@ class TayHTTPWorker(TayHTTP):
                 message["args"],
                 synchronous=not inspect.iscoroutinefunction(task.function),
                 max_result_bytes=_MAX_TASK_RESULT_BYTES,
+                on_awaitable=lambda: self._execution_is_sync.update(
+                    {message["execution_id"]: False}
+                ),
                 size_error=lambda _size, limit: ValidationError(
                     f"task result exceeds {limit} bytes"
                 ),

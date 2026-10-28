@@ -10,6 +10,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from .errors import ModeError, ValidationError
+from .job_options import merge_enqueue_options
 from .protocol import normalize_json, validate_task_name
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -121,20 +122,15 @@ class Task:
 
         task_keywords = dict(kwargs)
         raw_options = task_keywords.pop("options", None)
-        if raw_options is None:
-            options: dict[str, Any] = {}
-        elif isinstance(raw_options, Mapping):
-            options = dict(raw_options)
-        else:
-            raise ValidationError("enqueue options must be a mapping")
+        option_keywords: dict[str, Any] = {}
 
         parameter_names = (
             set(self.signature.parameters) if self.signature is not None else set()
         )
         for key in tuple(task_keywords):
             if key in _ENQUEUE_OPTION_NAMES and key not in parameter_names:
-                options[key] = task_keywords.pop(key)
-        return task_keywords, options
+                option_keywords[key] = task_keywords.pop(key)
+        return task_keywords, merge_enqueue_options(raw_options, option_keywords)
 
     def _arguments_from_call(
         self, args: tuple[Any, ...], kwargs: Mapping[str, Any]

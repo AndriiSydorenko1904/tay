@@ -28,6 +28,7 @@ async def run_task(
     synchronous: bool,
     max_result_bytes: int,
     size_error: Callable[[int, int], Exception] = _result_too_large,
+    on_awaitable: Callable[[], None] | None = None,
 ) -> Any:
     if synchronous:
         result = await asyncio.to_thread(task._call_from_arguments, arguments)
@@ -36,6 +37,10 @@ async def run_task(
 
     # Both async functions and synchronous callables can return an awaitable.
     if inspect.isawaitable(result):
+        # A thread may have finished by returning a coroutine. From here on,
+        # remote cancellation can safely interrupt the loop-owned execution.
+        if on_awaitable is not None:
+            on_awaitable()
         result = await result
     result = normalize_json(result)
     size = len(json_bytes(result))

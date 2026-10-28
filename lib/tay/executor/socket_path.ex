@@ -37,16 +37,14 @@ defmodule Tay.Executor.SocketPath do
   def resolve(setting, options) when setting in [:auto, nil] or is_binary(setting) do
     with true <- Keyword.keyword?(options) || {:error, :invalid_socket_options},
          env <- Keyword.get(options, :env, System.get_env()),
-         uid <- Keyword.get_lazy(options, :uid, &uid/0),
          usable_directory <- Keyword.get(options, :usable_directory, &usable_directory?/2),
          directory_exists <- Keyword.get(options, :directory_exists, &File.dir?/1),
          true <- is_map(env) || {:error, :invalid_socket_environment},
-         true <- valid_uid?(uid) || {:error, :invalid_uid},
          true <- is_function(directory_exists, 1) || {:error, :invalid_socket_options},
          true <- is_function(usable_directory, 2) || {:error, :invalid_socket_options} do
       case setting do
         nil -> {:ok, %{path: nil, private_directory: false, source: :disabled}}
-        :auto -> automatic(env, uid, usable_directory, directory_exists)
+        :auto -> automatic(env, options, usable_directory, directory_exists)
         path -> explicit(path, :explicit)
       end
     else
@@ -65,34 +63,40 @@ defmodule Tay.Executor.SocketPath do
       valid_raw_path?(path)
   end
 
-  defp automatic(env, uid, usable_directory, directory_exists) do
+  defp automatic(env, options, usable_directory, directory_exists) do
     case env_path(env, "TAY_SOCKET_PATH") do
       nil ->
         if directory_exists.("/run/tay"),
           do:
             {:ok, %{path: "/run/tay/tay.sock", private_directory: false, source: :shared_runtime}},
-          else: runtime_path(env, uid, usable_directory)
+          else: runtime_path(env, options, usable_directory)
 
       path ->
         explicit(path, :environment)
     end
   end
 
-  defp runtime_path(env, uid, usable_directory) do
-    xdg = env_path(env, "XDG_RUNTIME_DIR")
-    tmp = env_path(env, "TMPDIR")
+  defp runtime_path(env, options, usable_directory) do
+    uid = Keyword.get_lazy(options, :uid, &uid/0)
 
-    candidates = [
-      {:xdg_runtime, xdg && Path.join([xdg, "tay", "tay.sock"])},
-      {:tmpdir, tmp && Path.join([tmp, "tay-#{uid}", "tay.sock"])},
-      {:tmp, Path.join(["/tmp", "tay-#{uid}", "tay.sock"])}
-    ]
+    if valid_uid?(uid) do
+      xdg = env_path(env, "XDG_RUNTIME_DIR")
+      tmp = env_path(env, "TMPDIR")
 
-    Enum.find_value(candidates, {:error, :no_usable_socket_path}, fn {source, path} ->
-      if automatic_candidate?(path, uid, usable_directory),
-        do: {:ok, %{path: Path.expand(path), private_directory: true, source: source}},
-        else: false
-    end)
+      candidates = [
+        {:xdg_runtime, xdg && Path.join([xdg, "tay", "tay.sock"])},
+        {:tmpdir, tmp && Path.join([tmp, "tay-#{uid}", "tay.sock"])},
+        {:tmp, Path.join(["/tmp", "tay-#{uid}", "tay.sock"])}
+      ]
+
+      Enum.find_value(candidates, {:error, :no_usable_socket_path}, fn {source, path} ->
+        if automatic_candidate?(path, uid, usable_directory),
+          do: {:ok, %{path: Path.expand(path), private_directory: true, source: source}},
+          else: false
+      end)
+    else
+      {:error, :invalid_uid}
+    end
   end
 
   defp explicit(path, source) when is_binary(path) do

@@ -46,7 +46,7 @@ class SocketPathTests(unittest.TestCase):
                 setting = None if fixture["setting"] == "auto" else fixture["setting"]
                 options = {
                     "environ": fixture["env"],
-                    "uid": 4242,
+                    "uid": fixture.get("uid", 4242),
                     "directory_exists": fixture["directories"].__contains__,
                     "usable_directory": fixture["usable"].__contains__,
                 }

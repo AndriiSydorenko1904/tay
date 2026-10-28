@@ -13,7 +13,14 @@
 - Extract Engine state and execution operations, Native Port framing and metadata
   codecs, and explicit compaction-publication stages without changing wire or
   storage formats. Clarify CRC32C implementation and native descriptor ownership.
-- Update `tay-client` to 1.4.1 with shared task invocation and error formatting.
+- Update `tay-client` to 1.4.1 with shared task invocation, producer option
+  validation, and error formatting. Reject malformed false-like argument/options
+  values and duplicate decorated-task submission options consistently.
+- Isolate Lifecycle command delivery and explicit state/operation structures.
+  Derive in-flight command counts from active permits and preserve FIFO, drain,
+  and stale-acknowledgement behavior within the same owner process.
+- Avoid looking up the Unix UID for disabled, explicit, environment-selected,
+  and shared-runtime sockets.
 
 ### Fixed
 
@@ -21,6 +28,8 @@
   CVE-2026-116078.
 - Keep result-delivery failures separate from user task failures; a lost success
   notification no longer causes a contradictory failure notification.
+- Allow remote cancellation after a synchronous task returns a loop-owned
+  awaitable, while keeping running synchronous thread work protected.
 - Stop the HTTP worker claim loop and cancel/await its execution wrappers during
   shutdown, preventing late completions after session revocation.
 - Enforce error byte limits even for long Unicode exception class names, and
