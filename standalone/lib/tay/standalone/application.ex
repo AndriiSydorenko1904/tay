@@ -5,7 +5,7 @@ defmodule Tay.Standalone.Application do
 
   @impl true
   def start(_type, _args) do
-    environment = Application.get_env(:tay_standalone, :environment, System.get_env())
+    environment = Tay.Standalone.Config.environment()
 
     with {:ok, config} <- Tay.Standalone.Config.load(environment),
          {:ok, dashboard_children} <- Tay.Dashboard.Standalone.Application.children(environment) do
@@ -26,7 +26,7 @@ defmodule Tay.Standalone.Application do
                 terminal_retention: config.terminal_retention,
                 checkpoint_interval: config.checkpoint_interval_ms
               ],
-              executor_socket: config.socket_path,
+              executor_socket: config.socket,
               executor_socket_mode: 0o660,
               http_port: config.http_port,
               http_ip: config.http_ip,

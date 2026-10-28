@@ -6,12 +6,22 @@ defmodule Tay.Standalone.ConfigTest do
   test "uses standalone container defaults" do
     assert {:ok, config} = Config.load(%{})
     assert config.data_dir == "/var/lib/tay"
-    assert config.socket_path == "/run/tay/tay.sock"
+    assert {:ok, socket} = Tay.Gateway.Config.resolve_socket(:auto, nil, env: %{})
+    assert config.socket_path == socket.path
+    assert config.socket.path == socket.path
+    assert config.socket.private_directory == socket.private_directory
     assert config.initialize == :never
     assert config.default_queue_concurrency == 10
     assert config.caller_timeout_ms == 5_000
     assert config.group_commit_interval_ms == 0
     assert config.checkpoint_interval_ms == 60_000
+  end
+
+  test "blank socket environment uses the same defaults as an absent value" do
+    assert Config.load(%{"TAY_SOCKET_PATH" => ""}) == Config.load(%{})
+
+    assert {:ok, %{socket_path: nil}} =
+             Config.load(%{"TAY_SOCKET_PATH" => "", "TAY_HTTP_PORT" => "8080"})
   end
 
   test "configures the Engine caller timeout" do
@@ -66,6 +76,16 @@ defmodule Tay.Standalone.ConfigTest do
     end
   end
 
+  test "HTTP configuration disables the implicit socket but permits an explicit socket" do
+    assert {:ok, %{socket_path: nil}} = Config.load(%{"TAY_HTTP_PORT" => "8080"})
+
+    assert {:ok, %{socket_path: "/run/tay/custom.sock"}} =
+             Config.load(%{
+               "TAY_HTTP_PORT" => "8080",
+               "TAY_SOCKET_PATH" => "/run/tay/custom.sock"
+             })
+  end
+
   test "allows HTTP-only runtime without a Unix socket" do
     assert {:ok, config} = Config.load(%{"TAY_SOCKET_PATH" => "off", "TAY_HTTP_PORT" => "8080"})
     assert config.socket_path == nil
@@ -103,7 +123,7 @@ defmodule Tay.Standalone.ConfigTest do
     assert {:error, message} = Config.load(%{"TAY_DATA_DIR" => "relative"})
     assert message =~ "absolute path"
 
-    assert {:error, message} = Config.load(%{"TAY_SOCKET_PATH" => ""})
+    assert {:error, message} = Config.load(%{"TAY_SOCKET_PATH" => " "})
     assert message =~ "must not be blank"
   end
 
@@ -157,5 +177,58 @@ defmodule Tay.Standalone.ConfigTest do
              })
 
     assert message =~ "outside TAY_DATA_DIR"
+  end
+
+  test "resolved automatic socket survives the handoff into Engine configuration" do
+    directory = Path.join("/tmp", "tay-handoff-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+    assert {:ok, config} = Config.load(%{"XDG_RUNTIME_DIR" => directory, "TMPDIR" => directory})
+
+    assert {:ok, engine} =
+             Tay.Gateway.Config.resolve(
+               Map.put(Tay.Gateway.Config.defaults(), :executor_socket, config.socket),
+               "/var/lib/tay"
+             )
+
+    assert engine.executor_socket == config.socket_path
+    assert engine.executor_socket_private_directory == config.socket.private_directory
+  end
+
+  test "standalone and embedded hosts share HTTP/TLS acceptance rules" do
+    alias Tay.Gateway.Config, as: GatewayConfig
+
+    for {port, ip, cert, key, ca} <- [
+          {nil, "0.0.0.0", nil, nil, nil},
+          {8080, "127.0.0.1", nil, nil, nil},
+          {8080, "::1", nil, nil, nil},
+          {8080, "0.0.0.0", nil, nil, nil},
+          {8080, "0.0.0.0", "/cert", "/key", "/ca"},
+          {nil, "127.0.0.1", "/cert", "/key", "/ca"},
+          {8080, "127.0.0.1", "/cert", nil, nil},
+          {8080, "127.0.0.1", "/cert", "relative", "/ca"},
+          {8080, "invalid", nil, nil, nil},
+          {8080, "127.0.0.1", "/cert", "/key", "/ca" <> <<0>>}
+        ] do
+      environment = %{
+        "TAY_HTTP_PORT" => if(port, do: Integer.to_string(port), else: ""),
+        "TAY_HTTP_IP" => ip,
+        "TAY_HTTP_TLS_CERTFILE" => cert || "",
+        "TAY_HTTP_TLS_KEYFILE" => key || "",
+        "TAY_HTTP_TLS_CACERTFILE" => ca || ""
+      }
+
+      gateway =
+        Map.merge(GatewayConfig.defaults(), %{
+          http_port: port,
+          http_ip: ip,
+          http_tls_certfile: cert,
+          http_tls_keyfile: key,
+          http_tls_cacertfile: ca
+        })
+
+      assert match?({:ok, _}, Config.load(environment)) ==
+               (GatewayConfig.validate_http(gateway) == :ok)
+    end
   end
 end

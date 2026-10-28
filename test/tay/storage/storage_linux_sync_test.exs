@@ -81,7 +81,7 @@ defmodule Tay.Storage.LinuxSyncTest do
     {:ok, _} = Writer.append(w, 1, 1, "previous sync success")
     assert {:error, {:uncertain, _}} = Writer.rotate(w)
     assert {:error, {:poisoned, _}} = Writer.append(w, 1, 1, "not accepted")
-    assert File.stat!(Path.join([path, "segments", canonical(2)])).size == 44
+    assert File.stat!(Tay.Test.RecoveryHelpers.canonical(path, 2)).size == 44
     GenServer.stop(w)
     {:ok, w} = start(path)
     assert {:ok, [1]} = Writer.reduce(w, [], fn r, _, acc -> [r.sequence | acc] end)

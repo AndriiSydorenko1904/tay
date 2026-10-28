@@ -8,7 +8,10 @@ defmodule Tay.Engine.GroupCommitWriteTest do
     path = NativeHelpers.path()
     Recovery.store(path)
     on_exit(fn -> File.rm_rf!(path) end)
-    {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 1_000)
+
+    {:ok, root} =
+      EngineHelpers.start(path, @name, durability: :write, group_commit_interval_ms: 1_000)
+
     {:ok, intent} = EngineWorker.new(%{})
     started = System.monotonic_time(:millisecond)
     assert {:ok, _} = Tay.insert(intent, name: @name, timeout: 500)

@@ -20,7 +20,6 @@ docker run -d --name "$container" \
   --security-opt no-new-privileges \
   -e TAY_DATA_DIR=/var/lib/tay/store \
   -e TAY_INITIALIZE_IF_MISSING=true \
-  -e TAY_SOCKET_PATH=off \
   -e TAY_HTTP_PORT=8080 \
   -v "$data_volume:/var/lib/tay" \
   "$image" >/dev/null

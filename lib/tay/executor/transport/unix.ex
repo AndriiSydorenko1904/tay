@@ -7,11 +7,25 @@ defmodule Tay.Executor.Transport.Unix do
   def open(path, mode, private_directory, owner) do
     with :ok <- prepare(path, private_directory),
          {:ok, listener} <- listen(path),
-         :ok <- File.chmod(path, mode) do
+         :ok <- chmod_socket(listener, path, mode) do
       acceptor = spawn_link(fn -> acceptor_wait(owner, listener) end)
       :ok = :gen_tcp.controlling_process(listener, acceptor)
       send(acceptor, :accept)
       {:ok, listener, acceptor, Process.monitor(acceptor)}
+    else
+      {:error, reason} -> {:error, {:socket_unavailable, path, reason}}
+    end
+  end
+
+  defp chmod_socket(listener, path, mode) do
+    case File.chmod(path, mode) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        :gen_tcp.close(listener)
+        remove_socket(path)
+        {:error, reason}
     end
   end
 

@@ -4,46 +4,10 @@ defmodule Tay.Storage.Native do
   Every uncertain operation poisons this connection; it is never retried.
   The helper is the sole holder of locks and writable descriptors.
   """
+  alias Tay.Storage.Native.Codec
+  import Tay.Storage.Native.Codec, only: [identity: 2, entries: 4, scope: 1, string: 1]
+
   @test Mix.env() == :test
-  @ops %{
-    acquire: 1,
-    list: 2,
-    mkdir: 3,
-    open_read: 4,
-    read: 5,
-    close_read: 6,
-    create_stage: 7,
-    open_active: 8,
-    write: 9,
-    sync: 10,
-    close_write: 11,
-    publish: 12,
-    sync_dir: 13,
-    check: 14,
-    info: 15,
-    sync_read: 16,
-    shutdown: 17,
-    acquire_existing: 18,
-    enable_mutations: 19,
-    cold_target_open: 20,
-    cold_stage_create: 21,
-    cold_open_write: 22,
-    cold_sync_staging: 23,
-    cold_publish: 24,
-    cold_sync_catalog: 25,
-    cold_check: 26,
-    cold_source: 27,
-    cold_list: 28,
-    v2_select: 29,
-    v2_begin: 30,
-    v2_publish_epoch: 31,
-    v2_publish_current: 33,
-    v2_space: 34,
-    v2_reclaim: 37,
-    acquire_if_missing: 38,
-    v2_abort: 39,
-    fault: 240
-  }
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
   @type t :: %__MODULE__{}
 
@@ -596,7 +560,7 @@ defmodule Tay.Storage.Native do
             v2_reclaim_epochs_sync: 265
           },
           operation
-        ) || Map.fetch!(@ops, operation)
+        ) || Codec.opcode(operation)
 
       code =
         %{
@@ -646,56 +610,6 @@ defmodule Tay.Storage.Native do
     end
   end
 
-  defp identity(
-         <<size::64, device::64, inode::64, links::64, type, mode::32, mtime_ns::64, ctime_ns::64,
-           rest::binary>>,
-         true
-       )
-       when type in 1..4 do
-    {:ok,
-     %{
-       size: size,
-       device: device,
-       inode: inode,
-       links: links,
-       type: elem({:regular, :directory, :symlink, :other}, type - 1),
-       mode: mode,
-       mtime_ns: mtime_ns,
-       ctime_ns: ctime_ns
-     }, rest}
-  end
-
-  defp identity(
-         <<size::64, device::64, inode::64, links::64, type, mode::32, rest::binary>>,
-         false
-       )
-       when type in 1..4 do
-    {:ok,
-     %{
-       size: size,
-       device: device,
-       inode: inode,
-       links: links,
-       type: elem({:regular, :directory, :symlink, :other}, type - 1),
-       mode: mode
-     }, rest}
-  end
-
-  defp identity(_, _), do: :error
-  defp entries(<<>>, 0, acc, _cold?), do: {:ok, Enum.reverse(acc)}
-
-  defp entries(<<n::16, name::binary-size(n), rest::binary>>, count, acc, cold?) when count > 0 do
-    case identity(rest, cold?) do
-      {:ok, id, remaining} ->
-        entries(remaining, count - 1, [Map.put(id, :name, name) | acc], cold?)
-
-      _ ->
-        :error
-    end
-  end
-
-  defp entries(_, _, _, _), do: :error
-
   defp cold?(native),
     do: native.cold? || Process.get({__MODULE__, native.port, :cold_source}) == true
 
@@ -705,16 +619,6 @@ defmodule Tay.Storage.Native do
       :candidate -> 1
     end
   end
-
-  defp scope(:root), do: 0
-  defp scope(:segments), do: 1
-  defp scope(:verify), do: 2
-  defp scope(:catalog), do: 2
-  defp scope(:epochs), do: 3
-  defp scope(:candidate), do: 4
-  defp scope(:candidate_segments), do: 5
-  defp scope(:epoch), do: 6
-  defp string(bytes), do: <<byte_size(bytes)::16, bytes::binary>>
 
   defp cold_verify(nil), do: <<0>>
 
@@ -746,7 +650,6 @@ defmodule Tay.Storage.Native do
         {:error, %{kind: :native_argument, reason: :packet_too_large}}
 
       true ->
-        op = Map.fetch!(@ops, operation)
         id = System.unique_integer([:positive, :monotonic])
         port = native.port
 
@@ -757,25 +660,14 @@ defmodule Tay.Storage.Native do
             else: native.timeout
 
         try do
-          true = Port.command(port, <<1, op, id::64, body::binary>>)
+          true = Port.command(port, Codec.encode_request(operation, id, body))
 
           receive do
-            {^port, {:data, <<1, ^op, ^id::64, 0, 0::32, written::64, reply::binary>>}} ->
-              {:ok, reply, written}
-
-            {^port, {:data, <<1, ^op, ^id::64, 1, errno::32, written::64, reason::binary>>}} ->
-              {:error,
-               %{
-                 kind: :native_io,
-                 operation: operation,
-                 errno: errno,
-                 reason: reason,
-                 bytes_written:
-                   if(written == 18_446_744_073_709_551_615, do: :unknown, else: written)
-               }}
-
-            {^port, {:data, _}} ->
-              uncertain(native, :invalid_reply)
+            {^port, {:data, bytes}} ->
+              case Codec.decode_reply(bytes, operation, id) do
+                :invalid_reply -> uncertain(native, :invalid_reply)
+                result -> result
+              end
 
             {^port, {:exit_status, status}} ->
               uncertain(native, {:helper_exit, status})

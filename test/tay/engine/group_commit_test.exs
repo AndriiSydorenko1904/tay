@@ -104,7 +104,12 @@ defmodule Tay.Engine.GroupCommitTest do
 
   test "interval zero keeps one immediate fsync per append", %{path: path} do
     parent = self()
-    hook = fn tag, _ -> if tag == :append_synced, do: send(parent, :fsync) end
+
+    hook = fn tag, _ ->
+      if tag == :append_synced, do: send(parent, :fsync)
+      :ok
+    end
+
     {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 0, writer_hook: hook)
     assert {:ok, _} = Tay.insert(intent!(%{"n" => 1}), name: @name)
     assert_receive :fsync
@@ -123,7 +128,12 @@ defmodule Tay.Engine.GroupCommitTest do
 
   test "max_events flushes a bounded batch before the interval", %{path: path} do
     parent = self()
-    hook = fn tag, _ -> if tag == :append_synced, do: send(parent, :fsync) end
+
+    hook = fn tag, _ ->
+      if tag == :append_synced, do: send(parent, :fsync)
+      :ok
+    end
+
     {:ok, root} = start_batched(path, 3, 1_000, writer_hook: hook, client_slots: 8)
 
     first = Task.async(fn -> Tay.insert(intent!(%{"n" => 1}), name: @name) end)
@@ -143,7 +153,12 @@ defmodule Tay.Engine.GroupCommitTest do
 
   test "volatile insert bypasses a pending persistent journal batch", %{path: path} do
     parent = self()
-    hook = fn tag, _ -> if tag == :append_synced, do: send(parent, :fsync) end
+
+    hook = fn tag, _ ->
+      if tag == :append_synced, do: send(parent, :fsync)
+      :ok
+    end
+
     {:ok, root} = start_batched(path, 100, 1_000, writer_hook: hook)
 
     assert {:ok, %{durability: :volatile}} =

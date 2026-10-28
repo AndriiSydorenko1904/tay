@@ -28,7 +28,7 @@ defmodule Tay.Gateway.Config do
   def defaults, do: @defaults
 
   def resolve(config, data_dir) do
-    with {:ok, socket} <- SocketPath.resolve(config.executor_socket),
+    with {:ok, socket} <- resolve_socket(config.executor_socket, config.http_port),
          resolved <-
            config
            |> Map.put(:executor_socket, socket.path)
@@ -36,6 +36,30 @@ defmodule Tay.Gateway.Config do
          :ok <- validate(resolved, data_dir) do
       {:ok, resolved}
     end
+  end
+
+  # Transport selection belongs here so embedded and standalone hosts use the
+  # same opt-out and HTTP-only defaults. Explicit paths always enable UDS.
+  def resolve_socket(setting, http_port, options \\ [])
+
+  def resolve_socket(%SocketPath{} = socket, _http_port, options),
+    do: SocketPath.resolve(socket, options)
+
+  def resolve_socket(setting, http_port, options) do
+    environment = Keyword.get(options, :env, System.get_env())
+
+    setting =
+      if setting == :auto do
+        case Map.get(environment, "TAY_SOCKET_PATH") do
+          "off" -> nil
+          value when value in [nil, ""] -> if is_nil(http_port), do: :auto, else: nil
+          _ -> :auto
+        end
+      else
+        setting
+      end
+
+    SocketPath.resolve(setting, options)
   end
 
   def validate(c, data_dir) do
@@ -59,13 +83,12 @@ defmodule Tay.Gateway.Config do
       c.executor_result_bytes <= c.executor_max_frame_bytes,
       c.executor_error_bytes <= c.executor_max_frame_bytes,
       c.executor_max_results <= 100_000,
-      is_nil(c.http_port) or (is_integer(c.http_port) and c.http_port in 1..65_535),
-      ip?(c.http_ip),
-      tls?(c),
       c.http_max_body_bytes <= @max_payload
     ]
 
-    if Enum.all?(checks), do: :ok, else: {:error, :invalid_gateway_options}
+    if Enum.all?(checks) and validate_http(c) == :ok,
+      do: :ok,
+      else: {:error, :invalid_gateway_options}
   end
 
   defp socket?(nil), do: true
@@ -82,13 +105,30 @@ defmodule Tay.Gateway.Config do
 
   defp ip?(_), do: false
 
-  defp tls?(c) do
+  @doc "Validates HTTP addressing and TLS policy for every host."
+  def validate_http(c) do
     files = [c.http_tls_certfile, c.http_tls_keyfile, c.http_tls_cacertfile]
 
     cond do
-      Enum.all?(files, &is_nil/1) -> is_nil(c.http_port) or loopback?(c.http_ip)
-      Enum.all?(files, &tls_path?/1) -> not is_nil(c.http_port)
-      true -> false
+      not (is_nil(c.http_port) or (is_integer(c.http_port) and c.http_port in 1..65_535)) ->
+        {:error, :invalid_http_port}
+
+      not ip?(c.http_ip) ->
+        {:error, :invalid_http_ip}
+
+      Enum.all?(files, &is_nil/1) ->
+        if is_nil(c.http_port) or loopback?(c.http_ip),
+          do: :ok,
+          else: {:error, :http_tls_required}
+
+      not Enum.all?(files, &tls_path?/1) ->
+        {:error, :invalid_http_tls_paths}
+
+      is_nil(c.http_port) ->
+        {:error, :http_port_required}
+
+      true ->
+        :ok
     end
   end
 

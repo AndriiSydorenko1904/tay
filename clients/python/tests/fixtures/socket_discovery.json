@@ -1,0 +1,130 @@
+[
+  {
+    "name": "explicit overrides environment and shared directory",
+    "setting": "/chosen/tay.sock",
+    "env": {
+      "TAY_SOCKET_PATH": "/env/tay.sock"
+    },
+    "directories": [
+      "/run/tay"
+    ],
+    "usable": [],
+    "path": "/chosen/tay.sock",
+    "private": false
+  },
+  {
+    "name": "environment overrides shared directory",
+    "setting": "auto",
+    "env": {
+      "TAY_SOCKET_PATH": "/env/tay.sock"
+    },
+    "directories": [
+      "/run/tay"
+    ],
+    "usable": [],
+    "path": "/env/tay.sock",
+    "private": false
+  },
+  {
+    "name": "shared directory before socket creation or XDG",
+    "setting": "auto",
+    "env": {
+      "XDG_RUNTIME_DIR": "/runtime"
+    },
+    "directories": [
+      "/run/tay"
+    ],
+    "usable": [
+      "/runtime"
+    ],
+    "path": "/run/tay/tay.sock",
+    "private": false
+  },
+  {
+    "name": "XDG before TMPDIR",
+    "setting": "auto",
+    "env": {
+      "XDG_RUNTIME_DIR": "/runtime",
+      "TMPDIR": "/temporary"
+    },
+    "directories": [],
+    "usable": [
+      "/runtime",
+      "/temporary",
+      "/tmp"
+    ],
+    "path": "/runtime/tay/tay.sock",
+    "private": true
+  },
+  {
+    "name": "unusable XDG falls back to TMPDIR",
+    "setting": "auto",
+    "env": {
+      "XDG_RUNTIME_DIR": "/runtime",
+      "TMPDIR": "/temporary"
+    },
+    "directories": [],
+    "usable": [
+      "/temporary",
+      "/tmp"
+    ],
+    "path": "/temporary/tay-4242/tay.sock",
+    "private": true
+  },
+  {
+    "name": "per UID fallback",
+    "setting": "auto",
+    "env": {},
+    "directories": [],
+    "usable": [
+      "/tmp"
+    ],
+    "path": "/tmp/tay-4242/tay.sock",
+    "private": true
+  },
+  {
+    "name": "blank environment means automatic",
+    "setting": "auto",
+    "env": {
+      "TAY_SOCKET_PATH": ""
+    },
+    "directories": [],
+    "usable": [
+      "/tmp"
+    ],
+    "path": "/tmp/tay-4242/tay.sock",
+    "private": true
+  },
+  {
+    "name": "relative explicit path rejected",
+    "setting": "relative.sock",
+    "env": {},
+    "directories": [],
+    "usable": [
+      "/tmp"
+    ],
+    "error": true
+  },
+  {
+    "name": "invalid environment never falls back",
+    "setting": "auto",
+    "env": {
+      "TAY_SOCKET_PATH": "relative.sock"
+    },
+    "directories": [
+      "/run/tay"
+    ],
+    "usable": [
+      "/tmp"
+    ],
+    "error": true
+  },
+  {
+    "name": "unusable fallback rejected",
+    "setting": "auto",
+    "env": {},
+    "directories": [],
+    "usable": [],
+    "error": true
+  }
+]

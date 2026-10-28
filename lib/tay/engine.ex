@@ -23,17 +23,13 @@ defmodule Tay.Engine do
   alias Tay.State.{
     JobIndex,
     Projection,
-    SchedulerIndex,
-    TaskIndex,
     TerminalStore,
     Transition
   }
 
-  alias Tay.Execution.{Clock, ControlPlane, Dispatcher, Outcome, Registry, Relay, LocalFence}
-  alias Tay.Gateway.Runtime, as: GatewayRuntime
+  alias Tay.Execution.{Clock, Dispatcher, Registry, LocalFence}
+  alias Tay.Engine.{Execution, State}
   alias Tay.Storage.Writer
-  alias Tay.Storage.V2.{Codec, Mutation}
-  alias Tay.Storage.V2.Reducer, as: V2Reducer
   @memory_reclaim_idle_ms 1_000
   @segment_catalog_limit 128
 
@@ -67,129 +63,132 @@ defmodule Tay.Engine do
              {:compaction_retention, self(), config.compaction.terminal_retention}
            ),
          {:ok, terminal_store} <- TerminalStore.open(config.name, config.data_dir, candidate.jobs) do
-      if match?({:error, _}, activation_capability(summary)) do
-        TerminalStore.close(terminal_store)
-        GenServer.stop(writer)
-        {:error, error} = activation_capability(summary)
-        {:stop, error}
-      else
-        hook(config, :activated)
-        # Only explicit trusted configuration atoms are loaded, never persisted
-        # keys. This is runtime setup after pure replay, not semantic decoding.
-        if config.execution,
-          do: Enum.each(config.workers, fn {_, module} -> Code.ensure_loaded(module) end)
+      case activation_capability(summary) do
+        {:error, error} ->
+          TerminalStore.close(terminal_store)
+          GenServer.stop(writer)
+          {:stop, error}
 
-        dispatch_registry =
+        {:ok, _reference} ->
+          hook(config, :activated)
+          # Only explicit trusted configuration atoms are loaded, never persisted
+          # keys. This is runtime setup after pure replay, not semantic decoding.
           if config.execution,
-            do:
-              Map.filter(config.workers, fn {key, _} ->
-                match?({:ok, _}, Registry.resolve(config.workers, key))
+            do: Enum.each(config.workers, fn {_, module} -> Code.ensure_loaded(module) end)
+
+          dispatch_registry =
+            if config.execution,
+              do:
+                Map.filter(config.workers, fn {key, _} ->
+                  match?({:ok, _}, Registry.resolve(config.workers, key))
+                end),
+              else: config.workers
+
+          active_jobs =
+            Map.reject(candidate.jobs, fn {_id, job} -> ProjectionState.terminal?(job) end)
+
+          projection =
+            Projection.new(dispatch_registry, config.queues, Map.get(config, :test_hook))
+
+          hook(config, :indexes_created)
+          projection = Projection.load(projection, active_jobs)
+          true = Projection.valid?(projection)
+          {active_budget, terminal_budget} = ProjectionState.partition_budgets(candidate.jobs)
+          budget = candidate |> Transition.accounting() |> Map.merge(active_budget)
+          # No copy of candidate.jobs survives init. Active jobs live in private
+          # ETS; terminal history lives in a disposable disk projection. Startup
+          # accounting reserves up to three charged active views.
+          state = %State{
+            config: config,
+            guardian: guardian,
+            generation: generation,
+            writer: writer,
+            admission: summary.admission_ref,
+            projection: projection,
+            terminal_store: terminal_store,
+            schedules: candidate.schedules,
+            results: candidate.results,
+            terminal_stats: ProjectionState.terminal_statistics(candidate.jobs),
+            budget: budget,
+            active_budget: active_budget,
+            terminal_budget: terminal_budget,
+            volatile_terminal_budget: %{count: 0, bytes: 0},
+            compaction_estimate:
+              Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
+                CompactionEstimate.replace(acc, nil, job)
               end),
-            else: config.workers
-
-        active_jobs =
-          Map.reject(candidate.jobs, fn {_id, job} -> ProjectionState.terminal?(job) end)
-
-        projection = Projection.new(dispatch_registry, config.queues, Map.get(config, :test_hook))
-        hook(config, :indexes_created)
-        projection = Projection.load(projection, active_jobs)
-        true = Projection.valid?(projection)
-        {active_budget, terminal_budget} = ProjectionState.partition_budgets(candidate.jobs)
-        budget = candidate |> Transition.accounting() |> Map.merge(active_budget)
-        # No copy of candidate.jobs survives init. Active jobs live in private
-        # ETS; terminal history lives in a disposable disk projection. Startup
-        # accounting reserves up to three charged active views.
-        state = %{
-          config: config,
-          guardian: guardian,
-          generation: generation,
-          writer: writer,
-          admission: summary.admission_ref,
-          projection: projection,
-          terminal_store: terminal_store,
-          schedules: candidate.schedules,
-          results: candidate.results,
-          terminal_stats: ProjectionState.terminal_statistics(candidate.jobs),
-          budget: budget,
-          active_budget: active_budget,
-          terminal_budget: terminal_budget,
-          volatile_terminal_budget: %{count: 0, bytes: 0},
-          compaction_estimate:
-            Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
-              CompactionEstimate.replace(acc, nil, job)
-            end),
-          # Capture precedes construction, not publication. Recovered activation
-          # is a conservative post-publication cooldown anchor; a restart may
-          # extend cooldown but must never shorten it by construction time.
-          last_compaction_at:
-            case Map.get(summary, :compaction_captured_at) do
-              nil -> nil
-              captured -> max(captured, Clock.wall(config.clock))
-            end,
-          events_since_checkpoint:
-            Map.get(summary, :checkpoint_tail_events, summary.record_count),
-          store_id: summary.store_id,
-          epoch_id: Map.get(summary, :epoch_id),
-          next_availability_order: Map.get(candidate, :next_availability_order, 1),
-          volatile_next_availability_order: 1,
-          volatile_ids: MapSet.new(),
-          next_sequence: summary.arithmetic_next_sequence,
-          segment: Map.take(summary.highest, [:id, :bytes, :count, :state]),
-          segment_catalog: Enum.take(summary.segment_catalog, -@segment_catalog_limit),
-          runtime: GenServer.call(guardian, :runtime),
-          fence: GenServer.call(guardian, :fence),
-          running: %{},
-          executions: %{},
-          slots: Map.new(config.queue_limits, fn {queue, _} -> {queue, 0} end),
-          relay_monitors: %{},
-          controls: %{},
-          executor_server: nil,
-          control_wakes: MapSet.new(),
-          snapshot_pending: nil,
-          snapshot_dirty: false,
-          settlement_reserve: 0,
-          persistent_settlement_reserve: 0,
-          mode: :ready,
-          paused:
-            if(config.start_paused, do: MapSet.new(Map.keys(config.queues)), else: MapSet.new()),
-          drainers: %{},
-          lifecycle_operation: nil,
-          lifecycle_fenced: nil,
-          online_compaction: nil,
-          online_snapshot: nil,
-          group_commit: nil,
-          deferred_transitions: nil,
-          memory_reclaim: nil,
-          memory_reclaimed: false,
-          history_bytes:
-            summary.total_segment_bytes +
-              44 * (summary.highest.id - inspection.summary.highest.id),
-          segment_count:
-            summary.segment_count + summary.highest.id - inspection.summary.highest.id,
-          blocked:
-            JobIndex.fold(
-              projection.jobs,
-              fn job, n ->
-                if ProjectionState.blocked?(projection, config, job),
-                  do: n + 1,
-                  else: n
+            # Capture precedes construction, not publication. Recovered activation
+            # is a conservative post-publication cooldown anchor; a restart may
+            # extend cooldown but must never shorten it by construction time.
+            last_compaction_at:
+              case Map.get(summary, :compaction_captured_at) do
+                nil -> nil
+                captured -> max(captured, Clock.wall(config.clock))
               end,
-              0
-            )
-        }
+            events_since_checkpoint:
+              Map.get(summary, :checkpoint_tail_events, summary.record_count),
+            store_id: summary.store_id,
+            epoch_id: Map.get(summary, :epoch_id),
+            next_availability_order: Map.get(candidate, :next_availability_order, 1),
+            volatile_next_availability_order: 1,
+            volatile_ids: MapSet.new(),
+            next_sequence: summary.arithmetic_next_sequence,
+            segment: Map.take(summary.highest, [:id, :bytes, :count, :state]),
+            segment_catalog: Enum.take(summary.segment_catalog, -@segment_catalog_limit),
+            runtime: GenServer.call(guardian, :runtime),
+            fence: GenServer.call(guardian, :fence),
+            running: %{},
+            executions: %{},
+            slots: Map.new(config.queue_limits, fn {queue, _} -> {queue, 0} end),
+            relay_monitors: %{},
+            controls: %{},
+            executor_server: nil,
+            control_wakes: MapSet.new(),
+            snapshot_pending: nil,
+            snapshot_dirty: false,
+            settlement_reserve: 0,
+            persistent_settlement_reserve: 0,
+            mode: :ready,
+            paused:
+              if(config.start_paused, do: MapSet.new(Map.keys(config.queues)), else: MapSet.new()),
+            drainers: %{},
+            lifecycle_operation: nil,
+            lifecycle_fenced: nil,
+            online_compaction: nil,
+            online_snapshot: nil,
+            group_commit: nil,
+            deferred_transitions: nil,
+            memory_reclaim: nil,
+            memory_reclaimed: false,
+            history_bytes:
+              summary.total_segment_bytes +
+                44 * (summary.highest.id - inspection.summary.highest.id),
+            segment_count:
+              summary.segment_count + summary.highest.id - inspection.summary.highest.id,
+            blocked:
+              JobIndex.fold(
+                projection.jobs,
+                fn job, n ->
+                  if ProjectionState.blocked?(projection, config, job),
+                    do: n + 1,
+                    else: n
+                end,
+                0
+              )
+          }
 
-        state = if config.execution, do: reconcile(state), else: state
+          state = if config.execution, do: Execution.reconcile(state), else: state
 
-        hook(config, :pre_ready)
+          hook(config, :pre_ready)
 
-        case Writer.status(writer) do
-          %{state: :ready, durability: mode} when mode == config.durability ->
-            :ok = GenServer.call(guardian, {:ready, ProjectionState.snapshot(state)})
-            {:ok, state, {:continue, :execution_start}}
+          case Writer.status(writer) do
+            %{state: :ready, durability: mode} when mode == config.durability ->
+              :ok = GenServer.call(guardian, {:ready, ProjectionState.snapshot(state)})
+              {:ok, state, {:continue, :execution_start}}
 
-          _ ->
-            {:stop, Error.new(:unavailable, :writer_unavailable)}
-        end
+            _ ->
+              {:stop, Error.new(:unavailable, :writer_unavailable)}
+          end
       end
     else
       {:error, reason} -> {:stop, startup_error(reason)}
@@ -206,7 +205,7 @@ defmodule Tay.Engine do
     # point terminal jobs have moved to DETS plus the compact inspection index,
     # so force one collection before the Engine enters its steady-state loop.
     :erlang.garbage_collect()
-    {:noreply, if(s.config.execution, do: start_controls(s), else: s)}
+    {:noreply, if(s.config.execution, do: Execution.start_controls(s), else: s)}
   end
 
   def handle_continue(:release_transient_heap, s) do
@@ -250,13 +249,13 @@ defmodule Tay.Engine do
           if GroupCommit.batchable?(s, intent) do
             next = GroupCommit.enqueue(s, permit, intent, from)
             next = if GroupCommit.full?(next), do: flush_group_commit(next), else: next
-            {:noreply, wake_controls(next)}
+            {:noreply, Execution.wake_controls(next)}
           else
             s = flush_group_commit(s)
             {reply, next} = command(intent, s)
             next = complete_drains(next)
             reply_command(next, permit, from, reply)
-            {:noreply, wake_controls(next)}
+            {:noreply, Execution.wake_controls(next)}
           end
       end
     else
@@ -265,7 +264,7 @@ defmodule Tay.Engine do
   end
 
   def handle_info({:flush_group_commit, token}, %{group_commit: %{token: token}} = s),
-    do: {:noreply, s |> flush_group_commit() |> wake_controls()}
+    do: {:noreply, s |> flush_group_commit() |> Execution.wake_controls()}
 
   def handle_info({:flush_group_commit, _}, s), do: {:noreply, s}
 
@@ -379,7 +378,7 @@ defmodule Tay.Engine do
     OnlineCheckpoint.delete(s.online_snapshot)
     next = %{OnlineCheckpoint.adopt(s, stats, retention) | online_snapshot: nil}
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
-    {:noreply, publish(wake_queues(next)), {:continue, :release_transient_heap}}
+    {:noreply, publish(Execution.wake_queues(next)), {:continue, :release_transient_heap}}
   end
 
   def handle_info(
@@ -389,7 +388,8 @@ defmodule Tay.Engine do
     OnlineCheckpoint.delete(s.online_snapshot)
     send(s.guardian, {:online_compaction_result, self(), token, {:ok, stats}})
 
-    {:noreply, publish(wake_queues(%{s | online_compaction: nil, online_snapshot: nil})),
+    {:noreply,
+     publish(Execution.wake_queues(%{s | online_compaction: nil, online_snapshot: nil})),
      {:continue, :release_transient_heap}}
   end
 
@@ -491,7 +491,12 @@ defmodule Tay.Engine do
       ) do
     if s.lifecycle_operation == token or s.lifecycle_fenced == token do
       {:noreply,
-       wake_controls(%{s | mode: :ready, lifecycle_operation: nil, lifecycle_fenced: nil})}
+       Execution.wake_controls(%{
+         s
+         | mode: :ready,
+           lifecycle_operation: nil,
+           lifecycle_fenced: nil
+       })}
     else
       {:noreply, s}
     end
@@ -502,11 +507,11 @@ defmodule Tay.Engine do
   # restart the durable task-ready index remains, but this pointer starts empty
   # until runtimes reconnect and advertise again.
   def handle_info({:executor_server_ready, server}, s) when is_pid(server) do
-    {:noreply, wake_queues(%{s | executor_server: server})}
+    {:noreply, Execution.wake_queues(%{s | executor_server: server})}
   end
 
   def handle_info({:executor_capacity_changed, server}, %{executor_server: server} = s) do
-    {:noreply, wake_queues(s)}
+    {:noreply, Execution.wake_queues(s)}
   end
 
   def handle_info(
@@ -517,7 +522,7 @@ defmodule Tay.Engine do
 
     case Map.get(s.running, key) do
       %{kind: :external, reservation: ^reservation} = entry ->
-        {:noreply, wake_controls(publish(Dispatcher.settle(s, key, entry, result)))}
+        {:noreply, Execution.wake_controls(publish(Dispatcher.settle(s, key, entry, result)))}
 
       _ ->
         {:noreply, s}
@@ -530,7 +535,7 @@ defmodule Tay.Engine do
     case Map.get(s.running, key) do
       %{kind: :external, execution: ^execution} = entry ->
         if is_pid(entry.server), do: Dispatcher.cancel(entry.server, reservation)
-        {:noreply, wake_controls(publish(Dispatcher.settle(s, key, entry, :timeout)))}
+        {:noreply, Execution.wake_controls(publish(Dispatcher.settle(s, key, entry, :timeout)))}
 
       _ ->
         {:noreply, s}
@@ -541,14 +546,14 @@ defmodule Tay.Engine do
         {:execution_control, kind, pid, generation, token},
         %{generation: generation} = s
       ) do
-    if control_member?(s, kind, pid) do
+    if Execution.control_member?(s, kind, pid) do
       s = %{
         s
         | controls: Map.put(s.controls, kind, pid),
           control_wakes: MapSet.delete(s.control_wakes, kind)
       }
 
-      {s, delay} = control(kind, release_pending(s))
+      {s, delay} = Execution.control(kind, Execution.release_pending(s))
       Tay.Execution.Queue.acknowledged(pid, token, delay)
       {:noreply, publish(s)}
     else
@@ -563,8 +568,8 @@ defmodule Tay.Engine do
     case Map.get(s.running, relay) do
       %{ticket: ^ticket} = entry ->
         if execution == entry.execution or (is_nil(execution) and not entry.released) do
-          s = execution_message(s, relay, entry, message)
-          {:noreply, wake_controls(publish(complete_drains(s)))}
+          s = Execution.execution_message(s, relay, entry, message)
+          {:noreply, Execution.wake_controls(publish(complete_drains(s)))}
         else
           {:noreply, s}
         end
@@ -620,7 +625,7 @@ defmodule Tay.Engine do
   defp command_state?(_), do: false
 
   defp command(intent, state),
-    do: Commands.execute(intent, state, &insert_new/5, &cancel_task/2)
+    do: Commands.execute(intent, state, &insert_new/5, &Execution.cancel_task/2)
 
   defp reply_command(s, {slot, token}, from, reply) do
     hook(s.config, :pre_reply)
@@ -652,13 +657,6 @@ defmodule Tay.Engine do
 
   defp complete_drains(s), do: s
 
-  defp event(type, job, at, fields),
-    do: %Event{
-      record_type: type,
-      data:
-        Map.merge(%{"job_id" => job.id, "expected_revision" => job.revision, "at" => at}, fields)
-    }
-
   defp acquire_local_fence(%{execution: false}, _guardian, _writer, _generation), do: :ok
 
   defp acquire_local_fence(_config, guardian, writer, generation) do
@@ -668,423 +666,6 @@ defmodule Tay.Engine do
     with {:ok, _} <- LocalFence.ensure_started(),
          {:ok, lease} <- LocalFence.acquire(store_id, generation, self(), guardian, runtime),
          do: GenServer.call(guardian, {:attach_fence, lease})
-  end
-
-  defp reconcile(s) do
-    match = [{{:"$1", %{state: :executing}}, [], [true]}]
-    count = :ets.select_count(s.projection.jobs, match)
-    s = %{s | settlement_reserve: count, persistent_settlement_reserve: count}
-    :ok = GenServer.call(s.guardian, {:reconciliation, ProjectionState.snapshot(s)})
-
-    selection =
-      :ets.select(
-        s.projection.jobs,
-        [{{:"$1", %{state: :executing}}, [], [:"$1"]}],
-        s.config.execution_batch
-      )
-
-    reconcile_batch(s, selection)
-  end
-
-  defp reconcile_batch(s, :"$end_of_table"), do: s
-
-  defp reconcile_batch(s, {ids, continuation}) do
-    s =
-      Enum.reduce(ids, s, fn id, acc ->
-        job = JobIndex.get(acc.projection.jobs, id)
-        {:ok, event} = Outcome.event(job, :interrupted, Clock.wall(acc.config.clock))
-
-        case Persistence.commit(acc, job, event) do
-          {:ok, _, next} -> next
-          _ -> exit(:interrupted_settlement_failed)
-        end
-      end)
-
-    hook(s.config, :reconciliation_batch)
-    :ok = GenServer.call(s.guardian, {:reconciliation, ProjectionState.snapshot(s)})
-    reconcile_batch(s, :ets.select(continuation))
-  end
-
-  defp start_controls(s) do
-    components = Tay.Execution.Supervisor.components(s.runtime)
-
-    with {:ok, controls} <-
-           ControlPlane.start(components.controls, self(), s.generation, s.config),
-         {:ok, executor_server} <-
-           GatewayRuntime.start(components.gateways, self(), s.config, %{schedules: s.schedules}) do
-      %{s | controls: controls, executor_server: executor_server}
-    else
-      {:error, reason} -> exit({:control_plane_start_failed, reason})
-    end
-  end
-
-  defp control_member?(s, kind, pid) do
-    valid_control_kind?(s, kind) and
-      (Map.get(s.controls, kind) == pid or
-         Enum.any?(
-           DynamicSupervisor.which_children(
-             Tay.Execution.Supervisor.components(s.runtime).controls
-           ),
-           fn {_, child, _, _} -> child == pid end
-         ))
-  end
-
-  defp valid_control_kind?(_s, :scheduler), do: true
-
-  defp valid_control_kind?(s, {:queue, queue}),
-    do: Map.has_key?(s.config.queue_limits, queue)
-
-  defp valid_control_kind?(_s, _kind), do: false
-
-  defp control(_kind, %{mode: mode} = s) when mode != :ready,
-    do: {s, s.config.execution_wake_ms}
-
-  defp control(:scheduler, s) do
-    at = Clock.wall(s.config.clock)
-    ids = SchedulerIndex.due(s.projection.schedule, at, s.config.execution_batch)
-
-    {s, refused} =
-      Enum.reduce_while(ids, {s, false}, fn id, {acc, _} ->
-        job = JobIndex.get(acc.projection.jobs, id)
-        at = Clock.wall(acc.config.clock)
-
-        if job.eligible_at <= at do
-          case Persistence.commit(acc, job, event(2, job, at, %{"due_at" => job.eligible_at})) do
-            {:ok, _, next} -> {:cont, {next, false}}
-            {:error, _} -> {:halt, {acc, true}}
-          end
-        else
-          {:halt, {acc, false}}
-        end
-      end)
-
-    due = SchedulerIndex.earliest(s.projection.schedule)
-    # A capacity refusal must not turn a due head into a busy loop.
-    delay =
-      if due && not refused,
-        do: Clock.delay_until(due, Clock.wall(s.config.clock), s.config.execution_wake_ms),
-        else: s.config.execution_wake_ms
-
-    {wake_queues(s), delay}
-  end
-
-  defp control({:queue, queue}, s) do
-    if not MapSet.member?(s.paused, queue) and s.slots[queue] < s.config.queue_limits[queue] do
-      case next_ready(s, queue, Clock.wall(s.config.clock)) do
-        {:ok, job} ->
-          case claim(s, job, queue) do
-            {:ok, next} -> {next, 0}
-            {:error, next} -> {next, s.config.execution_wake_ms}
-          end
-
-        :none ->
-          {s, s.config.execution_wake_ms}
-      end
-    else
-      {s, s.config.execution_wake_ms}
-    end
-  end
-
-  # Pick the oldest ready job *among capabilities with current capacity*.
-  # Querying the task index per advertised capability is bounded by the server
-  # connection/task limits, and means an absent PHP executor cannot hide a
-  # later Python task at the head of a shared queue.
-  defp next_ready(s, queue, now) do
-    local = Map.keys(s.projection.registry)
-
-    external = Dispatcher.available_tasks(s.executor_server)
-
-    candidates =
-      (local ++ external)
-      |> Enum.uniq()
-      |> Enum.flat_map(fn task ->
-        case TaskIndex.ready(s.projection.task, queue, task, now, 1) do
-          [id] ->
-            case JobIndex.get(s.projection.jobs, id) do
-              nil -> []
-              job -> [job]
-            end
-
-          [] ->
-            []
-        end
-      end)
-
-    case candidates do
-      [] -> :none
-      jobs -> {:ok, Enum.min_by(jobs, &TaskIndex.key/1)}
-    end
-  catch
-    :exit, _ -> :none
-  end
-
-  defp claim(s, job, queue) do
-    at = Clock.wall(s.config.clock)
-    started = event(3, job, at, %{"attempt" => job.next_attempt, "cycle_token" => job.cycle})
-
-    with {:ok, dispatch} <- dispatch_for(s, job),
-         true <- not MapSet.member?(s.projection.held, job.id),
-         {:ok, predicted} <- predict_execution(s, job, started),
-         :ok <- settlement_fits(s, predicted, at),
-         {:ok, {_, _, payload}} <- execution_encoding(s, job, started),
-         :ok <- execution_headroom(s, job, payload) do
-      case dispatch do
-        {:local, worker} ->
-          options = %{
-            engine: self(),
-            guardian: s.guardian,
-            generation: s.generation,
-            worker: worker,
-            timeout_ms: job.definition["timeout_ms"],
-            clock: s.config.clock,
-            eligible_at: job.eligible_at,
-            test_terminate: test_terminate_option(s.config)
-          }
-
-          case Tay.Execution.Supervisor.prepare(s.runtime, options) do
-            {:ok, identity} -> start_waiting(s, job, queue, identity)
-            _ -> exit(:execution_start_failed)
-          end
-
-        {:external, server, reservation} ->
-          Dispatcher.start_external(s, job, queue, started, server, reservation)
-      end
-    else
-      _ -> {:error, s}
-    end
-  end
-
-  defp execution_headroom(s, job, payload) do
-    if ProjectionState.durability(s, job) == :persistent,
-      do: Persistence.headroom(s, byte_size(payload), s.persistent_settlement_reserve + 1),
-      else: :ok
-  end
-
-  defp dispatch_for(s, job) do
-    Dispatcher.select(
-      s.config.workers,
-      s.executor_server,
-      job.definition["worker_key"],
-      job.definition["queue_key"]
-    )
-  end
-
-  defp settlement_fits(s, executing, at) do
-    Enum.reduce_while([:success, {:failure, 1}, :timeout, :interrupted], :ok, fn outcome, _ ->
-      with {:ok, finished} <- Outcome.event(executing, outcome, at, fn 2 -> <<0, 0>> end),
-           {:ok, _} <- execution_encoding(s, executing, finished),
-           {:ok, _} <- prepare_settlement(s, executing, finished) do
-        {:cont, :ok}
-      else
-        _ -> {:halt, {:error, :settlement_budget}}
-      end
-    end)
-  end
-
-  defp predict_execution(%{epoch_id: epoch} = s, job, event) when is_binary(epoch),
-    do: prepare_settlement(s, job, event)
-
-  defp predict_execution(s, job, event) do
-    with {:ok, prepared} <- Transition.prepare(job, event, s.config.value_limits),
-         do: Transition.apply(prepared, %{sequence: s.next_sequence})
-  end
-
-  defp execution_encoding(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
-    with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
-         {:ok, payload} <- Codec.encode_mutation(mutation, s.config.value_limits),
-         do: {:ok, {8, 1, payload}}
-  end
-
-  defp execution_encoding(s, _job, event), do: Persistence.encoded_event(s, event, nil)
-
-  defp prepare_settlement(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
-    with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
-         {:ok, predicted, _} <-
-           V2Reducer.apply_one(
-             job,
-             mutation,
-             s.next_availability_order,
-             s.config.candidate_limits,
-             s.config.value_limits
-           ),
-         do: {:ok, predicted}
-  end
-
-  defp prepare_settlement(s, job, event),
-    do: Transition.prepare(job, event, s.config.value_limits)
-
-  defp start_waiting(s, job, queue, identity) do
-    monitor = Process.monitor(identity.relay)
-
-    entry =
-      Map.merge(identity, %{
-        id: job.id,
-        queue: queue,
-        eligible_at: job.eligible_at,
-        execution: nil,
-        released: false,
-        settled: false,
-        dead: false,
-        monitor: monitor
-      })
-
-    s = %{
-      s
-      | running: Map.put(s.running, identity.relay, entry),
-        executions: Map.put(s.executions, job.id, identity.relay),
-        relay_monitors: Map.put(s.relay_monitors, monitor, identity.relay),
-        slots: Map.update!(s.slots, queue, &(&1 + 1)),
-        projection: Projection.hold(s.projection, job)
-    }
-
-    hook(s.config, {:execution, :task_waiting})
-    at = Clock.wall(s.config.clock)
-
-    if Process.alive?(identity.task) and at >= job.eligible_at do
-      started = event(3, job, at, %{"attempt" => job.next_attempt, "cycle_token" => job.cycle})
-
-      case Persistence.commit(s, job, started) do
-        {:ok, executing, next} ->
-          entry = %{entry | execution: executing.execution}
-          next = %{next | running: Map.put(next.running, identity.relay, entry)}
-          {:ok, release_pending(next)}
-
-        {:error, _} ->
-          {:error, abandon_waiting(s, identity.relay)}
-      end
-    else
-      {:error, abandon_waiting(s, identity.relay)}
-    end
-  end
-
-  defp abandon_waiting(s, relay) do
-    entry = s.running[relay]
-    :ok = Relay.terminate_task(relay, entry.ticket)
-    %{s | running: Map.put(s.running, relay, %{entry | settled: true})}
-  end
-
-  defp release_pending(s) do
-    Enum.reduce(s.running, s, fn {relay, entry}, acc ->
-      if (Map.get(entry, :kind) != :external and
-            (not entry.released and not entry.settled and entry.execution)) &&
-           Clock.wall(acc.config.clock) >= entry.eligible_at do
-        hook(acc.config, {:execution, :pre_release})
-        # Recheck after a fault barrier as well as after storage latency.
-        if Clock.wall(acc.config.clock) >= entry.eligible_at do
-          job = JobIndex.get(acc.projection.jobs, entry.id)
-
-          case Relay.release(relay, entry.ticket, entry.execution, ProjectionState.view(acc, job)) do
-            :ok ->
-              hook(acc.config, {:execution, :released})
-              %{acc | running: Map.put(acc.running, relay, %{entry | released: true})}
-
-            _ ->
-              exit(:execution_release_failed)
-          end
-        else
-          acc
-        end
-      else
-        acc
-      end
-    end)
-  end
-
-  defp execution_message(s, relay, entry, {:outcome, outcome}) do
-    job = JobIndex.get(s.projection.jobs, entry.id)
-
-    if not entry.settled and entry.released and job.state == :executing and
-         job.execution == entry.execution and job.revision == entry.execution do
-      {:ok, finished} = Outcome.event(job, outcome, Clock.wall(s.config.clock))
-
-      case Persistence.commit(s, job, finished) do
-        {:ok, _, next} ->
-          :ok = Relay.settled(relay, entry.ticket)
-
-          finish_runtime(
-            %{next | running: Map.put(next.running, relay, %{entry | settled: true})},
-            relay
-          )
-
-        _ ->
-          exit(:execution_settlement_failed)
-      end
-    else
-      s
-    end
-  end
-
-  defp execution_message(s, relay, entry, :dead) do
-    hook(s.config, {:execution, :task_dead})
-
-    if entry.execution != nil and not entry.released and not entry.settled,
-      do: exit(:execution_release_failed)
-
-    finish_runtime(%{s | running: Map.put(s.running, relay, %{entry | dead: true})}, relay)
-  end
-
-  defp execution_message(s, _relay, _entry, _), do: s
-
-  defp cancel_task(s, id) do
-    case Map.get(s.executions, id) do
-      nil ->
-        s
-
-      {:executor, reservation} = key ->
-        case Map.get(s.running, key) do
-          %{kind: :external} = entry ->
-            if is_pid(entry.server), do: Dispatcher.cancel(entry.server, reservation)
-            Dispatcher.settle(s, key, entry, :cancelled)
-
-          _ ->
-            s
-        end
-
-      relay ->
-        entry = s.running[relay]
-        :ok = Relay.terminate_task(relay, entry.ticket)
-        finish_runtime(%{s | running: Map.put(s.running, relay, %{entry | settled: true})}, relay)
-    end
-  end
-
-  defp finish_runtime(s, relay) do
-    case s.running[relay] do
-      %{settled: true, dead: true} = entry ->
-        Process.demonitor(entry.monitor, [:flush])
-        job = JobIndex.get(s.projection.jobs, entry.id)
-
-        %{
-          s
-          | running: Map.delete(s.running, relay),
-            executions: Map.delete(s.executions, entry.id),
-            relay_monitors: Map.delete(s.relay_monitors, entry.monitor),
-            slots: Map.update!(s.slots, entry.queue, &(&1 - 1)),
-            projection: Projection.release(s.projection, job, entry.id)
-        }
-
-      _ ->
-        s
-    end
-  end
-
-  defp wake_controls(s) do
-    Enum.reduce(s.controls, s, fn {kind, pid}, acc -> wake_control(acc, kind, pid) end)
-  end
-
-  defp wake_queues(s) do
-    Enum.reduce(s.controls, s, fn
-      {{:queue, _} = kind, pid}, acc -> wake_control(acc, kind, pid)
-      _, acc -> acc
-    end)
-  end
-
-  defp wake_control(s, kind, pid) do
-    if MapSet.member?(s.control_wakes, kind) do
-      s
-    else
-      Tay.Execution.Queue.wake(pid)
-      %{s | control_wakes: MapSet.put(s.control_wakes, kind)}
-    end
   end
 
   defp publish(%{snapshot_pending: nil} = s) do
@@ -1212,14 +793,11 @@ defmodule Tay.Engine do
   defp startup_error(_), do: Error.new(:unavailable, :recovery_failed)
 
   if Mix.env() == :test do
-    defp test_terminate_option(config), do: Map.get(config, :test_terminate)
-
     defp hook(config, point) do
       if is_function(Map.get(config, :test_hook), 1), do: config.test_hook.(point)
       :ok
     end
   else
-    defp test_terminate_option(_config), do: nil
     defp hook(_config, _point), do: :ok
   end
 

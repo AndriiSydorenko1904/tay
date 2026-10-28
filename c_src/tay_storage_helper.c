@@ -163,45 +163,61 @@ enum helper_exit_status {
   HELPER_EXIT_OWNER_VM_CRASH=96,
   HELPER_EXIT_INTERNAL_BOUNDS=97
 };
-static int root_fd=-1, segments_fd=-1, lock_fd=-1, read_fd=-1, write_fd=-1;
-static int candidate_write_fd=-1;
-static int epochs_fd=-1, epoch_fd=-1, candidate_fd=-1, candidate_segments_fd=-1;
-/* segments_parent_fd aliases root_fd or epoch_fd; it is never independently
- * owned or closed. */
-static int segments_parent_fd=-1;
-static char segments_name[256]="segments", epoch_name[256], candidate_name[256];
-static int write_scope, write_kind, read_scope, poisoned, acquired;
-static int candidate_write_scope, candidate_write_kind;
-static char root_path[PATH_MAX], write_name[256], read_name[256];
-static struct stat read_identity, write_identity;
-static char candidate_write_name[256];
-static struct stat candidate_write_identity;
-static int strict_mode, validated_fs, root_created;
-static uint64_t filesystem_type, known_written;
-static uint32_t ancestor_syncs;
-static int inspection_only;
-static uint32_t directory_limit=UINT32_MAX;
+/* The helper owns one source store. segments_parent_fd is a borrowed alias
+ * of root_fd or epoch_fd and must never be closed independently. */
+struct store_state {
+  int root_fd, segments_fd, lock_fd, read_fd, write_fd;
+  int epochs_fd, epoch_fd, segments_parent_fd;
+  char segments_name[256], epoch_name[256], root_path[PATH_MAX];
+  char write_name[256], read_name[256];
+  int write_scope, write_kind, read_scope, poisoned, acquired;
+  struct stat read_identity, write_identity;
+  int strict_mode, validated_fs, root_created, inspection_only;
+  uint64_t filesystem_type, known_written;
+  uint32_t ancestor_syncs, directory_limit;
+};
+static struct store_state store = {
+  .root_fd=-1, .segments_fd=-1, .lock_fd=-1, .read_fd=-1, .write_fd=-1,
+  .epochs_fd=-1, .epoch_fd=-1, .segments_parent_fd=-1,
+  .segments_name="segments", .directory_limit=UINT32_MAX
+};
+
+/* Candidate descriptors are independent of the selected source epoch. */
+struct candidate_state {
+  int write_fd, fd, segments_fd;
+  int write_scope, write_kind;
+  char name[256], write_name[256];
+  struct stat write_identity;
+};
+static struct candidate_state pending_epoch = {
+  .write_fd=-1, .fd=-1, .segments_fd=-1
+};
+
+/* Cold-copy targets own a source-independent tree. Parent descriptors borrow
+ * the final entry of each chain; cold_chain_close is their sole closer. */
+struct cold_chain { int *fds; size_t count, capacity; };
+struct cold_copy_state {
+  int target, source;
+  int parent_fd, catalog_parent_fd, verify_parent_fd;
+  int stage_fd, stage_epochs_fd, stage_epoch_fd;
+  int stage_segments_fd, lock_fd;
+  struct cold_chain parent_chain, catalog_chain, verify_chain;
+  char parent_path[PATH_MAX], catalog_parent_path[PATH_MAX];
+  char verify_parent_path[PATH_MAX];
+  char target_name[256], staging_name[256], epoch_name[256];
+  char catalog_name[256], verify_name[256];
+  struct stat source_root, source_segments, stage_identity;
+  struct stat stage_epochs_identity, stage_epoch_identity;
+  struct stat stage_segments_identity, lock_identity;
+  int has_verify, stage_created, published;
+};
+static struct cold_copy_state cold = {
+  .parent_fd=-1, .catalog_parent_fd=-1, .verify_parent_fd=-1,
+  .stage_fd=-1, .stage_epochs_fd=-1, .stage_epoch_fd=-1,
+  .stage_segments_fd=-1, .lock_fd=-1
+};
 static int list_directory(void);
 
-/* Cold-copy targets deliberately use a second, source-independent descriptor
- * tree. The source store remains held by a separate existing-only helper; this
- * tree never traverses it and refuses any pinned ancestor that aliases it. */
-struct cold_chain { int *fds; size_t count, capacity; };
-static int cold_target, cold_source;
-/* These parent descriptors alias the last entries in their respective chains.
- * cold_chain_close() is their sole owner/closer. */
-static int cold_parent_fd=-1, cold_catalog_parent_fd=-1, cold_verify_parent_fd=-1;
-static int cold_stage_fd=-1, cold_stage_epochs_fd=-1, cold_stage_epoch_fd=-1;
-static int cold_stage_segments_fd=-1, cold_lock_fd=-1;
-static struct cold_chain cold_parent_chain, cold_catalog_chain, cold_verify_chain;
-static char cold_parent_path[PATH_MAX], cold_catalog_parent_path[PATH_MAX];
-static char cold_verify_parent_path[PATH_MAX];
-static char cold_target_name[256], cold_staging_name[256], cold_epoch_name[256];
-static char cold_catalog_name[256], cold_verify_name[256];
-static struct stat cold_source_root, cold_source_segments, cold_stage_identity;
-static struct stat cold_stage_epochs_identity, cold_stage_epoch_identity;
-static struct stat cold_stage_segments_identity, cold_lock_identity;
-static int cold_has_verify, cold_stage_created, cold_published;
 static const unsigned char *input;
 static size_t input_n, pos;
 static unsigned char output[PACKET_MAX];
@@ -290,13 +306,13 @@ static int basename_ok(const char *s) {
   return *s && !strchr(s,'/') && strcmp(s,".") && strcmp(s,"..");
 }
 static int scope_fd(int scope) {
-  if (scope==SCOPE_ROOT) return root_fd;
-  if (scope==SCOPE_SEGMENTS) return segments_fd;
-  if (scope==SCOPE_EPOCHS) return epochs_fd;
-  if (scope==SCOPE_CANDIDATE) return candidate_fd;
-  if (scope==SCOPE_CANDIDATE_SEGMENTS) return candidate_segments_fd;
-  if (scope==SCOPE_EPOCH) return epoch_fd;
-  return cold_target && scope==SCOPE_COLD_VERIFY ? cold_verify_parent_fd : -1;
+  if (scope==SCOPE_ROOT) return store.root_fd;
+  if (scope==SCOPE_SEGMENTS) return store.segments_fd;
+  if (scope==SCOPE_EPOCHS) return store.epochs_fd;
+  if (scope==SCOPE_CANDIDATE) return pending_epoch.fd;
+  if (scope==SCOPE_CANDIDATE_SEGMENTS) return pending_epoch.segments_fd;
+  if (scope==SCOPE_EPOCH) return store.epoch_fd;
+  return cold.target && scope==SCOPE_COLD_VERIFY ? cold.verify_parent_fd : -1;
 }
 static int same(const struct stat *a,const struct stat *b) {
   return a->st_dev==b->st_dev && a->st_ino==b->st_ino;
@@ -323,7 +339,7 @@ static void stat_out(const struct stat *s) {
   /* The ordinary storage protocol has a frozen 37-byte identity.  Cold-copy
    * sessions opt into timestamps so their source mutation check is stronger
    * without changing recovery's existing identity contract. */
-  if (!cold_source && !cold_target) return;
+  if (!cold.source && !cold.target) return;
 #ifdef __APPLE__
   put(time_ns(&s->st_mtimespec),8); put(time_ns(&s->st_ctimespec),8);
 #else
@@ -362,12 +378,12 @@ static int rename_capability(void) {
   attrs.volattr=ATTR_VOL_INFO|ATTR_VOL_CAPABILITIES;
   struct { uint32_t size; vol_capabilities_attr_t caps; } result;
   memset(&result,0,sizeof(result));
-  if (fgetattrlist(root_fd,&attrs,&result,sizeof(result),0)<0) return errno;
+  if (fgetattrlist(store.root_fd,&attrs,&result,sizeof(result),0)<0) return errno;
   unsigned i=VOL_CAPABILITIES_INTERFACES;
   return (result.caps.valid[i] & VOL_CAP_INT_RENAME_EXCL) &&
     (result.caps.capabilities[i] & VOL_CAP_INT_RENAME_EXCL) ? 0 : ENOTSUP;
 #else
-  if (no_replace(root_fd,".tay-owner.lock",".tay-owner.lock")==0) return ENOTSUP;
+  if (no_replace(store.root_fd,".tay-owner.lock",".tay-owner.lock")==0) return ENOTSUP;
   return errno==EEXIST?0:errno;
 #endif
 }
@@ -376,14 +392,14 @@ static int filesystem(int fd) {
   if (fstatfs(fd,&s)<0) return errno;
 #ifdef __linux__
   uint64_t t=(uint64_t)(unsigned long)s.f_type;
-  filesystem_type=t;
+  store.filesystem_type=t;
   int persistent=(t==FS_EXT || t==FS_XFS || t==FS_BTRFS);
   int development=persistent || t==FS_TMPFS || t==FS_OVERLAY;
-  if (strict_mode) return validated_fs && persistent ? 0 : ENOTSUP;
+  if (store.strict_mode) return store.validated_fs && persistent ? 0 : ENOTSUP;
   return development ? 0 : ENOTSUP;
 #elif defined(__APPLE__)
-  filesystem_type=0;
-  if (strict_mode) return ENOTSUP;
+  store.filesystem_type=0;
+  if (store.strict_mode) return ENOTSUP;
   return (s.f_flags & MNT_LOCAL) && (!strcmp(s.f_fstypename,"apfs") || !strcmp(s.f_fstypename,"hfs")) ? 0 : ENOTSUP;
 #else
   return ENOTSUP;
@@ -398,12 +414,24 @@ static void cold_chain_close(struct cold_chain *chain) {
   chain->fds=NULL; chain->count=0; chain->capacity=0;
 }
 static void abandon_cold_target(void) {
-  cold_chain_close(&cold_parent_chain);
-  cold_chain_close(&cold_catalog_chain);
-  cold_chain_close(&cold_verify_chain);
-  cold_parent_fd=cold_catalog_parent_fd=cold_verify_parent_fd=-1;
-  cold_target=0;
+  cold_chain_close(&cold.parent_chain);
+  cold_chain_close(&cold.catalog_chain);
+  cold_chain_close(&cold.verify_chain);
+  cold.parent_fd=cold.catalog_parent_fd=cold.verify_parent_fd=-1;
+  cold.target=0;
 }
+static void shutdown_owned_handles(void) {
+  int *descriptors[] = {
+    &store.write_fd, &pending_epoch.write_fd, &store.read_fd, &store.segments_fd, &pending_epoch.segments_fd, &pending_epoch.fd, &store.epoch_fd, &store.epochs_fd, &store.root_fd, &store.lock_fd, &cold.stage_fd, &cold.stage_epochs_fd, &cold.stage_epoch_fd, &cold.stage_segments_fd, &cold.lock_fd
+  };
+  for (size_t i=0; i<sizeof(descriptors)/sizeof(descriptors[0]); i++) {
+    if (release_owned_fd(descriptors[i])) _exit(HELPER_EXIT_CLOSE_FAILURE);
+  }
+  store.segments_parent_fd=-1;
+  store.acquired=0;
+  abandon_cold_target();
+}
+
 static int cold_chain_push(struct cold_chain *chain,int fd) {
   if (chain->count==chain->capacity) {
     size_t capacity=chain->capacity?chain->capacity*2u:8u;
@@ -456,7 +484,7 @@ static int cold_chain_aliases_source(const struct cold_chain *chain) {
   for (size_t i=0;i<chain->count;i++) {
     struct stat current;
     if (fstat(chain->fds[i],&current)<0) return errno;
-    if (same(&current,&cold_source_root) || same(&current,&cold_source_segments)) return EBUSY;
+    if (same(&current,&cold.source_root) || same(&current,&cold.source_segments)) return EBUSY;
   }
   return 0;
 }
@@ -466,40 +494,40 @@ static int absent_at(int parent,const char *name) {
   return errno==ENOENT?0:errno;
 }
 static int cold_check_paths(void) {
-  if (!cold_target || cold_parent_fd<0 || cold_catalog_parent_fd<0) return EBADF;
-  int e=cold_chain_matches(cold_parent_path,&cold_parent_chain); if (e) return e;
-  e=cold_chain_matches(cold_catalog_parent_path,&cold_catalog_chain); if (e) return e;
-  if (cold_has_verify) {
-    e=cold_chain_matches(cold_verify_parent_path,&cold_verify_chain); if (e) return e;
+  if (!cold.target || cold.parent_fd<0 || cold.catalog_parent_fd<0) return EBADF;
+  int e=cold_chain_matches(cold.parent_path,&cold.parent_chain); if (e) return e;
+  e=cold_chain_matches(cold.catalog_parent_path,&cold.catalog_chain); if (e) return e;
+  if (cold.has_verify) {
+    e=cold_chain_matches(cold.verify_parent_path,&cold.verify_chain); if (e) return e;
   }
-  e=cold_chain_aliases_source(&cold_parent_chain); if (e) return e;
-  e=cold_chain_aliases_source(&cold_catalog_chain); if (e) return e;
-  if (cold_has_verify) { e=cold_chain_aliases_source(&cold_verify_chain); if (e) return e; }
-  if (cold_stage_created) {
+  e=cold_chain_aliases_source(&cold.parent_chain); if (e) return e;
+  e=cold_chain_aliases_source(&cold.catalog_chain); if (e) return e;
+  if (cold.has_verify) { e=cold_chain_aliases_source(&cold.verify_chain); if (e) return e; }
+  if (cold.stage_created) {
     struct stat opened,named;
-    if (fstat(cold_stage_fd,&opened)<0) return errno;
-    if (fstatat(cold_parent_fd,cold_published?cold_target_name:cold_staging_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
-    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_identity) || !same(&opened,&named)) return ESTALE;
-    if (fstat(cold_stage_epochs_fd,&opened)<0) return errno;
-    if (fstatat(cold_stage_fd,"epochs",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
-    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_epochs_identity) || !same(&opened,&named)) return ESTALE;
-    if (fstat(cold_stage_epoch_fd,&opened)<0) return errno;
-    if (fstatat(cold_stage_epochs_fd,cold_epoch_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
-    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_epoch_identity) || !same(&opened,&named)) return ESTALE;
-    if (fstat(cold_stage_segments_fd,&opened)<0) return errno;
-    if (fstatat(cold_stage_epoch_fd,"segments",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
-    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold_stage_segments_identity) || !same(&opened,&named)) return ESTALE;
-    if (cold_lock_fd>=0) {
-      e=checked_regular(cold_lock_fd,cold_stage_fd,".tay-owner.lock",&opened);
+    if (fstat(cold.stage_fd,&opened)<0) return errno;
+    if (fstatat(cold.parent_fd,cold.published?cold.target_name:cold.staging_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold.stage_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold.stage_epochs_fd,&opened)<0) return errno;
+    if (fstatat(cold.stage_fd,"epochs",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold.stage_epochs_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold.stage_epoch_fd,&opened)<0) return errno;
+    if (fstatat(cold.stage_epochs_fd,cold.epoch_name,&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold.stage_epoch_identity) || !same(&opened,&named)) return ESTALE;
+    if (fstat(cold.stage_segments_fd,&opened)<0) return errno;
+    if (fstatat(cold.stage_epoch_fd,"segments",&named,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (!S_ISDIR(opened.st_mode) || !same(&opened,&cold.stage_segments_identity) || !same(&opened,&named)) return ESTALE;
+    if (cold.lock_fd>=0) {
+      e=checked_regular(cold.lock_fd,cold.stage_fd,".tay-owner.lock",&opened);
       if (e) return e;
-      if (!same(&opened,&cold_lock_identity)) return ESTALE;
+      if (!same(&opened,&cold.lock_identity)) return ESTALE;
     }
   }
   return 0;
 }
 /* Walk from a pinned / FD. Never follow a symlink or use cwd resolution. */
 static int walk_root(int create, int *result, int *created) {
-  char path[PATH_MAX]; memcpy(path,root_path,strlen(root_path)+1);
+  char path[PATH_MAX]; memcpy(path,store.root_path,strlen(store.root_path)+1);
   if (path[0]!='/' || !strcmp(path,"/")) return EINVAL;
   int fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
   if (fd<0) return errno;
@@ -523,7 +551,7 @@ static int walk_root(int create, int *result, int *created) {
     if (create && (create!=3 || made)) {
       int synced=create==2?promotion_sync(fd,FAULT_WALK_ROOT_SYNC):fsync(fd);
       if (synced<0) { int e=errno; close(child); close(fd); return e; }
-      ancestor_syncs++;
+      store.ancestor_syncs++;
     }
     if (close(fd)<0) { int e=errno; close(child); return e; }
     fd=child; part=next;
@@ -531,65 +559,65 @@ static int walk_root(int create, int *result, int *created) {
   *result=fd; return 0;
 }
 static int validate_paths(void) {
-  if (root_fd<0 || lock_fd<0) return EBADF;
+  if (store.root_fd<0 || store.lock_fd<0) return EBADF;
   int current=-1, created=0;
   int e=walk_root(0,&current,&created);
   if (e) return e;
   struct stat root, path, lock;
-  if (fstat(root_fd,&root)<0 || fstat(current,&path)<0) { e=errno; close(current); return e; }
+  if (fstat(store.root_fd,&root)<0 || fstat(current,&path)<0) { e=errno; close(current); return e; }
   if (close(current)<0) return errno;
   if (!same(&root,&path)) return ESTALE;
-  e=checked_regular(lock_fd,root_fd,".tay-owner.lock",&lock);
+  e=checked_regular(store.lock_fd,store.root_fd,".tay-owner.lock",&lock);
   if (e) return e;
-  if (epochs_fd>=0) {
-    e=checked_directory(epochs_fd,root_fd,"epochs"); if (e) return e;
+  if (store.epochs_fd>=0) {
+    e=checked_directory(store.epochs_fd,store.root_fd,"epochs"); if (e) return e;
   }
-  if (epoch_fd>=0) {
-    e=checked_directory(epoch_fd,epochs_fd,epoch_name); if (e) return e;
+  if (store.epoch_fd>=0) {
+    e=checked_directory(store.epoch_fd,store.epochs_fd,store.epoch_name); if (e) return e;
   }
-  if (candidate_fd>=0) {
-    e=checked_directory(candidate_fd,epochs_fd,candidate_name); if (e) return e;
+  if (pending_epoch.fd>=0) {
+    e=checked_directory(pending_epoch.fd,store.epochs_fd,pending_epoch.name); if (e) return e;
   }
-  if (candidate_segments_fd>=0) {
-    e=checked_directory(candidate_segments_fd,candidate_fd,"segments"); if (e) return e;
+  if (pending_epoch.segments_fd>=0) {
+    e=checked_directory(pending_epoch.segments_fd,pending_epoch.fd,"segments"); if (e) return e;
   }
-  if (segments_fd>=0) {
-    e=checked_directory(segments_fd,segments_parent_fd,segments_name);
+  if (store.segments_fd>=0) {
+    e=checked_directory(store.segments_fd,store.segments_parent_fd,store.segments_name);
     if (e) return e;
   }
-  if (write_fd>=0) {
+  if (store.write_fd>=0) {
     struct stat now;
-    e=checked_regular(write_fd,scope_fd(write_scope),write_name,&now);
+    e=checked_regular(store.write_fd,scope_fd(store.write_scope),store.write_name,&now);
     if (e) return e;
-    if (!same(&now,&write_identity) || now.st_size!=write_identity.st_size) return ESTALE;
+    if (!same(&now,&store.write_identity) || now.st_size!=store.write_identity.st_size) return ESTALE;
   }
-  if (candidate_write_fd>=0) {
+  if (pending_epoch.write_fd>=0) {
     struct stat now;
-    e=checked_regular(candidate_write_fd,scope_fd(candidate_write_scope),candidate_write_name,&now);
+    e=checked_regular(pending_epoch.write_fd,scope_fd(pending_epoch.write_scope),pending_epoch.write_name,&now);
     if (e) return e;
-    if (!same(&now,&candidate_write_identity) || now.st_size!=candidate_write_identity.st_size) return ESTALE;
+    if (!same(&now,&pending_epoch.write_identity) || now.st_size!=pending_epoch.write_identity.st_size) return ESTALE;
   }
   return 0;
 }
 static int check_paths(void) {
-  return acquired?validate_paths():EBADF;
+  return store.acquired?validate_paths():EBADF;
 }
 
 static void abandon_acquisition(void) {
-  close_owned_fd(&segments_fd);
-  close_owned_fd(&lock_fd);
-  close_owned_fd(&root_fd);
-  segments_parent_fd=-1;
-  acquired=0;
-  inspection_only=0;
+  close_owned_fd(&store.segments_fd);
+  close_owned_fd(&store.lock_fd);
+  close_owned_fd(&store.root_fd);
+  store.segments_parent_fd=-1;
+  store.acquired=0;
+  store.inspection_only=0;
 }
 static int open_segments(void) {
-  if (segments_fd>=0) return 0;
-  segments_fd=openat(root_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-  if (segments_fd<0) return errno;
-  int e=filesystem(segments_fd);
-  if (e) { close(segments_fd); segments_fd=-1; }
-  else { segments_parent_fd=root_fd; strcpy(segments_name,"segments"); }
+  if (store.segments_fd>=0) return 0;
+  store.segments_fd=openat(store.root_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (store.segments_fd<0) return errno;
+  int e=filesystem(store.segments_fd);
+  if (e) { close(store.segments_fd); store.segments_fd=-1; }
+  else { store.segments_parent_fd=store.root_fd; strcpy(store.segments_name,"segments"); }
   return e;
 }
 static int canonical(const char *name) {
@@ -653,48 +681,48 @@ static size_t staged_write_size(int kind) {
 }
 static int acquire(int mode) {
   int existing=mode==1, if_missing=mode==2;
-  if (acquired || !need(2)) return EPROTO;
-  strict_mode=(int)number(1); validated_fs=(int)number(1);
-  if (strict_mode>1 || validated_fs>1) return EINVAL;
+  if (store.acquired || !need(2)) return EPROTO;
+  store.strict_mode=(int)number(1); store.validated_fs=(int)number(1);
+  if (store.strict_mode>1 || store.validated_fs>1) return EINVAL;
   if (existing) {
     if (!need(4)) return EPROTO;
-    directory_limit=(uint32_t)number(4);
-    if (!directory_limit) return EINVAL;
+    store.directory_limit=(uint32_t)number(4);
+    if (!store.directory_limit) return EINVAL;
   }
 #ifndef __linux__
-  if (strict_mode) return ENOTSUP;
+  if (store.strict_mode) return ENOTSUP;
 #endif
-  if (strict_mode && !validated_fs) return ENOTSUP;
-  int e=string(root_path,sizeof(root_path));
+  if (store.strict_mode && !store.validated_fs) return ENOTSUP;
+  int e=string(store.root_path,sizeof(store.root_path));
   if (e || pos!=input_n) return e?e:EPROTO;
-  if (strict_mode && (!strncmp(root_path,"/tmp/",5) || !strcmp(root_path,"/tmp") ||
-      !strncmp(root_path,"/var/tmp/",9) || !strncmp(root_path,"/dev/shm/",9))) return ENOTSUP;
-  e=walk_root(existing?0:if_missing?3:1,&root_fd,&root_created);
+  if (store.strict_mode && (!strncmp(store.root_path,"/tmp/",5) || !strcmp(store.root_path,"/tmp") ||
+      !strncmp(store.root_path,"/var/tmp/",9) || !strncmp(store.root_path,"/dev/shm/",9))) return ENOTSUP;
+  e=walk_root(existing?0:if_missing?3:1,&store.root_fd,&store.root_created);
   if (e) return e;
-  e=filesystem(root_fd); if (e) goto fail;
+  e=filesystem(store.root_fd); if (e) goto fail;
   int created=0;
-  if (existing || (if_missing && !root_created)) {
-    lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+  if (existing || (if_missing && !store.root_created)) {
+    store.lock_fd=openat(store.root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
   } else {
-    lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
-    if (lock_fd>=0) created=1;
-    else if (errno==EEXIST && !if_missing) lock_fd=openat(root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+    store.lock_fd=openat(store.root_fd,".tay-owner.lock",O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    if (store.lock_fd>=0) created=1;
+    else if (errno==EEXIST && !if_missing) store.lock_fd=openat(store.root_fd,".tay-owner.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);
   }
-  if (lock_fd<0) { e=errno; goto fail; }
+  if (store.lock_fd<0) { e=errno; goto fail; }
   struct stat s;
-  e=checked_regular(lock_fd,root_fd,".tay-owner.lock",&s); if (e) goto fail;
-  if (flock(lock_fd,LOCK_EX|LOCK_NB)<0) { e=errno; goto fail; }
-  inspection_only=existing || (if_missing && !root_created);
-  if (!inspection_only) {
+  e=checked_regular(store.lock_fd,store.root_fd,".tay-owner.lock",&s); if (e) goto fail;
+  if (flock(store.lock_fd,LOCK_EX|LOCK_NB)<0) { e=errno; goto fail; }
+  store.inspection_only=existing || (if_missing && !store.root_created);
+  if (!store.inspection_only) {
     e=rename_capability(); if (e) goto fail;
-    if (fsync(root_fd)<0) { e=errno; goto fail; }
-    if (created && fsync(lock_fd)<0) { e=errno; goto fail; }
-    if (created && fsync(root_fd)<0) { e=errno; goto fail; }
+    if (fsync(store.root_fd)<0) { e=errno; goto fail; }
+    if (created && fsync(store.lock_fd)<0) { e=errno; goto fail; }
+    if (created && fsync(store.root_fd)<0) { e=errno; goto fail; }
   }
   e=open_segments(); if (e && e!=ENOENT) goto fail;
   e=validate_paths(); if (e) goto fail;
-  acquired=1;
-  put(root_created,1); put(filesystem_type,8); put((uint64_t)getpid(),8);
+  store.acquired=1;
+  put(store.root_created,1); put(store.filesystem_type,8); put((uint64_t)getpid(),8);
   return 0;
 
 fail:
@@ -704,54 +732,54 @@ fail:
 /* Promotion keeps every ownership FD. Mode 2 walks/syncs existing ancestors
  * without granting mkdir permission, even if an external path disappears. */
 static int enable_mutations(void) {
-  if (!inspection_only || read_fd>=0 || write_fd>=0) return EBUSY;
+  if (!store.inspection_only || store.read_fd>=0 || store.write_fd>=0) return EBUSY;
   int e=check_paths(); if (e) return e;
-  e=filesystem(root_fd); if (e) return e;
-  if (segments_fd<0) return ENOENT;
-  e=filesystem(segments_fd); if (e) return e;
+  e=filesystem(store.root_fd); if (e) return e;
+  if (store.segments_fd<0) return ENOENT;
+  e=filesystem(store.segments_fd); if (e) return e;
   e=rename_capability(); if (e) return e;
   int current=-1, created=0;
   e=walk_root(2,&current,&created); if (e) return e;
   struct stat pinned, now;
-  if (fstat(root_fd,&pinned)<0 || fstat(current,&now)<0) e=errno;
+  if (fstat(store.root_fd,&pinned)<0 || fstat(current,&now)<0) e=errno;
   else if (!same(&pinned,&now)) e=ESTALE;
   if (close(current)<0 && !e) e=errno;
   if (e) return e;
-  if (promotion_sync(lock_fd,FAULT_PROMOTE_LOCK_SYNC)<0 ||
-      promotion_sync(root_fd,FAULT_PROMOTE_ROOT_SYNC)<0 ||
-      promotion_sync(segments_fd,FAULT_PROMOTE_SEGMENTS_SYNC)<0) return errno;
+  if (promotion_sync(store.lock_fd,FAULT_PROMOTE_LOCK_SYNC)<0 ||
+      promotion_sync(store.root_fd,FAULT_PROMOTE_ROOT_SYNC)<0 ||
+      promotion_sync(store.segments_fd,FAULT_PROMOTE_SEGMENTS_SYNC)<0) return errno;
   e=check_paths(); if (e) return e;
-  inspection_only=0;
+  store.inspection_only=0;
   return 0;
 }
 
 static int open_epochs(int create) {
-  if (epochs_fd>=0) return checked_directory(epochs_fd,root_fd,"epochs");
+  if (store.epochs_fd>=0) return checked_directory(store.epochs_fd,store.root_fd,"epochs");
   int created=0, next=-1;
-  next=openat(root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  next=openat(store.root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (next<0 && errno==ENOENT && create) {
-    if (mkdirat(root_fd,"epochs",0700)<0) return errno;
+    if (mkdirat(store.root_fd,"epochs",0700)<0) return errno;
     created=1;
-    next=openat(root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    next=openat(store.root_fd,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   }
   if (next<0) return errno;
-  int e=checked_directory(next,root_fd,"epochs");
+  int e=checked_directory(next,store.root_fd,"epochs");
   if (!e) e=filesystem(next);
-  if (!e && created && promotion_sync(root_fd,FAULT_EPOCHS_CREATE_SYNC)<0) e=errno;
+  if (!e && created && promotion_sync(store.root_fd,FAULT_EPOCHS_CREATE_SYNC)<0) e=errno;
   if (e) { close(next); return e; }
-  epochs_fd=next;
+  store.epochs_fd=next;
   return 0;
 }
 
 static int v2_select(void) {
   char name[256];
   int e=string(name,sizeof(name));
-  if (e || !epoch_name_ok(name) || read_fd>=0 || write_fd>=0 || candidate_write_fd>=0)
+  if (e || !epoch_name_ok(name) || store.read_fd>=0 || store.write_fd>=0 || pending_epoch.write_fd>=0)
     return e?e:EINVAL;
   e=open_epochs(0); if (e) return e;
-  int next_epoch=openat(epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  int next_epoch=openat(store.epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (next_epoch<0) return errno;
-  e=checked_directory(next_epoch,epochs_fd,name);
+  e=checked_directory(next_epoch,store.epochs_fd,name);
   if (!e) e=filesystem(next_epoch);
   int next_segments=-1;
   if (!e) {
@@ -761,33 +789,33 @@ static int v2_select(void) {
   if (!e) e=checked_directory(next_segments,next_epoch,"segments");
   if (!e) e=filesystem(next_segments);
   if (e) { if (next_segments>=0) close(next_segments); close(next_epoch); return e; }
-  e=release_owned_fd(&candidate_segments_fd);
-  int close_error=release_owned_fd(&candidate_fd);
+  e=release_owned_fd(&pending_epoch.segments_fd);
+  int close_error=release_owned_fd(&pending_epoch.fd);
   if (!e) e=close_error;
   if (e) { close(next_segments); close(next_epoch); return e; }
-  e=release_owned_fd(&segments_fd);
-  close_error=release_owned_fd(&epoch_fd);
+  e=release_owned_fd(&store.segments_fd);
+  close_error=release_owned_fd(&store.epoch_fd);
   if (!e) e=close_error;
   if (e) { close(next_segments); close(next_epoch); return e; }
-  segments_fd=next_segments; epoch_fd=next_epoch; segments_parent_fd=epoch_fd;
-  strcpy(segments_name,"segments"); strcpy(epoch_name,name);
-  candidate_name[0]=0;
+  store.segments_fd=next_segments; store.epoch_fd=next_epoch; store.segments_parent_fd=store.epoch_fd;
+  strcpy(store.segments_name,"segments"); strcpy(store.epoch_name,name);
+  pending_epoch.name[0]=0;
   return check_paths();
 }
 
 static int v2_begin(void) {
   char name[256];
   int e=string(name,sizeof(name));
-  if (e || !candidate_name_ok(name) || candidate_fd>=0 || candidate_write_fd>=0 || read_fd>=0)
+  if (e || !candidate_name_ok(name) || pending_epoch.fd>=0 || pending_epoch.write_fd>=0 || store.read_fd>=0)
     return e?e:EBUSY;
   e=open_epochs(1); if (e) return e;
-  if (mkdirat(epochs_fd,name,0700)<0) return errno;
-  int next_candidate=openat(epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (mkdirat(store.epochs_fd,name,0700)<0) return errno;
+  int next_candidate=openat(store.epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (next_candidate<0) return errno;
   int next_segments=-1;
-  e=checked_directory(next_candidate,epochs_fd,name);
+  e=checked_directory(next_candidate,store.epochs_fd,name);
   if (!e) e=filesystem(next_candidate);
-  if (!e && promotion_sync(epochs_fd,FAULT_CANDIDATE_PARENT_SYNC)<0) e=errno;
+  if (!e && promotion_sync(store.epochs_fd,FAULT_CANDIDATE_PARENT_SYNC)<0) e=errno;
   if (!e && mkdirat(next_candidate,"segments",0700)<0) e=errno;
   if (!e) {
     next_segments=openat(next_candidate,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
@@ -801,44 +829,49 @@ static int v2_begin(void) {
     close(next_candidate);
     return e;
   }
-  candidate_fd=next_candidate;
-  candidate_segments_fd=next_segments;
-  strcpy(candidate_name,name);
+  pending_epoch.fd=next_candidate;
+  pending_epoch.segments_fd=next_segments;
+  strcpy(pending_epoch.name,name);
   e=check_paths();
   if (e) {
-    close_owned_fd(&candidate_segments_fd);
-    close_owned_fd(&candidate_fd);
-    candidate_name[0]=0;
+    close_owned_fd(&pending_epoch.segments_fd);
+    close_owned_fd(&pending_epoch.fd);
+    pending_epoch.name[0]=0;
   }
   return e;
 }
 
+static int release_candidate_handles(void) {
+  int *descriptors[] = {&store.read_fd, &pending_epoch.write_fd,
+    &pending_epoch.segments_fd, &pending_epoch.fd};
+  int first_error=0;
+  for (size_t i=0; i<sizeof(descriptors)/sizeof(descriptors[0]); i++) {
+    int error=release_owned_fd(descriptors[i]);
+    if (!first_error) first_error=error;
+  }
+  pending_epoch.write_kind=WRITE_NONE;
+  pending_epoch.write_name[0]=0;
+  pending_epoch.name[0]=0;
+  return first_error;
+}
+
 static int v2_abort(void) {
-  int e=release_owned_fd(&read_fd);
-  int close_error=release_owned_fd(&candidate_write_fd);
-  if (!e) e=close_error;
-  close_error=release_owned_fd(&candidate_segments_fd);
-  if (!e) e=close_error;
-  close_error=release_owned_fd(&candidate_fd);
-  if (!e) e=close_error;
-  candidate_write_kind=WRITE_NONE;
-  candidate_write_name[0]=0;
-  candidate_name[0]=0;
-  return e?e:check_paths();
+  int error=release_candidate_handles();
+  return error?error:check_paths();
 }
 
 static int v2_publish_epoch(void) {
   char name[256];
   int e=string(name,sizeof(name));
-  if (e || !epoch_name_ok(name) || candidate_fd<0 || write_fd>=0 ||
-      candidate_write_fd>=0 || read_fd>=0) return e?e:EINVAL;
-  e=checked_directory(candidate_fd,epochs_fd,candidate_name); if (e) return e;
-  if (promotion_sync(candidate_segments_fd,FAULT_CANDIDATE_SEGMENTS_SYNC)<0 ||
-      promotion_sync(candidate_fd,FAULT_CANDIDATE_SYNC)<0) return errno;
-  if (no_replace(epochs_fd,candidate_name,name)<0) return errno;
-  strcpy(candidate_name,name);
-  if (promotion_sync(epochs_fd,FAULT_EPOCH_PUBLISH_SYNC)<0) return errno;
-  return checked_directory(candidate_fd,epochs_fd,candidate_name);
+  if (e || !epoch_name_ok(name) || pending_epoch.fd<0 || store.write_fd>=0 ||
+      pending_epoch.write_fd>=0 || store.read_fd>=0) return e?e:EINVAL;
+  e=checked_directory(pending_epoch.fd,store.epochs_fd,pending_epoch.name); if (e) return e;
+  if (promotion_sync(pending_epoch.segments_fd,FAULT_CANDIDATE_SEGMENTS_SYNC)<0 ||
+      promotion_sync(pending_epoch.fd,FAULT_CANDIDATE_SYNC)<0) return errno;
+  if (no_replace(store.epochs_fd,pending_epoch.name,name)<0) return errno;
+  strcpy(pending_epoch.name,name);
+  if (promotion_sync(store.epochs_fd,FAULT_EPOCH_PUBLISH_SYNC)<0) return errno;
+  return checked_directory(pending_epoch.fd,store.epochs_fd,pending_epoch.name);
 }
 
 static int v2_publish_current(void) {
@@ -846,31 +879,31 @@ static int v2_publish_current(void) {
   int e=string(stage,sizeof(stage));
   if (e || stage_kind(SCOPE_ROOT,stage)!=WRITE_CURRENT_STAGE ||
       !need(FILE_IDENTITY_PAIR_BYTES) ||
-      write_fd>=0 || candidate_write_fd>=0)
+      store.write_fd>=0 || pending_epoch.write_fd>=0)
     return e?e:EINVAL;
   uint64_t stage_dev=number(8),stage_ino=number(8),old_dev=number(8),old_ino=number(8);
   struct stat source,old,after;
-  if (fstatat(root_fd,stage,&source,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (fstatat(store.root_fd,stage,&source,AT_SYMLINK_NOFOLLOW)<0) return errno;
   if (!S_ISREG(source.st_mode) || source.st_nlink!=1 ||
       source.st_size!=CURRENT_METADATA_BYTES ||
       (uint64_t)source.st_dev!=stage_dev || (uint64_t)source.st_ino!=stage_ino) return ESTALE;
   if (!old_dev && !old_ino) {
-    e=absent_at(root_fd,"CURRENT"); if (e) return e;
-    if (no_replace(root_fd,stage,"CURRENT")<0) return errno;
+    e=absent_at(store.root_fd,"CURRENT"); if (e) return e;
+    if (no_replace(store.root_fd,stage,"CURRENT")<0) return errno;
   } else {
-    if (fstatat(root_fd,"CURRENT",&old,AT_SYMLINK_NOFOLLOW)<0) return errno;
+    if (fstatat(store.root_fd,"CURRENT",&old,AT_SYMLINK_NOFOLLOW)<0) return errno;
     if (!S_ISREG(old.st_mode) || old.st_nlink!=1 || (uint64_t)old.st_dev!=old_dev ||
         (uint64_t)old.st_ino!=old_ino) return ESTALE;
-    if (renameat(root_fd,stage,root_fd,"CURRENT")<0) return errno;
+    if (renameat(store.root_fd,stage,store.root_fd,"CURRENT")<0) return errno;
   }
-  if (promotion_sync(root_fd,FAULT_CURRENT_SYNC)<0) return errno;
-  if (fstatat(root_fd,"CURRENT",&after,AT_SYMLINK_NOFOLLOW)<0) return errno;
+  if (promotion_sync(store.root_fd,FAULT_CURRENT_SYNC)<0) return errno;
+  if (fstatat(store.root_fd,"CURRENT",&after,AT_SYMLINK_NOFOLLOW)<0) return errno;
   return S_ISREG(after.st_mode) && after.st_nlink==1 && same(&source,&after) ? 0 : ESTALE;
 }
 
 static int v2_space(void) {
   struct statvfs info;
-  if (fstatvfs(root_fd,&info)<0) return errno;
+  if (fstatvfs(store.root_fd,&info)<0) return errno;
   if (info.f_frsize && info.f_bavail>UINT64_MAX/info.f_frsize) return EOVERFLOW;
   put((uint64_t)info.f_bavail*(uint64_t)info.f_frsize,8);
   return 0;
@@ -906,7 +939,7 @@ static int reclaim_segments(int directory,uint64_t *bytes) {
   while ((ent=readdir(dir))) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
     struct stat s;
-    if (++count>directory_limit) { e=EFBIG; break; }
+    if (++count>store.directory_limit) { e=EFBIG; break; }
     if (!canonical(ent->d_name) || fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0 ||
         !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
     errno=0;
@@ -945,7 +978,7 @@ static int v2_reclaim(void) {
   const unsigned char *expected_current=input+pos; pos+=CURRENT_METADATA_BYTES;
   int has_intent=(int)number(1);
   if (has_intent || pos!=input_n) return EINVAL;
-  e=exact_metadata(root_fd,"CURRENT",expected_current,CURRENT_METADATA_BYTES); if (e) return e;
+  e=exact_metadata(store.root_fd,"CURRENT",expected_current,CURRENT_METADATA_BYTES); if (e) return e;
   if (memcmp(expected_current,"TAYC\001\0\0\0",8)) return EINVAL;
   char current_name[35]="e-";
   static const char hex[]="0123456789abcdef";
@@ -956,11 +989,11 @@ static int v2_reclaim(void) {
   current_name[34]=0;
   if (!strcmp(target,current_name)) return EBUSY;
   e=open_epochs(0); if (e) return e;
-  int target_fd=openat(epochs_fd,target,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  int target_fd=openat(store.epochs_fd,target,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (target_fd<0 && errno!=ENOENT) return errno;
   uint64_t bytes=0;
   if (target_fd>=0) {
-    e=checked_directory(target_fd,epochs_fd,target); if (e) { close(target_fd); return e; }
+    e=checked_directory(target_fd,store.epochs_fd,target); if (e) { close(target_fd); return e; }
     int copy=openat(target_fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (copy<0) { e=errno; close(target_fd); return e; }
     DIR *dir=fdopendir(copy);
@@ -969,7 +1002,7 @@ static int v2_reclaim(void) {
     errno=0;
     while ((ent=readdir(dir))) {
       if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
-      if (++count>directory_limit) { e=EFBIG; break; }
+      if (++count>store.directory_limit) { e=EFBIG; break; }
       if (!strcmp(ent->d_name,"MANIFEST")) {
         struct stat s;
         if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0 ||
@@ -999,9 +1032,9 @@ static int v2_reclaim(void) {
     }
     if (close(target_fd)<0 && !e) e=errno;
     if (e) return e;
-    if (reclamation_unlink(epochs_fd,target,AT_REMOVEDIR,FAULT_EPOCH_RMDIR)<0 ||
-        promotion_sync(epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
-  } else if (promotion_sync(epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
+    if (reclamation_unlink(store.epochs_fd,target,AT_REMOVEDIR,FAULT_EPOCH_RMDIR)<0 ||
+        promotion_sync(store.epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
+  } else if (promotion_sync(store.epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
   put(bytes,8); return 0;
 }
 
@@ -1009,73 +1042,73 @@ static int v2_reclaim(void) {
  * directories. It cannot create a STORE until source ownership, inventory and
  * optional catalog verification have all succeeded in Elixir. */
 static int cold_target_open(void) {
-  if (cold_target || acquired || !need(2+32)) return EPROTO;
-  strict_mode=(int)number(1); validated_fs=(int)number(1);
-  if (strict_mode>1 || validated_fs>1) return EINVAL;
+  if (cold.target || store.acquired || !need(2+32)) return EPROTO;
+  store.strict_mode=(int)number(1); store.validated_fs=(int)number(1);
+  if (store.strict_mode>1 || store.validated_fs>1) return EINVAL;
 #ifndef __linux__
-  if (strict_mode) return ENOTSUP;
+  if (store.strict_mode) return ENOTSUP;
 #endif
-  if (strict_mode && !validated_fs) return ENOTSUP;
-  cold_source_root.st_dev=(dev_t)number(8); cold_source_root.st_ino=(ino_t)number(8);
-  cold_source_segments.st_dev=(dev_t)number(8); cold_source_segments.st_ino=(ino_t)number(8);
-  int e=string(cold_parent_path,sizeof(cold_parent_path)); if (e) return e;
-  e=string(cold_target_name,sizeof(cold_target_name)); if (e || !basename_ok(cold_target_name)) return e?e:EINVAL;
-  e=string(cold_catalog_parent_path,sizeof(cold_catalog_parent_path)); if (e) return e;
-  e=string(cold_catalog_name,sizeof(cold_catalog_name)); if (e || !basename_ok(cold_catalog_name)) return e?e:EINVAL;
+  if (store.strict_mode && !store.validated_fs) return ENOTSUP;
+  cold.source_root.st_dev=(dev_t)number(8); cold.source_root.st_ino=(ino_t)number(8);
+  cold.source_segments.st_dev=(dev_t)number(8); cold.source_segments.st_ino=(ino_t)number(8);
+  int e=string(cold.parent_path,sizeof(cold.parent_path)); if (e) return e;
+  e=string(cold.target_name,sizeof(cold.target_name)); if (e || !basename_ok(cold.target_name)) return e?e:EINVAL;
+  e=string(cold.catalog_parent_path,sizeof(cold.catalog_parent_path)); if (e) return e;
+  e=string(cold.catalog_name,sizeof(cold.catalog_name)); if (e || !basename_ok(cold.catalog_name)) return e?e:EINVAL;
   if (!need(1)) return EPROTO;
-  cold_has_verify=(int)number(1);
-  if (cold_has_verify>1) return EINVAL;
-  if (cold_has_verify) {
-    e=string(cold_verify_parent_path,sizeof(cold_verify_parent_path)); if (e) return e;
-    e=string(cold_verify_name,sizeof(cold_verify_name)); if (e || !basename_ok(cold_verify_name)) return e?e:EINVAL;
+  cold.has_verify=(int)number(1);
+  if (cold.has_verify>1) return EINVAL;
+  if (cold.has_verify) {
+    e=string(cold.verify_parent_path,sizeof(cold.verify_parent_path)); if (e) return e;
+    e=string(cold.verify_name,sizeof(cold.verify_name)); if (e || !basename_ok(cold.verify_name)) return e?e:EINVAL;
   }
-  if (strcmp(cold_parent_path,cold_catalog_parent_path)==0 && !strcmp(cold_target_name,cold_catalog_name)) return EINVAL;
-  e=cold_open_chain(cold_parent_path,&cold_parent_chain); if (e) return e;
-  cold_parent_fd=cold_parent_chain.fds[cold_parent_chain.count-1];
-  e=cold_open_chain(cold_catalog_parent_path,&cold_catalog_chain); if (e) goto fail;
-  cold_catalog_parent_fd=cold_catalog_chain.fds[cold_catalog_chain.count-1];
-  if (cold_has_verify) {
-    e=cold_open_chain(cold_verify_parent_path,&cold_verify_chain); if (e) goto fail;
-    cold_verify_parent_fd=cold_verify_chain.fds[cold_verify_chain.count-1];
+  if (strcmp(cold.parent_path,cold.catalog_parent_path)==0 && !strcmp(cold.target_name,cold.catalog_name)) return EINVAL;
+  e=cold_open_chain(cold.parent_path,&cold.parent_chain); if (e) return e;
+  cold.parent_fd=cold.parent_chain.fds[cold.parent_chain.count-1];
+  e=cold_open_chain(cold.catalog_parent_path,&cold.catalog_chain); if (e) goto fail;
+  cold.catalog_parent_fd=cold.catalog_chain.fds[cold.catalog_chain.count-1];
+  if (cold.has_verify) {
+    e=cold_open_chain(cold.verify_parent_path,&cold.verify_chain); if (e) goto fail;
+    cold.verify_parent_fd=cold.verify_chain.fds[cold.verify_chain.count-1];
   }
-  e=cold_chain_aliases_source(&cold_parent_chain); if (e) goto fail;
-  e=cold_chain_aliases_source(&cold_catalog_chain); if (e) goto fail;
-  if (cold_has_verify) { e=cold_chain_aliases_source(&cold_verify_chain); if (e) goto fail; }
-  e=absent_at(cold_parent_fd,cold_target_name); if (e) goto fail;
-  e=absent_at(cold_catalog_parent_fd,cold_catalog_name); if (e) goto fail;
-  if (strict_mode) {
-    e=filesystem(cold_parent_fd); if (e) goto fail;
-    e=filesystem(cold_catalog_parent_fd); if (e) goto fail;
+  e=cold_chain_aliases_source(&cold.parent_chain); if (e) goto fail;
+  e=cold_chain_aliases_source(&cold.catalog_chain); if (e) goto fail;
+  if (cold.has_verify) { e=cold_chain_aliases_source(&cold.verify_chain); if (e) goto fail; }
+  e=absent_at(cold.parent_fd,cold.target_name); if (e) goto fail;
+  e=absent_at(cold.catalog_parent_fd,cold.catalog_name); if (e) goto fail;
+  if (store.strict_mode) {
+    e=filesystem(cold.parent_fd); if (e) goto fail;
+    e=filesystem(cold.catalog_parent_fd); if (e) goto fail;
   }
-  cold_target=1; put(filesystem_type,8); return 0;
+  cold.target=1; put(store.filesystem_type,8); return 0;
 
 fail:
   abandon_cold_target();
   return e;
 }
 static int cold_stage_create(void) {
-  if (!cold_target || cold_stage_created || !need(2)) return EPROTO;
-  int e=string(cold_staging_name,sizeof(cold_staging_name));
-  if (e || !basename_ok(cold_staging_name)) return e?e:EINVAL;
-  e=string(cold_epoch_name,sizeof(cold_epoch_name));
-  if (e || !epoch_name_ok(cold_epoch_name)) return e?e:EINVAL;
+  if (!cold.target || cold.stage_created || !need(2)) return EPROTO;
+  int e=string(cold.staging_name,sizeof(cold.staging_name));
+  if (e || !basename_ok(cold.staging_name)) return e?e:EINVAL;
+  e=string(cold.epoch_name,sizeof(cold.epoch_name));
+  if (e || !epoch_name_ok(cold.epoch_name)) return e?e:EINVAL;
   e=cold_check_paths(); if (e) return e;
-  e=absent_at(cold_parent_fd,cold_target_name); if (e) return e;
-  e=absent_at(cold_catalog_parent_fd,cold_catalog_name); if (e) return e;
-  if (mkdirat(cold_parent_fd,cold_staging_name,0700)<0) return errno;
-  int stage=openat(cold_parent_fd,cold_staging_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  e=absent_at(cold.parent_fd,cold.target_name); if (e) return e;
+  e=absent_at(cold.catalog_parent_fd,cold.catalog_name); if (e) return e;
+  if (mkdirat(cold.parent_fd,cold.staging_name,0700)<0) return errno;
+  int stage=openat(cold.parent_fd,cold.staging_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (stage<0) return errno;
   int epochs=-1, epoch=-1, segments=-1;
-  if (fstat(stage,&cold_stage_identity)<0) e=errno;
-  else if (!S_ISDIR(cold_stage_identity.st_mode)) e=ESTALE;
+  if (fstat(stage,&cold.stage_identity)<0) e=errno;
+  else if (!S_ISDIR(cold.stage_identity.st_mode)) e=ESTALE;
   if (!e && mkdirat(stage,"epochs",0700)<0) e=errno;
   if (!e) {
     epochs=openat(stage,"epochs",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (epochs<0) e=errno;
   }
-  if (!e && mkdirat(epochs,cold_epoch_name,0700)<0) e=errno;
+  if (!e && mkdirat(epochs,cold.epoch_name,0700)<0) e=errno;
   if (!e) {
-    epoch=openat(epochs,cold_epoch_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    epoch=openat(epochs,cold.epoch_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (epoch<0) e=errno;
   }
   if (!e && mkdirat(epoch,"segments",0700)<0) e=errno;
@@ -1083,12 +1116,12 @@ static int cold_stage_create(void) {
     segments=openat(epoch,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (segments<0) e=errno;
   }
-  if (!e && fstat(epochs,&cold_stage_epochs_identity)<0) e=errno;
-  else if (!e && !S_ISDIR(cold_stage_epochs_identity.st_mode)) e=ESTALE;
-  if (!e && fstat(epoch,&cold_stage_epoch_identity)<0) e=errno;
-  else if (!e && !S_ISDIR(cold_stage_epoch_identity.st_mode)) e=ESTALE;
-  if (!e && fstat(segments,&cold_stage_segments_identity)<0) e=errno;
-  else if (!e && !S_ISDIR(cold_stage_segments_identity.st_mode)) e=ESTALE;
+  if (!e && fstat(epochs,&cold.stage_epochs_identity)<0) e=errno;
+  else if (!e && !S_ISDIR(cold.stage_epochs_identity.st_mode)) e=ESTALE;
+  if (!e && fstat(epoch,&cold.stage_epoch_identity)<0) e=errno;
+  else if (!e && !S_ISDIR(cold.stage_epoch_identity.st_mode)) e=ESTALE;
+  if (!e && fstat(segments,&cold.stage_segments_identity)<0) e=errno;
+  else if (!e && !S_ISDIR(cold.stage_segments_identity.st_mode)) e=ESTALE;
   if (e) {
     if (segments>=0) close(segments);
     if (epoch>=0) close(epoch);
@@ -1096,88 +1129,88 @@ static int cold_stage_create(void) {
     close(stage);
     return e;
   }
-  cold_stage_fd=stage;
-  cold_stage_epochs_fd=epochs;
-  cold_stage_epoch_fd=epoch;
-  cold_stage_segments_fd=segments;
-  cold_stage_created=1;
+  cold.stage_fd=stage;
+  cold.stage_epochs_fd=epochs;
+  cold.stage_epoch_fd=epoch;
+  cold.stage_segments_fd=segments;
+  cold.stage_created=1;
   e=cold_check_paths();
   if (e) {
-    close_owned_fd(&cold_stage_segments_fd);
-    close_owned_fd(&cold_stage_epoch_fd);
-    close_owned_fd(&cold_stage_epochs_fd);
-    close_owned_fd(&cold_stage_fd);
-    cold_stage_created=0;
+    close_owned_fd(&cold.stage_segments_fd);
+    close_owned_fd(&cold.stage_epoch_fd);
+    close_owned_fd(&cold.stage_epochs_fd);
+    close_owned_fd(&cold.stage_fd);
+    cold.stage_created=0;
   }
   return e;
 }
 static int cold_scope_fd(int scope) {
-  if (scope==SCOPE_ROOT) return cold_stage_fd;
-  if (scope==SCOPE_SEGMENTS) return cold_stage_segments_fd;
-  if (scope==SCOPE_EPOCH) return cold_stage_epoch_fd;
-  if (scope==COLD_SCOPE_CATALOG) return cold_catalog_parent_fd;
-  if (scope==COLD_SCOPE_VERIFY) return cold_verify_parent_fd;
+  if (scope==SCOPE_ROOT) return cold.stage_fd;
+  if (scope==SCOPE_SEGMENTS) return cold.stage_segments_fd;
+  if (scope==SCOPE_EPOCH) return cold.stage_epoch_fd;
+  if (scope==COLD_SCOPE_CATALOG) return cold.catalog_parent_fd;
+  if (scope==COLD_SCOPE_VERIFY) return cold.verify_parent_fd;
   return -1;
 }
 static int cold_open_write(void) {
-  if (!cold_target || write_fd>=0 || !need(2)) return EPROTO;
+  if (!cold.target || store.write_fd>=0 || !need(2)) return EPROTO;
   int scope=(int)number(1), lock=(int)number(1), fd=cold_scope_fd(scope);
-  int e=string(write_name,sizeof(write_name));
-  if (e || !basename_ok(write_name) || fd<0 || lock>1 || scope==COLD_SCOPE_VERIFY)
+  int e=string(store.write_name,sizeof(store.write_name));
+  if (e || !basename_ok(store.write_name) || fd<0 || lock>1 || scope==COLD_SCOPE_VERIFY)
     return e?e:EINVAL;
-  if (scope==COLD_SCOPE_CATALOG && strcmp(write_name,cold_catalog_name)) return EINVAL;
-  if (scope!=COLD_SCOPE_CATALOG && scope!=COLD_SCOPE_VERIFY && !cold_stage_created) return EBADF;
+  if (scope==COLD_SCOPE_CATALOG && strcmp(store.write_name,cold.catalog_name)) return EINVAL;
+  if (scope!=COLD_SCOPE_CATALOG && scope!=COLD_SCOPE_VERIFY && !cold.stage_created) return EBADF;
   e=cold_check_paths(); if (e) return e;
-  write_scope=scope; write_kind=WRITE_COLD_COPY;
-  write_fd=openat(fd,write_name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
-  if (write_fd<0) return errno;
-  e=checked_regular(write_fd,fd,write_name,&write_identity);
-  if (e) { close(write_fd); write_fd=-1; return e; }
+  store.write_scope=scope; store.write_kind=WRITE_COLD_COPY;
+  store.write_fd=openat(fd,store.write_name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if (store.write_fd<0) return errno;
+  e=checked_regular(store.write_fd,fd,store.write_name,&store.write_identity);
+  if (e) { close(store.write_fd); store.write_fd=-1; return e; }
   if (lock) {
-    if (cold_lock_fd>=0 || flock(write_fd,LOCK_EX|LOCK_NB)<0) { e=cold_lock_fd>=0?EBUSY:errno; close(write_fd); write_fd=-1; return e; }
-    cold_lock_fd=dup(write_fd);
-    if (cold_lock_fd<0) { e=errno; close(write_fd); write_fd=-1; return e; }
-    if (fstat(cold_lock_fd,&cold_lock_identity)<0) { e=errno; close(cold_lock_fd); cold_lock_fd=-1; close(write_fd); write_fd=-1; return e; }
+    if (cold.lock_fd>=0 || flock(store.write_fd,LOCK_EX|LOCK_NB)<0) { e=cold.lock_fd>=0?EBUSY:errno; close(store.write_fd); store.write_fd=-1; return e; }
+    cold.lock_fd=dup(store.write_fd);
+    if (cold.lock_fd<0) { e=errno; close(store.write_fd); store.write_fd=-1; return e; }
+    if (fstat(cold.lock_fd,&cold.lock_identity)<0) { e=errno; close(cold.lock_fd); cold.lock_fd=-1; close(store.write_fd); store.write_fd=-1; return e; }
   }
-  stat_out(&write_identity); return 0;
+  stat_out(&store.write_identity); return 0;
 }
 static int cold_sync_staging(void) {
   int e=cold_check_paths(); if (e) return e;
-  if (!cold_stage_created || fsync(cold_stage_segments_fd)<0 ||
-      fsync(cold_stage_epoch_fd)<0 || fsync(cold_stage_epochs_fd)<0) return errno;
-  return fsync(cold_stage_fd)<0?errno:0;
+  if (!cold.stage_created || fsync(cold.stage_segments_fd)<0 ||
+      fsync(cold.stage_epoch_fd)<0 || fsync(cold.stage_epochs_fd)<0) return errno;
+  return fsync(cold.stage_fd)<0?errno:0;
 }
 static int cold_publish(void) {
   int e=cold_check_paths(); if (e) return e;
-  if (!cold_stage_created || write_fd>=0) return EBUSY;
-  e=absent_at(cold_parent_fd,cold_target_name); if (e) return e;
-  if (no_replace(cold_parent_fd,cold_staging_name,cold_target_name)<0) return errno;
-  cold_published=1;
-  if (strict_mode)
-    for (size_t i=cold_parent_chain.count;i>0;i--) if (fsync(cold_parent_chain.fds[i-1])<0) return errno;
+  if (!cold.stage_created || store.write_fd>=0) return EBUSY;
+  e=absent_at(cold.parent_fd,cold.target_name); if (e) return e;
+  if (no_replace(cold.parent_fd,cold.staging_name,cold.target_name)<0) return errno;
+  cold.published=1;
+  if (store.strict_mode)
+    for (size_t i=cold.parent_chain.count;i>0;i--) if (fsync(cold.parent_chain.fds[i-1])<0) return errno;
   return 0;
 }
 static int cold_sync_catalog(void) {
   int e=cold_check_paths(); if (e) return e;
-  if (write_fd>=0) return EBUSY;
-  if (strict_mode)
-    for (size_t i=cold_catalog_chain.count;i>0;i--) if (fsync(cold_catalog_chain.fds[i-1])<0) return errno;
+  if (store.write_fd>=0) return EBUSY;
+  if (store.strict_mode)
+    for (size_t i=cold.catalog_chain.count;i>0;i--) if (fsync(cold.catalog_chain.fds[i-1])<0) return errno;
   return 0;
 }
 static int cold_list_directory(void) {
   if (!need(5)) return EPROTO;
   int scope=(int)number(1), fd=scope_fd(scope);
   uint32_t limit=(uint32_t)number(4);
-  if (!cold_source || !limit || fd<0 ||
+  if (!cold.source || !limit || fd<0 ||
       !(scope==SCOPE_ROOT || scope==SCOPE_SEGMENTS || scope==SCOPE_EPOCH)) return EINVAL;
   /* Reuse the normal listing implementation's wire format, but give the
    * caller its remaining global budget so copy inventory stops incrementally. */
-  uint32_t saved=directory_limit; directory_limit=limit;
+  uint32_t saved=store.directory_limit; store.directory_limit=limit;
   unsigned char body[1]={ (unsigned char)scope };
   const unsigned char *saved_input=input; size_t saved_n=input_n,saved_pos=pos;
   input=body; input_n=1; pos=0;
   int e=list_directory();
-  input=saved_input; input_n=saved_n; pos=saved_pos; directory_limit=saved;
+  input=saved_input; input_n=saved_n; pos=saved_pos; store.directory_limit=saved;
   return e;
 }
 static int list_directory(void) {
@@ -1192,7 +1225,7 @@ static int list_directory(void) {
   errno=0;
   while ((ent=readdir(dir))) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
-    if (count>=directory_limit) { e=EFBIG; break; }
+    if (count>=store.directory_limit) { e=EFBIG; break; }
     size_t n=strlen(ent->d_name); struct stat s;
     if (output_n+n+55>PACKET_MAX-23) { e=EFBIG; break; }
     if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
@@ -1205,35 +1238,35 @@ static int list_directory(void) {
   return e;
 }
 static int open_read(void) {
-  if (read_fd>=0 || !need(1)) return EBUSY;
-  read_scope=(int)number(1); int fd=scope_fd(read_scope);
-  int e=string(read_name,sizeof(read_name));
-  if (e || !basename_ok(read_name) || fd<0 ||
-      (read_scope==SCOPE_COLD_VERIFY && strcmp(read_name,cold_verify_name))) return e?e:EINVAL;
-  read_fd=openat(fd,read_name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
-  if (read_fd<0) return errno;
-  e=checked_regular(read_fd,fd,read_name,&read_identity);
-  if (e) { close(read_fd); read_fd=-1; return e; }
-  stat_out(&read_identity); return 0;
+  if (store.read_fd>=0 || !need(1)) return EBUSY;
+  store.read_scope=(int)number(1); int fd=scope_fd(store.read_scope);
+  int e=string(store.read_name,sizeof(store.read_name));
+  if (e || !basename_ok(store.read_name) || fd<0 ||
+      (store.read_scope==SCOPE_COLD_VERIFY && strcmp(store.read_name,cold.verify_name))) return e?e:EINVAL;
+  store.read_fd=openat(fd,store.read_name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+  if (store.read_fd<0) return errno;
+  e=checked_regular(store.read_fd,fd,store.read_name,&store.read_identity);
+  if (e) { close(store.read_fd); store.read_fd=-1; return e; }
+  stat_out(&store.read_identity); return 0;
 }
 static int validate_read(void) {
   struct stat now;
-  if (read_fd<0) return EBADF;
-  int e=checked_regular(read_fd,scope_fd(read_scope),read_name,&now);
+  if (store.read_fd<0) return EBADF;
+  int e=checked_regular(store.read_fd,scope_fd(store.read_scope),store.read_name,&now);
   if (e) return e;
-  return same(&now,&read_identity) && now.st_size==read_identity.st_size ? 0 : ESTALE;
+  return same(&now,&store.read_identity) && now.st_size==store.read_identity.st_size ? 0 : ESTALE;
 }
 static int read_at(void) {
   if (!need(12)) return EPROTO;
   uint64_t off=number(8), n=number(4);
   if (n>IO_BODY_MAX || n>sizeof(output) || off>INT64_MAX ||
       n>(uint64_t)INT64_MAX-off ||
-      (!cold_source && (off>SEGMENT_MAX_BYTES || off+n>SEGMENT_MAX_BYTES))) return EFBIG;
+      (!cold.source && (off>SEGMENT_MAX_BYTES || off+n>SEGMENT_MAX_BYTES))) return EFBIG;
   int e=validate_read(); if (e) return e;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==FAULT_SHORT_IO && n) n=fault_short<n?fault_short:n-1;
 #endif
-  ssize_t got=pread(read_fd,output,(size_t)n,(off_t)off);
+  ssize_t got=pread(store.read_fd,output,(size_t)n,(off_t)off);
   if (got<0) return errno;
   output_n=(size_t)got; return validate_read();
 }
@@ -1241,11 +1274,11 @@ static int create_stage(void) {
   if (!need(1)) return EPROTO;
   int scope=(int)number(1);
   int candidate=scope==SCOPE_CANDIDATE || scope==SCOPE_CANDIDATE_SEGMENTS;
-  int *target=candidate?&candidate_write_fd:&write_fd;
-  int *target_scope=candidate?&candidate_write_scope:&write_scope;
-  int *target_kind=candidate?&candidate_write_kind:&write_kind;
-  char *target_name=candidate?candidate_write_name:write_name;
-  struct stat *target_identity=candidate?&candidate_write_identity:&write_identity;
+  int *target=candidate?&pending_epoch.write_fd:&store.write_fd;
+  int *target_scope=candidate?&pending_epoch.write_scope:&store.write_scope;
+  int *target_kind=candidate?&pending_epoch.write_kind:&store.write_kind;
+  char *target_name=candidate?pending_epoch.write_name:store.write_name;
+  struct stat *target_identity=candidate?&pending_epoch.write_identity:&store.write_identity;
   if (*target>=0) return EBUSY;
   int fd=scope_fd(scope), kind;
   char name[256];
@@ -1267,20 +1300,20 @@ static int create_stage(void) {
   return 0;
 }
 static int open_active(void) {
-  if (write_fd>=0) return EBUSY;
-  int e=string(write_name,sizeof(write_name));
-  if (e || !need(24) || !canonical(write_name)) return e?e:EINVAL;
+  if (store.write_fd>=0) return EBUSY;
+  int e=string(store.write_name,sizeof(store.write_name));
+  if (e || !need(24) || !canonical(store.write_name)) return e?e:EINVAL;
   uint64_t size=number(8), dev=number(8), ino=number(8);
-  write_scope=SCOPE_SEGMENTS; write_kind=WRITE_SEGMENT;
-  write_fd=openat(segments_fd,write_name,O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
-  if (write_fd<0) return errno;
-  e=checked_regular(write_fd,segments_fd,write_name,&write_identity);
-  if (!e && ((uint64_t)write_identity.st_size!=size || (uint64_t)write_identity.st_dev!=dev ||
-     (uint64_t)write_identity.st_ino!=ino)) e=ESTALE;
+  store.write_scope=SCOPE_SEGMENTS; store.write_kind=WRITE_SEGMENT;
+  store.write_fd=openat(store.segments_fd,store.write_name,O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+  if (store.write_fd<0) return errno;
+  e=checked_regular(store.write_fd,store.segments_fd,store.write_name,&store.write_identity);
+  if (!e && ((uint64_t)store.write_identity.st_size!=size || (uint64_t)store.write_identity.st_dev!=dev ||
+     (uint64_t)store.write_identity.st_ino!=ino)) e=ESTALE;
   if (!e && (size<SEGMENT_HEADER_BYTES ||
       size>SEGMENT_MAX_BYTES-SEGMENT_FOOTER_BYTES)) e=EINVAL;
-  if (e) { close(write_fd); write_fd=-1; return e; }
-  stat_out(&write_identity); return 0;
+  if (e) { close(store.write_fd); store.write_fd=-1; return e; }
+  stat_out(&store.write_identity); return 0;
 }
 
 static int verify_written_bytes(int fd,uint64_t off,const unsigned char *expected,size_t n) {
@@ -1303,8 +1336,8 @@ static int verify_written_bytes(int fd,uint64_t off,const unsigned char *expecte
 static int write_at(void) {
   if (!need(WRITE_REQUEST_PREFIX_BYTES)) return EPROTO;
   int candidate=(int)number(1);
-  int fd=candidate?candidate_write_fd:write_fd;
-  int kind=candidate?candidate_write_kind:write_kind;
+  int fd=candidate?pending_epoch.write_fd:store.write_fd;
+  int kind=candidate?pending_epoch.write_kind:store.write_kind;
   if (candidate<0 || candidate>1 || fd<0) return EBADF;
   uint64_t off=number(8); size_t n=input_n-pos;
   size_t fixed_size=staged_write_size(kind);
@@ -1320,7 +1353,7 @@ static int write_at(void) {
   if (fault_now && fault_action==FAULT_SHORT_IO) n=(size_t)(fault_short<n?fault_short:n-1);
 #endif
   /* A single filesystem pwrite. No EINTR/short-write retry is legal here. */
-  known_written=UINT64_MAX; /* A failed syscall need not prove zero changed bytes. */
+  store.known_written=UINT64_MAX; /* A failed syscall need not prove zero changed bytes. */
   ssize_t result;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==FAULT_SYSCALL_ERROR_AFTER_CALL) {
@@ -1330,7 +1363,7 @@ static int write_at(void) {
 #endif
   result=pwrite(fd,input+pos,n,(off_t)off);
   if (result<0) return errno;
-  known_written=(uint64_t)result;
+  store.known_written=(uint64_t)result;
   if ((size_t)result!=requested) {
 #ifdef TAY_TEST_FAULTS
     if (fault_now && fault_action==FAULT_SHORT_IO) return fault_errno?fault_errno:EIO;
@@ -1342,13 +1375,13 @@ static int write_at(void) {
   int e=verify_written_bytes(fd,off,input+pos,requested);
   pos=input_n;
   if (!e) {
-    if (candidate) candidate_write_identity=s; else write_identity=s;
+    if (candidate) pending_epoch.write_identity=s; else store.write_identity=s;
     stat_out(&s);
   }
   return e;
 }
 static int publish(void) {
-  if (write_fd>=0 || !need(1)) return EBUSY;
+  if (store.write_fd>=0 || !need(1)) return EBUSY;
   int scope=(int)number(1), fd=scope_fd(scope);
   char source[256], target[256];
   int e=string(source,sizeof(source)); if (e) return e;
@@ -1405,25 +1438,15 @@ static int failure_poisons(unsigned op) {
 static int dispatch(unsigned op) {
   int e=0, fd;
   if (op==ACQUIRE || op==ACQUIRE_EXISTING || op==ACQUIRE_IF_MISSING) {
-    if (poisoned || root_fd>=0) return ECANCELED;
+    if (store.poisoned || store.root_fd>=0) return ECANCELED;
     return acquire(op==ACQUIRE_EXISTING?1:op==ACQUIRE_IF_MISSING?2:0);
   }
   if (op==COLD_TARGET_OPEN) {
-    if (poisoned) return ECANCELED;
+    if (store.poisoned) return ECANCELED;
     return cold_target_open();
   }
   if (op==SHUTDOWN) {
-    int descriptors[]={write_fd,candidate_write_fd,read_fd,segments_fd,candidate_segments_fd,candidate_fd,
-      epoch_fd,epochs_fd,root_fd,lock_fd,cold_stage_fd,cold_stage_epochs_fd,cold_stage_epoch_fd,
-      cold_stage_segments_fd,cold_lock_fd};
-    for (size_t i=0;i<sizeof(descriptors)/sizeof(descriptors[0]);i++) {
-      if (descriptors[i]>=0 && close(descriptors[i])<0) _exit(HELPER_EXIT_CLOSE_FAILURE);
-    }
-    write_fd=candidate_write_fd=read_fd=segments_fd=candidate_segments_fd=candidate_fd=epoch_fd=epochs_fd=root_fd=lock_fd=-1;
-    segments_parent_fd=-1; acquired=0;
-    cold_stage_fd=cold_stage_epochs_fd=cold_stage_epoch_fd=cold_stage_segments_fd=cold_lock_fd=-1;
-    cold_chain_close(&cold_parent_chain); cold_chain_close(&cold_catalog_chain); cold_chain_close(&cold_verify_chain);
-    cold_parent_fd=cold_catalog_parent_fd=cold_verify_parent_fd=-1; cold_target=0;
+    shutdown_owned_handles();
     return 0;
   }
 #ifdef TAY_TEST_FAULTS
@@ -1433,8 +1456,8 @@ static int dispatch(unsigned op) {
     fault_errno=(int)number(4); fault_short=number(8); return 0;
   }
 #endif
-  if (poisoned) return ECANCELED;
-  if (cold_target) {
+  if (store.poisoned) return ECANCELED;
+  if (cold.target) {
     e=cold_check_paths(); if (e) return e;
     if (!cold_target_opcode_allowed(op)) return EPROTO;
     switch (op) {
@@ -1453,19 +1476,19 @@ static int dispatch(unsigned op) {
   }
   if (op==COLD_SOURCE) {
     e=check_paths(); if (e) return e;
-    if (!inspection_only) return EPERM;
-    cold_source=1; return 0;
+    if (!store.inspection_only) return EPERM;
+    cold.source=1; return 0;
   }
   if (op==COLD_LIST) {
     e=check_paths(); if (e) return e;
-    if (!inspection_only) return EPERM;
+    if (!store.inspection_only) return EPERM;
     return cold_list_directory();
   }
-  if (!cold_target) {
+  if (!cold.target) {
     e=check_paths(); if (e) return e;
   }
   if (op==ENABLE_MUTATIONS) return enable_mutations();
-  if (!cold_target && inspection_only && !inspection_opcode_allowed(op)) return EPERM;
+  if (!cold.target && store.inspection_only && !inspection_opcode_allowed(op)) return EPERM;
   switch (op) {
     case V2_SELECT: return v2_select();
     case V2_BEGIN: return v2_begin();
@@ -1476,13 +1499,13 @@ static int dispatch(unsigned op) {
     case V2_ABORT: return v2_abort();
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
-      if (segments_fd>=0) return EEXIST;
-      if (mkdirat(root_fd,"segments",0700)<0) return errno;
+      if (store.segments_fd>=0) return EEXIST;
+      if (mkdirat(store.root_fd,"segments",0700)<0) return errno;
       return open_segments();
     case OPEN_READ: return open_read();
     case READ_AT: return read_at();
     case CLOSE_READ:
-      e=validate_read(); fd=read_fd; read_fd=-1;
+      e=validate_read(); fd=store.read_fd; store.read_fd=-1;
       if (fd>=0 && close(fd)<0 && !e) e=errno;
       return e;
     case CREATE_STAGE: return create_stage();
@@ -1490,14 +1513,14 @@ static int dispatch(unsigned op) {
     case WRITE_AT: return write_at();
     case SYNC_FILE:
       if (!need(1)) return EPROTO;
-      fd=number(1)?candidate_write_fd:write_fd;
+      fd=number(1)?pending_epoch.write_fd:store.write_fd;
       return fd<0?EBADF:fsync(fd)<0?errno:0;
     case CLOSE_WRITE: {
       if (!need(1)) return EPROTO;
       int candidate=(int)number(1);
-      fd=candidate?candidate_write_fd:write_fd;
-      if (candidate) { candidate_write_fd=-1; candidate_write_kind=WRITE_NONE; }
-      else { write_fd=-1; write_kind=WRITE_NONE; }
+      fd=candidate?pending_epoch.write_fd:store.write_fd;
+      if (candidate) { pending_epoch.write_fd=-1; pending_epoch.write_kind=WRITE_NONE; }
+      else { store.write_fd=-1; store.write_kind=WRITE_NONE; }
       return fd<0?EBADF:close(fd)<0?errno:0;
     }
     case PUBLISH: return publish();
@@ -1506,14 +1529,14 @@ static int dispatch(unsigned op) {
       fd=scope_fd((int)number(1)); return fd<0?ENOENT:fsync(fd)<0?errno:0;
     case CHECK: return check_paths();
     case INFO:
-      put((uint64_t)getpid(),8); put(write_fd<0?WRITE_NONE:write_kind,1); put(read_fd>=0,1);
-      put(filesystem_type,8); put(ancestor_syncs,4);
-      if (acquired) {
+      put((uint64_t)getpid(),8); put(store.write_fd<0?WRITE_NONE:store.write_kind,1); put(store.read_fd>=0,1);
+      put(store.filesystem_type,8); put(store.ancestor_syncs,4);
+      if (store.acquired) {
         struct stat root,segments;
-        if (fstat(root_fd,&root)<0) return errno;
+        if (fstat(store.root_fd,&root)<0) return errno;
         put((uint64_t)root.st_dev,8); put((uint64_t)root.st_ino,8);
-        if (segments_fd>=0) {
-          if (fstat(segments_fd,&segments)<0) return errno;
+        if (store.segments_fd>=0) {
+          if (fstat(store.segments_fd,&segments)<0) return errno;
           put((uint64_t)segments.st_dev,8); put((uint64_t)segments.st_ino,8);
         } else {
           put(0,8); put(0,8);
@@ -1521,7 +1544,7 @@ static int dispatch(unsigned op) {
       }
       return 0;
     case SYNC_READ:
-      e=validate_read(); return e?e:fsync(read_fd)<0?errno:0;
+      e=validate_read(); return e?e:fsync(store.read_fd)<0?errno:0;
     default: return EPROTO;
   }
 }
@@ -1656,7 +1679,7 @@ int main(void) {
     unsigned version=(unsigned)number(PROTOCOL_VERSION_BYTES);
     unsigned op=(unsigned)number(OPERATION_CODE_BYTES);
     uint64_t id=number(REQUEST_ID_BYTES);
-    output_n=0; known_written=0;
+    output_n=0; store.known_written=0;
     int e=0;
 #ifdef TAY_TEST_FAULTS
     fault_now=(op==(unsigned)fault_op && fault_n>0 && --fault_n==0);
@@ -1665,17 +1688,17 @@ int main(void) {
       _exit(HELPER_EXIT_CRASH_BEFORE_CALL);
     else if (fault_now && fault_action==FAULT_OWNER_VM_CRASH_BEFORE_CALL) kill_owner_vm();
     else if (fault_now && fault_action==FAULT_LOSE_LOCK) {
-      if (lock_fd>=0) {
-        close(lock_fd);
+      if (store.lock_fd>=0) {
+        close(store.lock_fd);
       }
-      lock_fd=-1;
+      store.lock_fd=-1;
     }
 #endif
     if (!e) e=version==PROTOCOL_VERSION?validate_request(op):EPROTO;
     if (!e) { pos=REQUEST_HEADER_BYTES; e=dispatch(op); }
     if (!e && pos!=input_n) e=EPROTO;
-    if (!e && acquired) e=check_paths();
-    if (e && failure_poisons(op)) poisoned=1;
+    if (!e && store.acquired) e=check_paths();
+    if (e && failure_poisons(op)) store.poisoned=1;
 #ifdef TAY_TEST_FAULTS
     if (fault_now && fault_action==FAULT_HELPER_CRASH_AFTER_CALL)
       _exit(HELPER_EXIT_CRASH_AFTER_CALL);
@@ -1695,7 +1718,7 @@ int main(void) {
     encode_big_endian(reply+REPLY_REQUEST_ID_OFFSET,id,REQUEST_ID_BYTES);
     reply[REPLY_ERROR_FLAG_OFFSET]=e?1:0;
     encode_big_endian(reply+REPLY_ERROR_CODE_OFFSET,(uint32_t)e,ERROR_CODE_BYTES);
-    encode_big_endian(reply+REPLY_KNOWN_WRITTEN_OFFSET,known_written,KNOWN_WRITTEN_BYTES);
+    encode_big_endian(reply+REPLY_KNOWN_WRITTEN_OFFSET,store.known_written,KNOWN_WRITTEN_BYTES);
     int sent=transfer(STDOUT_FILENO,reply,FRAMED_REPLY_HEADER_BYTES,1);
     if (sent==0 && body_n) sent=transfer(STDOUT_FILENO,output,body_n,1);
     if (sent<0 || op==SHUTDOWN) break;

@@ -22,7 +22,20 @@ defmodule Tay.Storage.V2.Publisher do
   @catch_up_target_bytes CompactionLimits.catch_up_target_bytes()
   @catch_up_max_rounds CompactionLimits.catch_up_max_rounds()
 
+  alias Tay.Storage.V2.Publication
+
   def publish(native, source) do
+    with {:ok, context} <- prepare_source(native, source),
+         {:ok, context} <- build_candidate(context),
+         {:ok, context} <- catch_up_and_publish_epoch(context),
+         {:ok, context} <- prepare_current(context) do
+      publish_current(context)
+    end
+  end
+
+  # Stage boundaries preserve the original ordering of all mutations, syncs,
+  # cancellation checks, and fault barriers. CURRENT is the authority switch.
+  defp prepare_source(native, source) do
     started = System.monotonic_time(:millisecond)
     limits = Map.fetch!(source, :candidate_limits)
     value_limits = Map.fetch!(source, :value_limits)
@@ -51,8 +64,37 @@ defmodule Tay.Storage.V2.Publisher do
          {:ok, admitted_candidate_bytes} <-
            admit_space(native, estimate, length(inventory.sealed), source),
          :ok <- deadline_ok(native.deadline),
-         :ok <- boundary(source, :before_candidate),
-         epoch_id <- new_id(),
+         :ok <- boundary(source, :before_candidate) do
+      {:ok,
+       %Publication{
+         native: native,
+         source: source,
+         started: started,
+         limits: limits,
+         value_limits: value_limits,
+         normalized: normalized,
+         ids: ids,
+         retention_stats: retention_stats,
+         auxiliary: auxiliary,
+         auxiliary_events: auxiliary_events,
+         inventory: inventory,
+         admitted_candidate_bytes: admitted_candidate_bytes
+       }}
+    end
+  end
+
+  defp build_candidate(%Publication{} = context) do
+    native = context.native
+    source = context.source
+    limits = context.limits
+    value_limits = context.value_limits
+    normalized = context.normalized
+    ids = context.ids
+    auxiliary = context.auxiliary
+    auxiliary_events = context.auxiliary_events
+    inventory = context.inventory
+
+    with epoch_id <- new_id(),
          nonce <- new_id(),
          :ok <- Native.v2_begin(native, nonce),
          {:ok, base, base_bytes, peak_memory} <-
@@ -76,8 +118,38 @@ defmodule Tay.Storage.V2.Publisher do
            V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
          true <-
            candidate_equivalent?(source, auxiliary, candidate.candidate) ||
-             {:error, :candidate_mismatch},
-         {:ok, caught_up, caught_up_tail, delta_bytes, switch_started, catch_up_stats} <-
+             {:error, :candidate_mismatch} do
+      {:ok,
+       %{
+         context
+         | epoch_id: epoch_id,
+           base_bytes: base_bytes,
+           peak_memory: peak_memory,
+           manifest: manifest,
+           manifest_bytes: manifest_bytes,
+           tail: tail,
+           tail_bytes: tail_bytes,
+           candidate: candidate,
+           normalized: nil,
+           ids: nil,
+           auxiliary: nil,
+           auxiliary_events: nil
+       }}
+    end
+  end
+
+  defp catch_up_and_publish_epoch(%Publication{} = context) do
+    native = context.native
+    source = context.source
+    candidate = context.candidate
+    tail = context.tail
+    started = context.started
+    epoch_id = context.epoch_id
+    manifest = context.manifest
+    limits = context.limits
+    value_limits = context.value_limits
+
+    with {:ok, caught_up, caught_up_tail, delta_bytes, switch_started, catch_up_stats} <-
            catch_up(native, source, candidate, tail, started),
          :ok <- Native.sync(native),
          :ok <- Native.close_write(native),
@@ -96,8 +168,29 @@ defmodule Tay.Storage.V2.Publisher do
            ),
          true <-
            candidate_equivalent?(source, caught_up, renamed.candidate) ||
-             {:error, :renamed_candidate_mismatch},
-         :ok <- before_current(native, source, epoch_id),
+             {:error, :renamed_candidate_mismatch} do
+      {:ok,
+       %{
+         context
+         | caught_up: caught_up,
+           delta_bytes: delta_bytes,
+           switch_started: switch_started,
+           catch_up_stats: catch_up_stats,
+           renamed: renamed,
+           candidate: nil,
+           tail: nil,
+           manifest: nil
+       }}
+    end
+  end
+
+  defp prepare_current(%Publication{} = context) do
+    native = context.native
+    source = context.source
+    epoch_id = context.epoch_id
+    manifest_bytes = context.manifest_bytes
+
+    with :ok <- before_current(native, source, epoch_id),
          {:ok, current_bytes} <-
            Authority.encode_current(%{
              store_id: source.store_id,
@@ -108,51 +201,85 @@ defmodule Tay.Storage.V2.Publisher do
          :ok <- boundary(source, :before_current),
          :ok <- deadline_ok(native.deadline),
          :ok <- Tay.Storage.V2.CompactionControl.begin_current() do
-      publication =
-        %{
-          epoch_id: epoch_id,
-          current: current_bytes,
-          source_bytes: inventory.total_bytes,
-          admitted_candidate_bytes: admitted_candidate_bytes,
-          candidate_bytes:
-            base_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
-              byte_size(current_bytes) +
-              authority_bytes(source),
-          peak_writer_process_bytes: peak_memory,
-          started: started,
-          switch_started: switch_started,
-          previous_epoch_id: source.epoch_id
-        }
-        |> Map.merge(retention_stats)
-        |> Map.merge(catch_up_stats)
-        |> Map.merge(%{
-          terminal_retention: Retention.persisted(source.terminal_retention),
-          captured_at: source.captured_at
-        })
+      {:ok,
+       %{
+         context
+         | current_bytes: current_bytes,
+           stage: stage,
+           identity: identity,
+           previous: previous
+       }}
+    end
+  end
 
-      case Native.v2_publish_current(native, stage, identity, previous) do
-        :ok ->
-          :ok = boundary(source, :current_published)
+  defp publish_current(%Publication{} = context) do
+    native = context.native
+    source = context.source
+    epoch_id = context.epoch_id
+    current_bytes = context.current_bytes
+    inventory = context.inventory
+    admitted_candidate_bytes = context.admitted_candidate_bytes
+    base_bytes = context.base_bytes
+    tail_bytes = context.tail_bytes
+    delta_bytes = context.delta_bytes
+    manifest_bytes = context.manifest_bytes
+    peak_memory = context.peak_memory
+    started = context.started
+    switch_started = context.switch_started
+    retention_stats = context.retention_stats
+    catch_up_stats = context.catch_up_stats
+    stage = context.stage
+    identity = context.identity
+    previous = context.previous
+    caught_up = context.caught_up
+    renamed = context.renamed
+    limits = context.limits
+    value_limits = context.value_limits
 
-          case verify_published(
-                 native,
-                 source,
-                 caught_up,
-                 renamed,
-                 limits,
-                 value_limits,
-                 publication
-               ) do
-            {:ok, _} = result ->
-              result
+    publication =
+      %{
+        epoch_id: epoch_id,
+        current: current_bytes,
+        source_bytes: inventory.total_bytes,
+        admitted_candidate_bytes: admitted_candidate_bytes,
+        candidate_bytes:
+          base_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
+            byte_size(current_bytes) +
+            authority_bytes(source),
+        peak_writer_process_bytes: peak_memory,
+        started: started,
+        switch_started: switch_started,
+        previous_epoch_id: source.epoch_id
+      }
+      |> Map.merge(retention_stats)
+      |> Map.merge(catch_up_stats)
+      |> Map.merge(%{
+        terminal_retention: Retention.persisted(source.terminal_retention),
+        captured_at: source.captured_at
+      })
 
-            error ->
-              {:error, {:unknown_publication_outcome, Map.put(publication, :reason, error)}}
-          end
+    case Native.v2_publish_current(native, stage, identity, previous) do
+      :ok ->
+        :ok = boundary(source, :current_published)
 
-        error ->
-          {:error, {:unknown_publication_outcome, Map.put(publication, :reason, error)}}
-      end
+        case verify_published(
+               native,
+               source,
+               caught_up,
+               renamed,
+               limits,
+               value_limits,
+               publication
+             ) do
+          {:ok, _} = result ->
+            result
+
+          error ->
+            {:error, {:unknown_publication_outcome, Map.put(publication, :reason, error)}}
+        end
+
+      error ->
+        {:error, {:unknown_publication_outcome, Map.put(publication, :reason, error)}}
     end
   end
 

@@ -6,9 +6,55 @@ defmodule Tay.Executor.SocketPathTest do
   defp resolve(setting, env, uid \\ 4_242) do
     SocketPath.resolve(setting,
       env: env,
+      directory_exists: fn _ -> false end,
       uid: uid,
       usable_directory: fn _path, _uid -> true end
     )
+  end
+
+  test "Elixir follows the shared SDK discovery contract" do
+    fixtures =
+      Path.expand("../../../clients/python/tests/fixtures/socket_discovery.json", __DIR__)
+
+    for fixture <- fixtures |> File.read!() |> Jason.decode!() do
+      setting = if fixture["setting"] == "auto", do: :auto, else: fixture["setting"]
+
+      result =
+        SocketPath.resolve(setting,
+          env: fixture["env"],
+          uid: 4242,
+          directory_exists: &(&1 in fixture["directories"]),
+          usable_directory: fn path, _ -> path in fixture["usable"] end
+        )
+
+      if fixture["error"] do
+        assert {:error, _} = result, fixture["name"]
+      else
+        assert {:ok, %{path: path, private_directory: private}} = result, fixture["name"]
+        assert path == fixture["path"], fixture["name"]
+        assert private == fixture["private"], fixture["name"]
+      end
+    end
+  end
+
+  test "shared runtime directory is selected before the socket exists and is caller-owned" do
+    options = [
+      env: %{"XDG_RUNTIME_DIR" => "/runtime"},
+      uid: 4242,
+      directory_exists: fn path -> path == "/run/tay" end
+    ]
+
+    assert {:ok, %{path: "/run/tay/tay.sock", private_directory: false, source: :shared_runtime}} =
+             SocketPath.resolve(:auto, options)
+
+    assert {:ok, %{path: "/override.sock", source: :explicit}} =
+             SocketPath.resolve("/override.sock", options)
+
+    assert {:ok, %{path: "/env.sock", source: :environment}} =
+             SocketPath.resolve(
+               :auto,
+               Keyword.put(options, :env, %{"TAY_SOCKET_PATH" => "/env.sock"})
+             )
   end
 
   test "explicit path wins over environment discovery" do

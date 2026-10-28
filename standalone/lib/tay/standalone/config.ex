@@ -2,7 +2,8 @@ defmodule Tay.Standalone.Config do
   @moduledoc false
 
   @data_default "/var/lib/tay"
-  @socket_default "/run/tay/tay.sock"
+  alias Tay.Gateway.Config, as: GatewayConfig
+  alias Tay.Executor.SocketPath
   @default_queue_concurrency 10
   @queue_concurrency_range 1..65_536
   @default_caller_timeout_ms 5_000
@@ -15,7 +16,8 @@ defmodule Tay.Standalone.Config do
   @max_tcp_port 65_535
 
   defstruct data_dir: @data_default,
-            socket_path: @socket_default,
+            socket_path: nil,
+            socket: nil,
             http_port: nil,
             http_ip: "127.0.0.1",
             http_tls_certfile: nil,
@@ -32,6 +34,7 @@ defmodule Tay.Standalone.Config do
   @type t :: %__MODULE__{
           data_dir: String.t(),
           socket_path: nil | String.t(),
+          socket: SocketPath.t(),
           http_port: nil | pos_integer(),
           http_ip: String.t(),
           http_tls_certfile: nil | String.t(),
@@ -46,18 +49,22 @@ defmodule Tay.Standalone.Config do
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
 
+  def environment, do: Application.get_env(:tay_standalone, :environment, System.get_env())
+
   @spec load(map()) :: {:ok, t()} | {:error, String.t()}
-  def load(environment \\ System.get_env())
+  def load(environment \\ environment())
 
   def load(environment) when is_map(environment) do
     with {:ok, data_dir} <- path(environment, "TAY_DATA_DIR", @data_default, :data),
-         {:ok, socket_path} <- socket_path(environment),
+         {:ok, http_port} <- optional_port(environment),
+         {:ok, socket_setting} <- socket_setting(environment),
+         {:ok, resolved} <-
+           GatewayConfig.resolve_socket(socket_setting, http_port, env: environment),
+         socket = SocketPath.freeze(resolved),
+         socket_path = socket.path,
          :ok <- outside_data_dir(socket_path, data_dir),
          :ok <- legacy_grpc_environment(environment),
-         {:ok, http_port} <- optional_port(environment),
-         {:ok, http_ip} <- http_ip(environment),
-         {:ok, tls} <- http_tls(environment),
-         :ok <- validate_http(http_port, http_ip, tls),
+         {:ok, %{ip: http_ip} = tls} <- load_http(environment, http_port),
          :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
          {:ok, default_queue_concurrency} <- default_queue_concurrency(environment),
@@ -71,6 +78,7 @@ defmodule Tay.Standalone.Config do
        %__MODULE__{
          data_dir: data_dir,
          socket_path: socket_path,
+         socket: socket,
          http_port: http_port,
          http_ip: http_ip,
          http_tls_certfile: tls.certfile,
@@ -113,53 +121,56 @@ defmodule Tay.Standalone.Config do
     end
   end
 
-  defp http_ip(environment) do
-    ip = Map.get(environment, "TAY_HTTP_IP", "127.0.0.1")
+  defp load_http(environment, port) do
+    values =
+      Map.new(
+        [
+          {:http_tls_certfile, "TAY_HTTP_TLS_CERTFILE"},
+          {:http_tls_keyfile, "TAY_HTTP_TLS_KEYFILE"},
+          {:http_tls_cacertfile, "TAY_HTTP_TLS_CACERTFILE"}
+        ],
+        fn {key, name} ->
+          {key,
+           case Map.get(environment, name, "") do
+             "" -> nil
+             value -> value
+           end}
+        end
+      )
 
-    if is_binary(ip) and match?({:ok, _}, :inet.parse_address(String.to_charlist(ip))),
-      do: {:ok, ip},
-      else: {:error, "TAY_HTTP_IP must be an IP address"}
-  end
+    config =
+      Map.merge(values, %{
+        http_port: port,
+        http_ip: Map.get(environment, "TAY_HTTP_IP", "127.0.0.1")
+      })
 
-  defp http_tls(environment) do
-    names = ["TAY_HTTP_TLS_CERTFILE", "TAY_HTTP_TLS_KEYFILE", "TAY_HTTP_TLS_CACERTFILE"]
-    values = Enum.map(names, &Map.get(environment, &1, ""))
+    case GatewayConfig.validate_http(config) do
+      :ok ->
+        {:ok,
+         %{
+           ip: config.http_ip,
+           certfile: config.http_tls_certfile,
+           keyfile: config.http_tls_keyfile,
+           cacertfile: config.http_tls_cacertfile
+         }}
 
-    cond do
-      Enum.all?(values, &(&1 == "")) ->
-        {:ok, %{certfile: nil, keyfile: nil, cacertfile: nil}}
-
-      Enum.all?(values, &(is_binary(&1) and &1 != "" and Path.type(&1) == :absolute)) ->
-        [certfile, keyfile, cacertfile] = values
-        {:ok, %{certfile: certfile, keyfile: keyfile, cacertfile: cacertfile}}
-
-      true ->
-        {:error,
-         "TAY_HTTP_TLS_CERTFILE, TAY_HTTP_TLS_KEYFILE and TAY_HTTP_TLS_CACERTFILE must all be absolute paths"}
+      {:error, reason} ->
+        {:error, http_error(reason)}
     end
   end
 
-  defp validate_http(port, ip, tls) do
-    secured = not is_nil(tls.certfile)
+  defp http_error(:invalid_http_ip), do: "TAY_HTTP_IP must be an IP address"
+  defp http_error(:invalid_http_port), do: "TAY_HTTP_PORT must be a TCP port from 1 to 65535"
 
-    loopback =
-      case :inet.parse_address(String.to_charlist(ip)) do
-        {:ok, {127, _, _, _}} -> true
-        {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
-        _ -> false
-      end
+  defp http_error(:http_port_required),
+    do: "TAY_HTTP_PORT is required when HTTP TLS is configured"
 
-    cond do
-      is_nil(port) and secured ->
-        {:error, "TAY_HTTP_PORT is required when HTTP TLS is configured"}
+  defp http_error(:http_tls_required),
+    do: "non-loopback TAY_HTTP_IP requires all three HTTP TLS files"
 
-      not is_nil(port) and not loopback and not secured ->
-        {:error, "non-loopback TAY_HTTP_IP requires all three HTTP TLS files"}
-
-      true ->
-        :ok
-    end
-  end
+  defp http_error(:invalid_http_tls_paths),
+    do:
+      "TAY_HTTP_TLS_CERTFILE, TAY_HTTP_TLS_KEYFILE and TAY_HTTP_TLS_CACERTFILE must all be absolute UTF-8 paths without NUL bytes"
 
   defp path(environment, name, default, kind) do
     value = Map.get(environment, name, default)
@@ -188,10 +199,11 @@ defmodule Tay.Standalone.Config do
     end
   end
 
-  defp socket_path(environment) do
-    case Map.get(environment, "TAY_SOCKET_PATH", @socket_default) do
+  defp socket_setting(environment) do
+    case Map.get(environment, "TAY_SOCKET_PATH") do
+      value when value in [nil, ""] -> {:ok, :auto}
       "off" -> {:ok, nil}
-      _ -> path(environment, "TAY_SOCKET_PATH", @socket_default, :socket)
+      _ -> path(environment, "TAY_SOCKET_PATH", nil, :socket)
     end
   end
 

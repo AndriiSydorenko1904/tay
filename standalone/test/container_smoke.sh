@@ -10,6 +10,11 @@ container="tay-standalone-$suffix"
 worker_container="tay-standalone-worker-$suffix"
 
 cleanup() {
+  exit_status=$?
+  if test "$exit_status" -ne 0; then
+    docker logs "$container" >&2 2>/dev/null || true
+    docker logs "$worker_container" >&2 2>/dev/null || true
+  fi
   docker rm -f "$worker_container" >/dev/null 2>&1 || true
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm "$data_volume" "$socket_volume" >/dev/null 2>&1 || true
@@ -52,28 +57,22 @@ docker exec "$container" bin/tay_standalone rpc '
 ' >/dev/null
 
 job_id=
+worker_started=
 if test -n "$worker_image"; then
   docker run -d --name "$worker_container" \
-    -e TAY_SOCKET_PATH=/run/tay/tay.sock \
-    -v "$socket_volume:/run/tay" \
+    -v "$socket_volume:/run/tay:ro" \
     "$worker_image" >/dev/null
 
-  attempt=0
-  until job_id=$(docker run --rm \
-    -e TAY_SOCKET_PATH=/run/tay/tay.sock \
-    -v "$socket_volume:/run/tay" \
-    "$worker_image" python /app/smoke_client.py 2>/dev/null); do
-    attempt=$((attempt + 1))
-    test "$attempt" -lt 30
-    sleep 1
-  done
+  worker_started=$(docker inspect --format '{{.State.StartedAt}}' "$worker_container")
+  job_id=$(docker run --rm \
+    -v "$socket_volume:/run/tay:ro" \
+    "$worker_image" python /app/smoke_client.py)
   test -n "$job_id"
 fi
 
 docker stop --time 30 "$container" >/dev/null
 docker rm "$container" >/dev/null
-docker rm -f "$worker_container" >/dev/null 2>&1 || true
-
+# Keep the worker running to verify reconnect to the replacement listener.
 docker run -d --name "$container" \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
@@ -97,7 +96,13 @@ done
 
 if test -n "$job_id"; then
   docker run --rm \
-    -e TAY_SOCKET_PATH=/run/tay/tay.sock \
-    -v "$socket_volume:/run/tay" \
+    -v "$socket_volume:/run/tay:ro" \
     "$worker_image" python /app/smoke_client.py "$job_id" >/dev/null
+
+  # This must be a new submission: recovered results alone do not prove that
+  # the still-running worker reconnected and registered its tasks again.
+  docker run --rm \
+    -v "$socket_volume:/run/tay:ro" \
+    "$worker_image" python /app/smoke_client.py --enqueue "after-restart-$suffix" >/dev/null
+  test "$(docker inspect --format '{{.State.StartedAt}}' "$worker_container")" = "$worker_started"
 fi

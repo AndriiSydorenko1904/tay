@@ -7,7 +7,6 @@ import contextlib
 import inspect
 import os
 import re
-import traceback
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -20,17 +19,16 @@ from .errors import (
     ModeError,
     ProtocolError,
     RemoteTaskError,
-    ResultTooLarge,
     ServerError,
     TaskNotRegistered,
     TaskRegistrationError,
     ValidationError,
 )
+from .execution import bounded_error, cancel_async_execution, run_task
 from .protocol import (
     DEFAULT_MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
     encode_frame,
-    encoded_json_size,
     normalize_json,
     read_frame,
     validate_task_name,
@@ -445,6 +443,8 @@ class Tay:
                 if self._last_connection_error
                 else ""
             )
+            if isinstance(self._last_connection_error, PermissionError):
+                detail += "; check socket permissions and the shared UID/GID or group"
             raise ConnectionLost(
                 f"could not connect to Tay at {self.socket_path!r} within "
                 f"{self.connect_timeout:g}s{detail}"
@@ -998,8 +998,15 @@ class Tay:
             self._executions[execution_id] = execution
             self._execution_is_sync[execution_id] = synchronous
 
-            def finished(_done: asyncio.Task[None]) -> None:
+            def finished(done: asyncio.Task[None]) -> None:
                 self._execution_finished(execution_id)
+                if not done.cancelled() and (error := done.exception()) is not None:
+                    asyncio.get_running_loop().call_exception_handler(
+                        {
+                            "message": "Tay socket worker could not settle execution",
+                            "exception": error,
+                        }
+                    )
 
             execution.add_done_callback(finished)
 
@@ -1015,10 +1022,9 @@ class Tay:
         # Safely interrupt async work.  A synchronous function runs in a thread
         # and cannot be safely killed by Python; leave it running and let Tay's
         # durable cancellation fence decide whether its eventual outcome counts.
-        if execution is not None and not self._execution_is_sync.get(
-            execution_id, False
-        ):
-            execution.cancel()
+        cancel_async_execution(
+            execution, self._execution_is_sync.get(execution_id, False)
+        )
 
     async def _run_execution(
         self,
@@ -1038,31 +1044,11 @@ class Tay:
             },
         )
         try:
-            if synchronous:
-                result = await asyncio.to_thread(task._call_from_arguments, arguments)
-            else:
-                result = task._call_from_arguments(arguments)
-                if inspect.isawaitable(result):
-                    result = await result
-            # A callable that was not declared async may still deliberately
-            # return an awaitable; support that convention without making it
-            # the common path.
-            if inspect.isawaitable(result):
-                result = await result
-            result = normalize_json(result)
-            result_size = encoded_json_size(result)
-            if result_size > self.max_result_bytes:
-                raise ResultTooLarge(
-                    f"task result is {result_size} bytes; limit is {self.max_result_bytes} bytes"
-                )
-            await self._send_event(
-                "succeeded",
-                {
-                    "reservation_id": reservation_id,
-                    "execution_id": execution_id,
-                    "job_id": job_id,
-                    "result": result,
-                },
+            result = await run_task(
+                task,
+                arguments,
+                synchronous=synchronous,
+                max_result_bytes=self.max_result_bytes,
             )
         except asyncio.CancelledError:
             with contextlib.suppress(ConnectionLost, OSError):
@@ -1091,6 +1077,16 @@ class Tay:
                         "error": self._bounded_error(exc),
                     },
                 )
+        else:
+            await self._send_event(
+                "succeeded",
+                {
+                    "reservation_id": reservation_id,
+                    "execution_id": execution_id,
+                    "job_id": job_id,
+                    "result": result,
+                },
+            )
 
     async def _execution_failure(
         self, message: Mapping[str, Any], error: BaseException
@@ -1117,33 +1113,11 @@ class Tay:
             await self._send_event("failed", fields)
 
     def _bounded_error(self, exc: BaseException) -> dict[str, Any]:
-        error: dict[str, Any] = {
-            "type": type(exc).__name__,
-            "message": str(exc) or type(exc).__name__,
-        }
-        if self.include_traceback:
-            error["traceback"] = "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            )
-        # Trim text fields until the JSON representation obeys the configured
-        # cap.  This never silently truncates a successful result.
-        while encoded_json_size(error) > self.max_error_bytes:
-            if error.get("traceback"):
-                error["traceback"] = _truncate_text(str(error["traceback"]))
-            elif error.get("message"):
-                error["message"] = _truncate_text(str(error["message"]))
-            else:  # defensive fallback for tiny custom limits
-                return {
-                    "type": type(exc).__name__,
-                    "message": "error metadata exceeded limit",
-                }
-        return normalize_json(error)
-
-
-def _truncate_text(value: str) -> str:
-    if len(value) <= 1:
-        return ""
-    return value[: max(1, len(value) // 2 - 1)] + "…"
+        return bounded_error(
+            exc,
+            max_bytes=self.max_error_bytes,
+            include_traceback=self.include_traceback,
+        )
 
 
 def _extract_identifier(reply: Mapping[str, Any], field: str, nested_field: str) -> str:

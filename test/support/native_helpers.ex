@@ -2,6 +2,26 @@ defmodule Tay.Test.NativeHelpers do
   @moduledoc false
   alias Tay.Storage.Native
 
+  def python! do
+    executable =
+      Enum.find_value(
+        ~w(python3.14 python3.13 python3.12 python3.11 python3),
+        &System.find_executable/1
+      )
+
+    if executable do
+      case System.cmd(executable, [
+             "-c",
+             "import sys; raise SystemExit(sys.version_info < (3, 11))"
+           ]) do
+        {_, 0} -> executable
+        _ -> raise "Python 3.11 or newer is required for SDK integration tests"
+      end
+    else
+      raise "Python 3.11 or newer is required for SDK integration tests"
+    end
+  end
+
   def path do
     base = System.get_env("TAY_TEST_DATA_ROOT") || Path.expand("tmp/storage-integration")
     File.mkdir_p!(base)

@@ -54,7 +54,6 @@ ENV HOME=/tmp/tay \
     LC_ALL=C.UTF-8 \
     ELIXIR_ERL_OPTIONS=+fnu \
     TAY_DATA_DIR=/var/lib/tay \
-    TAY_SOCKET_PATH=/run/tay/tay.sock \
     TAY_INITIALIZE_IF_MISSING=false \
     TAY_TERMINAL_RETENTION=24h \
     TAY_ENABLE_DASHBOARD=false \

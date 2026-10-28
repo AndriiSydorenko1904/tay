@@ -50,6 +50,7 @@ from .errors import (
     TaskRegistrationError,
     ValidationError,
 )
+from .execution import cancel_async_execution, error_details, run_task
 from .protocol import json_bytes, normalize_json, validate_task_name
 from .task import Durability, Task, TaskConfig
 
@@ -302,6 +303,9 @@ class TayHTTPWorker(TayHTTP):
         self._token: str | None = None
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
+        self._serve_task: asyncio.Task[Any] | None = None
+        self._close_lock = asyncio.Lock()
+        self._closing = False
 
     @property
     def tasks(self) -> Mapping[str, Task]:
@@ -372,6 +376,8 @@ class TayHTTPWorker(TayHTTP):
                 "queue": self.queue,
             },
         )
+        if self._closing:
+            raise ConnectionLost("HTTP worker was closed during registration")
         token = reply.get("worker_token")
         if type(token) is not str or len(token) != _WORKER_TOKEN_LENGTH:
             raise ProtocolError("Tay did not return a valid worker token")
@@ -388,21 +394,55 @@ class TayHTTPWorker(TayHTTP):
         await self.register()
 
     async def close(self) -> None:
-        token, self._token = self._token, None
-        if token is not None:
-            with contextlib.suppress(ConnectionLost, ServerError):
-                await self._request(
-                    "DELETE", "/workers", headers={"Authorization": f"Bearer {token}"}
-                )
-        await super().close()
+        """Stop claiming, cancel and await executions, then revoke the session.
+
+        A synchronous function may continue in its thread; its cancelled
+        asyncio wrapper cannot submit a late completion after shutdown.
+        """
+        self._closing = True
+        serving = self._serve_task
+        current = asyncio.current_task()
+        if serving is not None and serving is not current and not serving.cancelling():
+            serving.cancel()
+
+        # serve_forever's finally block also closes the worker. Never await
+        # that task while holding the resource lock that its cleanup needs.
+        async with self._close_lock:
+            token, self._token = self._token, None
+            executions = tuple(
+                task for task in self._executions.values() if task is not current
+            )
+            for task in executions:
+                task.cancel()
+            await asyncio.gather(*executions, return_exceptions=True)
+            self._executions.clear()
+            self._execution_is_sync.clear()
+            if token is not None:
+                with contextlib.suppress(ConnectionLost, ServerError):
+                    await self._request(
+                        "DELETE",
+                        "/workers",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+            await super().close()
+
+        if serving is not None and serving is not current:
+            await asyncio.gather(serving, return_exceptions=True)
 
     async def serve_forever(self) -> None:
-        """Register, then claim and execute jobs until cancelled."""
-        await self.register()
+        """Register, then claim and execute jobs until cancelled or closed."""
+        if self._serve_task is not None or self._close_lock.locked():
+            raise RuntimeError("HTTP worker is already serving or closing")
+        self._closing = False
+        self._serve_task = asyncio.current_task()
         try:
+            await self.register()
             await self._run_loop()
         finally:
-            await self.close()
+            try:
+                await self.close()
+            finally:
+                self._serve_task = None
 
     async def run(self) -> None:
         """Deprecated alias for :meth:`serve_forever`."""
@@ -414,15 +454,19 @@ class TayHTTPWorker(TayHTTP):
         await self.serve_forever()
 
     async def _run_loop(self) -> None:
-        while True:
+        while not self._closing:
             try:
                 message = await self._worker_request(
                     "POST", f"/queues/{self.queue}/claim"
                 )
             except ConnectionLost:
+                if self._closing:
+                    return
                 await asyncio.sleep(_WORKER_RETRY_DELAY_SECONDS)
                 continue
             except ServerError as exc:
+                if self._closing:
+                    return
                 if exc.code == "unknown_worker":
                     self._token = None
                     await self.register()
@@ -431,6 +475,8 @@ class TayHTTPWorker(TayHTTP):
                     await asyncio.sleep(_WORKER_RETRY_DELAY_SECONDS)
                     continue
                 raise
+            if self._closing:
+                return
             kind = message.get("type")
             if kind == "execute":
                 execution = message.get("execution_id")
@@ -454,17 +500,20 @@ class TayHTTPWorker(TayHTTP):
                 if type(key) is not str:
                     raise ProtocolError("cancel_execution is missing execution_id")
                 execution = self._executions.get(key)
-                if execution is not None and not self._execution_is_sync.get(
-                    key, False
-                ):
-                    execution.cancel()
+                cancel_async_execution(
+                    execution, self._execution_is_sync.get(key, False)
+                )
             elif message:
                 raise ProtocolError(f"unexpected worker event {kind!r}")
 
     def _execution_finished(self, key: str, task: asyncio.Task[None]) -> None:
         self._executions.pop(key, None)
         self._execution_is_sync.pop(key, None)
-        if not task.cancelled() and (error := task.exception()) is not None:
+        if (
+            not task.cancelled()
+            and (error := task.exception()) is not None
+            and not self._closing
+        ):
             asyncio.get_running_loop().call_exception_handler(
                 {
                     "message": "Tay HTTP worker could not settle execution",
@@ -503,21 +552,19 @@ class TayHTTPWorker(TayHTTP):
             return
         await self._worker_request("POST", "/workers/started", context)
         try:
-            if inspect.iscoroutinefunction(task.function):
-                result = task._call_from_arguments(message["args"])
-            else:
-                result = await asyncio.to_thread(
-                    task._call_from_arguments, message["args"]
-                )
-            if inspect.isawaitable(result):
-                result = await result
-            result = normalize_json(result)
-            if len(json_bytes(result)) > _MAX_TASK_RESULT_BYTES:
-                raise ValidationError(
-                    f"task result exceeds {_MAX_TASK_RESULT_BYTES} bytes"
-                )
+            result = await run_task(
+                task,
+                message["args"],
+                synchronous=not inspect.iscoroutinefunction(task.function),
+                max_result_bytes=_MAX_TASK_RESULT_BYTES,
+                size_error=lambda _size, limit: ValidationError(
+                    f"task result exceeds {limit} bytes"
+                ),
+            )
             completion = {**context, "outcome": "success", "result": result}
         except asyncio.CancelledError:
+            if self._closing:
+                raise
             completion = {
                 **context,
                 "outcome": "failure",
@@ -527,10 +574,11 @@ class TayHTTPWorker(TayHTTP):
             completion = {
                 **context,
                 "outcome": "failure",
-                "error": {
-                    "type": type(exc).__name__[:_MAX_ERROR_TYPE_CHARACTERS],
-                    "message": str(exc)[:_MAX_ERROR_MESSAGE_CHARACTERS],
-                },
+                "error": error_details(
+                    exc,
+                    max_type_characters=_MAX_ERROR_TYPE_CHARACTERS,
+                    max_message_characters=_MAX_ERROR_MESSAGE_CHARACTERS,
+                ),
             }
         await self._worker_request("POST", "/workers/complete", completion)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import pathlib
 import sys
 import unittest
@@ -10,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from tay import (
+    ConnectionLost,
     HTTPJobHandle,
     ModeError,
     ProtocolError,
@@ -37,18 +39,40 @@ class ProtocolTests(unittest.TestCase):
 
 
 class SocketPathTests(unittest.TestCase):
+    def test_shared_discovery_contract(self) -> None:
+        fixtures = pathlib.Path(__file__).parent / "fixtures" / "socket_discovery.json"
+        for fixture in json.loads(fixtures.read_text()):
+            with self.subTest(fixture["name"]):
+                setting = None if fixture["setting"] == "auto" else fixture["setting"]
+                options = {
+                    "environ": fixture["env"],
+                    "uid": 4242,
+                    "directory_exists": fixture["directories"].__contains__,
+                    "usable_directory": fixture["usable"].__contains__,
+                }
+                if fixture.get("error"):
+                    with self.assertRaises(ValidationError):
+                        resolve_socket_path(setting, **options)
+                else:
+                    self.assertEqual(
+                        resolve_socket_path(setting, **options), fixture["path"]
+                    )
+
     def test_explicit_and_environment_overrides_win(self) -> None:
         self.assertEqual(
             resolve_socket_path(
                 "/chosen/tay.sock",
                 environ={"TAY_SOCKET_PATH": "/environment/tay.sock"},
+                directory_exists=lambda _: False,
                 uid=4242,
             ),
             "/chosen/tay.sock",
         )
         self.assertEqual(
             resolve_socket_path(
-                environ={"TAY_SOCKET_PATH": "/environment/tay.sock"}, uid=4242
+                environ={"TAY_SOCKET_PATH": "/environment/tay.sock"},
+                directory_exists=lambda _: False,
+                uid=4242,
             ),
             "/environment/tay.sock",
         )
@@ -60,6 +84,7 @@ class SocketPathTests(unittest.TestCase):
         self.assertEqual(
             resolve_socket_path(
                 environ={"XDG_RUNTIME_DIR": "/runtime", "TMPDIR": "/temporary"},
+                directory_exists=lambda _: False,
                 uid=4242,
                 usable_directory=always_usable,
             ),
@@ -68,17 +93,19 @@ class SocketPathTests(unittest.TestCase):
         self.assertEqual(
             resolve_socket_path(
                 environ={"TMPDIR": "/temporary"},
+                directory_exists=lambda _: False,
                 uid=4242,
                 usable_directory=always_usable,
             ),
             "/temporary/tay-4242/tay.sock",
         )
         self.assertEqual(
-            resolve_socket_path(environ={}, uid=4242), "/tmp/tay-4242/tay.sock"
+            resolve_socket_path(environ={}, directory_exists=lambda _: False, uid=4242),
+            "/tmp/tay-4242/tay.sock",
         )
         self.assertNotEqual(
-            resolve_socket_path(environ={}, uid=101),
-            resolve_socket_path(environ={}, uid=202),
+            resolve_socket_path(environ={}, directory_exists=lambda _: False, uid=101),
+            resolve_socket_path(environ={}, directory_exists=lambda _: False, uid=202),
         )
 
     def test_invalid_configured_path_is_not_silently_replaced(self) -> None:
@@ -87,8 +114,38 @@ class SocketPathTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             resolve_socket_path(environ={"TAY_SOCKET_PATH": "relative.sock"}, uid=1)
 
+    def test_shared_mount_is_selected_before_socket_creation(self) -> None:
+        for environ, explicit, expected in [
+            ({"XDG_RUNTIME_DIR": "/runtime"}, None, "/run/tay/tay.sock"),
+            ({"TAY_SOCKET_PATH": "/env.sock"}, None, "/env.sock"),
+            ({"TAY_SOCKET_PATH": "/env.sock"}, "/explicit.sock", "/explicit.sock"),
+        ]:
+            self.assertEqual(
+                resolve_socket_path(
+                    explicit,
+                    environ=environ,
+                    directory_exists=lambda path: path == "/run/tay",
+                ),
+                expected,
+            )
+
+    def test_read_only_shared_mount_does_not_require_writable_directory(self) -> None:
+        with (
+            patch("tay.socket_path.os.path.isdir", return_value=True),
+            patch("tay.socket_path.os.access", return_value=False),
+        ):
+            self.assertEqual(resolve_socket_path(environ={}), "/run/tay/tay.sock")
+
 
 class ClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_permission_failure_reports_path_and_group_hint(self) -> None:
+        client = Tay(socket_path="/run/tay/tay.sock", connect_timeout=0.001)
+        client._last_connection_error = PermissionError(13, "Permission denied")
+        with self.assertRaisesRegex(
+            ConnectionLost, r"/run/tay/tay.sock.*Permission denied.*UID/GID"
+        ):
+            await client._wait_until_connected()
+
     async def test_task_decorator_uses_module_function_name_and_metadata(self) -> None:
         client = Tay(mode="client")
 

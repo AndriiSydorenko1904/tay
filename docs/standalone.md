@@ -18,7 +18,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `TAY_DATA_DIR` | `/var/lib/tay` | Authoritative durable Store root. |
-| `TAY_SOCKET_PATH` | `/run/tay/tay.sock` | Executor Protocol v1 UDS path; set `off` for HTTP-only operation. |
+| `TAY_SOCKET_PATH` | `/run/tay/tay.sock` without HTTP; disabled with HTTP | Executor Protocol v1 UDS path; explicitly set a path to enable both transports, or `off` to disable UDS. |
 | `TAY_HTTP_PORT` | unset | Enables the Bandit HTTP/JSON API for producers and remote workers. |
 | `TAY_HTTP_IP` | `127.0.0.1` | Listener IP; non-loopback requires mTLS. |
 | `TAY_HTTP_TLS_{CERTFILE,KEYFILE,CACERTFILE}` | unset | Absolute PEM paths for server certificate, private key and client CA. Set all three together. |
@@ -42,10 +42,16 @@ an unnoticed override to `:write` would weaken the production durability
 contract. Embedded Elixir applications can configure their Engines explicitly,
 subject to Tay's production validation.
 
+An unset or empty `TAY_SOCKET_PATH` uses automatic transport selection.
 Malformed explicit values fail startup. The socket must be absolute, at most
 100 bytes, and outside the data directory. The socket is created with mode
 `0660` so a worker can use a shared group where the deployment platform
-supports it.
+supports it. Standalone uses the same path resolver as the embedded Engine:
+outside the container, an absent `/run/tay` falls back to XDG, TMPDIR, or the
+per-UID `/tmp` directory. The Python SDK discovers `/run/tay/tay.sock` from the mounted
+`/run/tay` directory without a `TAY_SOCKET_PATH` setting. Keep the shared socket
+volume mounted into both containers (read-only in the worker); network sharing
+alone does not make Unix socket files visible across containers.
 
 Concurrent persistent commands are flushed when the global batch reaches
 `max_events` or its `interval_ms` expires, whichever happens first. They are
@@ -69,8 +75,8 @@ than a separate item limit. The former `TAY_MAX_STATE_NODES` variable is ignored
 Terminal history is removed only by time-based compaction.
 
 Python HTTP producers and workers need only the HTTP(S) address. Set
-`TAY_SOCKET_PATH=off` together with `TAY_HTTP_PORT` to run without a Unix
-socket. For an HTTP-only Compose deployment use `docker compose up tay`;
+`TAY_HTTP_PORT` to run without a Unix socket; an explicit `TAY_SOCKET_PATH`
+enables both transports. `TAY_SOCKET_PATH=off` is also supported. For an HTTP-only Compose deployment use `docker compose up tay`;
 the example's `worker` service demonstrates the optional local socket mode.
 The example still declares an unused socket volume in HTTP-only mode; neither
 the Engine nor Python HTTP clients require a socket in that configuration.
@@ -112,9 +118,10 @@ Set `TAY_ENABLE_DASHBOARD=true` in the same Compose deployment to enable the
 dashboard. The HTTP API is opt-in; to expose it outside the container, set
 `TAY_HTTP_PORT=8080`, `TAY_HTTP_IP=0.0.0.0`, and
 `TAY_HTTP_HOST_BIND=0.0.0.0`; mount the three TLS files read-only and set their
-`TAY_HTTP_TLS_*` paths. Without mTLS the non-loopback bind is rejected. To omit
-the local worker socket as well, set `TAY_SOCKET_PATH=off` and start only the
-`tay` Compose service.
+`TAY_HTTP_TLS_*` paths. Without mTLS the non-loopback bind is rejected. Start
+only the `tay` Compose service for HTTP-only use. To retain the local socket
+worker too, explicitly set `TAY_SOCKET_PATH=/run/tay/tay.sock` on the Tay
+service. Compose environment overrides must be added to the service environment.
 
 The worker example installs the stdlib-only Python client and advertises an
 `example.echo.v1` task. Production workers should pin a `tay-client` version
@@ -139,7 +146,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.8.0-rc1
+  ghcr.io/andriisydorenko1904/tay:1.8.0-rc2
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -189,3 +196,9 @@ The headless and dashboard-enabled modes use the same data and transport
 contracts. See the
 [dashboard container guide](dashboard-container.md) for its network
 boundary, optional credentials, HTTP configuration, and Compose example.
+
+The CI container smoke test runs Tay and the Python worker without
+`TAY_SOCKET_PATH`, with a read-only socket mount in the worker. It replaces the
+Tay container while keeping the worker running, checks a recovered result, and
+executes a new job through the reconnected worker. The HTTP-only smoke test
+sets only `TAY_HTTP_PORT` and verifies that no Unix socket is created.

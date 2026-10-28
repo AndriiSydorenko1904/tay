@@ -66,7 +66,9 @@ Python socket worker from this checkout instead, use
 
 The Tay container owns durable state at `/var/lib/tay`. Applications and
 language workers can use the shared `/run/tay` Unix socket or the optional
-HTTP/JSON API with mTLS. Set `TAY_SOCKET_PATH=off` for HTTP-only standalone use.
+HTTP/JSON API with mTLS. Without HTTP settings, Tay creates the socket
+automatically. Setting `TAY_HTTP_PORT` selects HTTP-only operation unless
+`TAY_SOCKET_PATH` explicitly enables a socket as well.
 
 Restarting or replacing the Tay container does not discard jobs as long as the
 data volume is preserved.
@@ -459,7 +461,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.8.0-rc1
+ghcr.io/andriisydorenko1904/tay:1.8.0-rc2
 ghcr.io/andriisydorenko1904/tay:latest
 ```
 

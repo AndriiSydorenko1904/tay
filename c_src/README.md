@@ -222,3 +222,17 @@ Read-only path rechecks do not repeat those barriers.
 Healthy shutdown confirms descriptor release before returning. A crashed or
 blocked helper may delay a new owner's lock acquisition, but cannot justify a
 concurrent writer or automatic uncertain-mutation retry.
+
+## Ownership and protocol boundaries
+
+The helper groups selected-store resources in `store_state`, unpublished epoch
+resources in `candidate_state`, and independent cold-copy resources in
+`cold_copy_state`. Borrowed parent descriptors are documented separately from
+owned descriptors. Shutdown and candidate abort use explicit cleanup helpers;
+close order, first-error handling, and fault sites remain part of the contract.
+
+`Tay.Storage.Native.Codec` owns Port framing, operation numbers, and metadata
+encoding/decoding. `Tay.Storage.Native` owns the process/Port lifetime, deadlines,
+and uncertain outcomes; it never retries an uncertain filesystem mutation.
+Frozen packets in `test/fixtures/native/port_v1.json` are exercised against both
+the codec and the production helper.

@@ -8,18 +8,31 @@ durable `data_dir`. Set `executor_socket: nil` to disable it.
 An optional Bandit HTTP/JSON listener exposes producer and worker operations from
 the Engine. It is disabled by default. Set `http_port` (or `TAY_HTTP_PORT` in
 standalone) to enable it. Plain HTTP is limited to loopback; a non-loopback bind
-requires mTLS. Producers and workers can both use HTTP; the Unix socket remains
-available for local workers but can be disabled with `executor_socket: nil`.
+requires mTLS. Enabling HTTP disables the implicit Unix socket in both embedded
+and standalone mode. Set an explicit `executor_socket` path (or
+`TAY_SOCKET_PATH`) to enable both transports. An explicit `executor_socket: nil`
+or `TAY_SOCKET_PATH=off` disables the socket.
 
 ## Socket discovery
 
 The Engine and SDKs resolve the same path in this order: explicit application or
-SDK path, `TAY_SOCKET_PATH`, a usable `XDG_RUNTIME_DIR/tay/tay.sock`, a usable
-`TMPDIR/tay-<uid>/tay.sock`, then `/tmp/tay-<uid>/tay.sock`. Automatic final
-directories are private (`0700`) and the socket defaults to `0600`; an explicit
-socket mode may be `0600` or `0660`. Tay removes only a verified stale socket at
-the resolved path and refuses to replace a regular file. Explicit paths require
-an existing, suitably owned parent directory. A restart recreates the socket.
+SDK path, `TAY_SOCKET_PATH`, `/run/tay/tay.sock` when `/run/tay` exists, a usable
+`XDG_RUNTIME_DIR/tay/tay.sock`, a usable `TMPDIR/tay-<uid>/tay.sock`, then a usable
+`/tmp/tay-<uid>/tay.sock`. The same JSON fixtures test this contract in Elixir
+and Python.
+
+Automatic final directories other than the shared `/run/tay` are private
+(`0700`), and the socket defaults to `0600`; an explicit socket mode may be
+`0600` or `0660`. Tay preserves the ownership and permissions of the shared
+`/run/tay` directory; containers must share it through a volume. Directory
+existence selects the shared path even before the socket is created. An access
+failure reports that path and its OS error rather than silently switching to
+another socket. Workers may mount the shared volume read-only; their UID/GID
+must still permit directory traversal and socket access.
+
+Tay removes only a verified stale socket at the resolved path and refuses to
+replace a regular file. Explicit paths require a suitably owned parent
+directory. A restart recreates the socket.
 
 ## Wire format
 

@@ -2,7 +2,8 @@
 
 `tay` is the stdlib-only Protocol v1 producer and worker client for a local Tay
 Unix-domain socket. `Tay()` needs no socket setting: it uses the same discovery
-contract as the Elixir Engine (explicit path, `TAY_SOCKET_PATH`, XDG runtime,
+contract as the Elixir Engine (explicit path, `TAY_SOCKET_PATH`, an existing
+shared `/run/tay` directory, XDG runtime,
 `TMPDIR`, then `/tmp/tay-<uid>`). It is intentionally a separately installable
 package:
 
@@ -15,7 +16,8 @@ python -m pip install tay-client
 Enable the Bandit listener with `TAY_HTTP_PORT=8080` for a local deployment.
 `TayHTTP` is an async producer client for enqueue, status, cancellation,
 and result retrieval. `TayHTTPWorker` runs remote workers over the same HTTP
-listener; schedules still use the local socket.
+listener; schedules still use the local socket. To use schedules alongside
+HTTP, explicitly enable a socket on the server as well.
 
 ```python
 from tay import TayHTTP
@@ -215,7 +217,13 @@ tay-worker myapp.jobs
 
 The imported module must create exactly one `Tay(mode="worker")` instance and
 register its tasks. Pass `socket_path=` or set `TAY_SOCKET_PATH` only to override
-automatic discovery. See the repository README for the current durable-result/
+automatic discovery. In Docker, mount the same socket volume into Tay at
+`/run/tay` and the worker at `/run/tay:ro`; no `TAY_SOCKET_PATH` is needed.
+The mount is required even with `network_mode: "service:tay"`, which shares
+networking but not the filesystem. The shared directory selects
+`/run/tay/tay.sock` even before the listener creates it, so worker startup and
+reconnects do not depend on scanning for socket files. Both containers need
+compatible socket ownership/group permissions. See the repository README for the current durable-result/
 scheduling compatibility boundary.
 
 ## License

@@ -41,7 +41,8 @@ recovery failure.
 ## Local executor access
 
 An Engine normally creates its Unix socket automatically outside `data_dir`.
-The final automatic directory is private (`0700`), and the socket defaults to
+The final automatic directory is private (`0700`), except for an existing shared
+`/run/tay` directory whose permissions Tay preserves, and the socket defaults to
 `0600`. An explicit path or `TAY_SOCKET_PATH` overrides discovery; prepare the
 parent ownership and permissions yourself. Tay refuses a regular file at the
 socket path and removes only a verified stale socket. Grant access only to

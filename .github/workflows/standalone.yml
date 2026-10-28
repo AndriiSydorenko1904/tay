@@ -10,6 +10,7 @@ on:
       - c_src/**
       - standalone/**
       - examples/standalone/**
+      - clients/python/**
       - lib/**
       - mix_helpers/**
       - compose.yml
@@ -28,6 +29,7 @@ on:
       - c_src/**
       - standalone/**
       - examples/standalone/**
+      - clients/python/**
       - lib/**
       - mix_helpers/**
       - compose.yml
@@ -84,7 +86,7 @@ jobs:
         run: >-
           standalone/test/worker_execution_container.sh
           tay-standalone:test tay-standalone-worker:test
-      - name: Exercise the production image with named volumes
+      - name: Exercise default socket discovery, worker reconnect, and recovery
         run: >-
           standalone/test/container_smoke.sh
           tay-standalone:test tay-standalone-worker:test

@@ -97,7 +97,7 @@ defmodule Tay.HTTP.APITest do
     assert {:ok, _} = Tay.compact(name: __MODULE__, timeout: 60_000)
     assert Tay.result(id, name: __MODULE__) == {:ok, %{"answer" => 6}}
 
-    python = System.find_executable("python3.12") || System.find_executable("python3.11")
+    python = NativeHelpers.python!()
 
     script = """
     import asyncio
@@ -315,7 +315,7 @@ defmodule Tay.HTTP.APITest do
     assert {400, %{"error" => %{"code" => "invalid_enqueue"}}} =
              request(:post, base <> "/jobs", %{args: %{}})
 
-    python = System.find_executable("python3.12") || System.find_executable("python3.11")
+    python = NativeHelpers.python!()
 
     script = """
     import asyncio
@@ -381,6 +381,12 @@ defmodule Tay.HTTP.APITest do
           "1",
           "-subj",
           "/CN=Tay test CA",
+          "-addext",
+          "basicConstraints=critical,CA:TRUE",
+          "-addext",
+          "keyUsage=critical,keyCertSign,cRLSign",
+          "-addext",
+          "subjectKeyIdentifier=hash",
           "-keyout",
           ca_key,
           "-out",
@@ -418,10 +424,14 @@ defmodule Tay.HTTP.APITest do
 
       File.write!(
         extension,
-        if(name == "server",
-          do: "subjectAltName=IP:127.0.0.1\n",
-          else: "extendedKeyUsage=clientAuth\n"
-        )
+        "basicConstraints=critical,CA:FALSE\n" <>
+          "keyUsage=critical,digitalSignature,keyEncipherment\n" <>
+          "subjectKeyIdentifier=hash\n" <>
+          "authorityKeyIdentifier=keyid,issuer\n" <>
+          if(name == "server",
+            do: "extendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n",
+            else: "extendedKeyUsage=clientAuth\n"
+          )
       )
 
       {_, 0} =
@@ -494,7 +504,7 @@ defmodule Tay.HTTP.APITest do
 
     assert %{"error" => %{"code" => "not_found"}} = :json.decode(body)
 
-    python = System.find_executable("python3.12") || System.find_executable("python3.11")
+    python = NativeHelpers.python!()
 
     script = """
     import asyncio

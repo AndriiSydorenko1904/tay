@@ -1,8 +1,9 @@
 """Shared Executor Protocol v1 local Unix-socket discovery contract.
 
 The Elixir runtime implements the same precedence and path layout. Automatic
-paths own their final directory; an explicit argument or TAY_SOCKET_PATH only
-selects a path and never causes an SDK to alter its parent permissions.
+paths other than the shared /run/tay directory own their final directory.
+An explicit argument or TAY_SOCKET_PATH only selects a path and never causes
+an SDK to alter its parent permissions.
 """
 
 from __future__ import annotations
@@ -21,13 +22,15 @@ def resolve_socket_path(
     environ: Mapping[str, str] | None = None,
     uid: int | None = None,
     usable_directory: Callable[[str], bool] | None = None,
+    directory_exists: Callable[[str], bool] | None = None,
 ) -> str:
     """Resolve the Protocol v1 local socket path without creating files.
 
-    Precedence is explicit argument, ``TAY_SOCKET_PATH``, usable
+    Precedence is explicit argument, ``TAY_SOCKET_PATH``, existing shared
+    ``/run/tay`` directory (selecting ``/run/tay/tay.sock``), usable
     ``XDG_RUNTIME_DIR``, usable ``TMPDIR``, then ``/tmp/tay-<uid>/tay.sock``.
     The UID component prevents a shared ``TMPDIR`` from creating cross-user
-    collisions. The listener creates/chmods only automatic final directories.
+    collisions. The listener creates/chmods only private automatic final directories.
     ``environ``/``uid``/``usable_directory`` make the contract testable without
     modifying process-global environment state.
     """
@@ -41,6 +44,10 @@ def resolve_socket_path(
     configured = environment.get("TAY_SOCKET_PATH")
     if configured:
         return _validated_path(configured)
+
+    exists = os.path.isdir if directory_exists is None else directory_exists
+    if exists("/run/tay"):
+        return "/run/tay/tay.sock"
 
     user_id = os.getuid() if uid is None else uid
     if type(user_id) is not int or user_id < 0:
@@ -60,7 +67,11 @@ def resolve_socket_path(
         if _valid_path(candidate):
             return candidate
 
-    return _validated_path(_candidate("/tmp", f"tay-{user_id}", "tay.sock"))
+    if usable("/tmp"):
+        return _validated_path(_candidate("/tmp", f"tay-{user_id}", "tay.sock"))
+    raise ValidationError(
+        "no usable Tay socket directory: check XDG_RUNTIME_DIR, TMPDIR and /tmp"
+    )
 
 
 def _candidate(parent: str, *parts: str) -> str:

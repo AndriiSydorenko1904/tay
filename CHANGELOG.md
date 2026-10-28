@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.8.0-rc2 — 2026-10-28
+
+### Changed
+
+- Discover the shared `/run/tay/tay.sock` automatically in the Engine and Python
+  SDK, including before the listener creates it. Docker workers retain a shared
+  socket volume but no longer need `TAY_SOCKET_PATH` for the standard layout.
+- Use one transport-selection policy for embedded and standalone hosts. Enabling
+  HTTP disables the implicit Unix socket; an explicit socket path enables both.
+  Preserve the resolved endpoint and directory permissions when starting Engine.
+- Extract Engine state and execution operations, Native Port framing and metadata
+  codecs, and explicit compaction-publication stages without changing wire or
+  storage formats. Clarify CRC32C implementation and native descriptor ownership.
+- Update `tay-client` to 1.4.1rc2 with shared task invocation and error formatting.
+
+### Fixed
+
+- Require Bandit 1.14.1 to address the HTTP/2 memory-amplification advisory
+  CVE-2026-116078.
+- Keep result-delivery failures separate from user task failures; a lost success
+  notification no longer causes a contradictory failure notification.
+- Stop the HTTP worker claim loop and cancel/await its execution wrappers during
+  shutdown, preventing late completions after session revocation.
+- Enforce error byte limits even for long Unicode exception class names, and
+  ensure text truncation terminates. Avoid repeated result normalization.
+- Share HTTP/TLS validation, report socket startup failures with their path, and
+  reuse native cold-copy cleanup while preserving descriptor close order.
+- Refresh strict-filesystem tests and TLS fixtures, and discover supported Python
+  interpreters consistently in integration tests.
+
 ## 1.8.0-rc1 — 2026-10-27
 
 ### Changed

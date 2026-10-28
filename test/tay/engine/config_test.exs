@@ -104,7 +104,11 @@ defmodule Tay.Engine.ConfigTest do
 
   test "HTTP binds to loopback unless complete mTLS is configured" do
     base = [data_dir: "tmp/config-only", durability: :write]
-    assert {:ok, %{http_port: 8080}} = Config.new(base ++ [http_port: 8080])
+    assert {:ok, %{http_port: 8080, executor_socket: nil}} = Config.new(base ++ [http_port: 8080])
+
+    assert {:ok, %{executor_socket: "/tmp/tay-explicit.sock"}} =
+             Config.new(base ++ [http_port: 8080, executor_socket: "/tmp/tay-explicit.sock"])
+
     assert {:error, _} = Config.new(base ++ [http_port: 8080, http_ip: "0.0.0.0"])
 
     assert {:ok, %{executor_socket: nil}} =
@@ -124,5 +128,27 @@ defmodule Tay.Engine.ConfigTest do
                    http_tls_cacertfile: "/ca.pem"
                  ]
              )
+  end
+
+  test "a pre-resolved endpoint reaches the Engine without a second environment lookup" do
+    alias Tay.Executor.SocketPath
+
+    assert {:ok, socket} =
+             SocketPath.resolve(:auto,
+               env: %{"XDG_RUNTIME_DIR" => "/frozen-runtime"},
+               uid: 4242,
+               directory_exists: fn _ -> false end,
+               usable_directory: fn _, _ -> true end
+             )
+
+    assert {:ok, engine} =
+             Config.new(
+               data_dir: "/var/lib/tay",
+               durability: :write,
+               executor_socket: SocketPath.freeze(socket)
+             )
+
+    assert engine.executor_socket == "/frozen-runtime/tay/tay.sock"
+    assert engine.executor_socket_private_directory
   end
 end

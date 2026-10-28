@@ -45,6 +45,16 @@ defmodule Tay.Executor.ServerSocketTest do
     end
   end
 
+  test "unavailable parent reports the chosen socket path and OS reason", %{root: root} do
+    File.mkdir_p!(root)
+    parent = Path.join(root, "file")
+    File.write!(parent, "not a directory")
+    path = Path.join(parent, "tay.sock")
+
+    assert {:error, {:socket_unavailable, ^path, :enotdir}} =
+             Tay.Executor.Transport.Unix.open(path, 0o600, false, self())
+  end
+
   test "automatic directory creation is private and listener socket is 0600", %{
     root: root,
     socket: socket
@@ -85,7 +95,9 @@ defmodule Tay.Executor.ServerSocketTest do
     assert_receive {:executor_server_ready, ^server}
     _ = await_socket(socket)
 
-    assert {:error, :socket_path_in_use} = Server.start_link(options(socket))
+    assert {:error, {:socket_unavailable, ^socket, :socket_path_in_use}} =
+             Server.start_link(options(socket))
+
     assert Process.alive?(server)
 
     GenServer.stop(server)
@@ -98,7 +110,9 @@ defmodule Tay.Executor.ServerSocketTest do
     File.mkdir_p!(root)
     File.write!(socket, "do not replace")
 
-    assert {:error, :socket_path_exists} = Server.start_link(options(socket, false))
+    assert {:error, {:socket_unavailable, ^socket, :socket_path_exists}} =
+             Server.start_link(options(socket, false))
+
     assert File.read!(socket) == "do not replace"
   end
 
