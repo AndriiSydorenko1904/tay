@@ -18,6 +18,18 @@ defmodule Tay.HTTP.Router do
       json(conn, 500, %{"error" => %{"code" => "internal"}})
   end
 
+  defp dispatch(%Plug.Conn{method: "GET", path_info: ["health"]} = conn, options) do
+    status = Tay.status(name: options.engine_name)
+
+    ready =
+      status.state == :ready or
+        (status.state == :compacting and Map.get(status, :phase) in [:preparing, :switching])
+
+    if ready,
+      do: json(conn, 200, %{"type" => "health", "state" => Atom.to_string(status.state)}),
+      else: error(conn, "unavailable")
+  end
+
   defp dispatch(%Plug.Conn{method: "POST", path_info: ["jobs"]} = conn, options) do
     with :ok <- content_type(conn),
          {:ok, body, current_conn} <- read_body(conn, options.max_body_bytes) do
@@ -283,6 +295,8 @@ defmodule Tay.HTTP.Router do
         "capacity" -> 429
         "result_not_ready" -> 409
         "task_failed" -> 409
+        "task_cancelled" -> 409
+        "result_missing" -> 410
         "unavailable" -> 503
         "unknown_outcome" -> 503
         "request_too_large" -> 413

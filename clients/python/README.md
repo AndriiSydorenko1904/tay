@@ -234,3 +234,54 @@ scheduling compatibility boundary.
 
 The `tay-client` Python package is licensed under the MIT License. The Tay
 engine is distributed separately under the Elastic License 2.0.
+
+
+## Bounded result waiting
+
+```python
+job = await producer.enqueue("billing.capture.v1", {"invoice_id": "inv-42"})
+value = await job.wait_result(timeout=30, poll_interval=0.1)
+```
+
+Both HTTP and socket handles use the same wait contract. The deadline includes
+network requests and polling. `None` is a successful stored JSON null;
+`ResultMissing`, `JobCancelled`, and `RemoteTaskError` are terminal. A timeout
+raises `TimeoutError`; cancelling the awaiting coroutine cancels only the wait.
+Neither operation cancels or resubmits the job. Connection/unavailability errors
+propagate so callers can make an explicit retry decision.
+
+Submission options follow the complete Protocol v1 contract. `priority` is not
+supported. `delay`/`timeout` are seconds, `delay_ms`/`timeout_ms` are milliseconds,
+`run_at` is an absolute Unix millisecond timestamp, and conflicting aliases are
+rejected locally. Server-side admission, clock and storage limits still apply.
+
+## Worker CLI and diagnostics
+
+```sh
+tay worker app.jobs:worker
+# Backwards-compatible spelling:
+tay-worker app.jobs:worker
+python -m tay worker app.jobs:worker
+
+tay doctor --json
+tay doctor --socket-path /run/tay/tay.sock
+tay doctor --http-url http://127.0.0.1:8080 --timeout 5 --json
+```
+
+`worker` may be `Tay(mode="worker")` or `TayHTTPWorker`. Module-only discovery
+requires exactly one exported worker instance. SIGINT/SIGTERM also interrupt
+startup and registration retries; execution/transport cleanup is awaited.
+
+Doctor does not submit jobs, register workers, change permissions or create
+storage. Socket output includes the exact discovery origin, UID/GID, socket
+ownership and access checks; the connectivity probe sends no protocol frames.
+HTTP uses only `GET /health`. Exit status is zero on success, one for a failed
+check, and two for invalid CLI/configuration. Credentials and passwords are
+never printed. Remote HTTP requires HTTPS and mTLS; pass `--tls-ca-file`,
+`--tls-cert-file`, `--tls-key-file`, or `--tls-pkcs12-file` with optional
+`TAY_TLS_PKCS12_PASSWORD` in the environment.
+
+A lost HTTP session retires old async tasks and waits for old synchronous calls
+before registering again. A synchronous Python thread cannot be forcibly
+stopped; a blocked call continues to occupy its slot. Late outcomes never use
+a replacement token or socket connection, and no execution outcome is replayed.

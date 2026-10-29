@@ -97,12 +97,15 @@ defmodule Tay.Protocol.Service do
       {:ok, %{state: :completed}} ->
         case API.call(core, :result, [id]) do
           {:ok, value} -> {:ok, "result", %{"result" => value}}
-          :missing -> {:ok, "result", %{"result" => nil}}
-          _ -> {:ok, "result", %{"result" => nil}}
+          :missing -> {:error, "result_missing"}
+          _ -> {:error, "unavailable"}
         end
 
       {:ok, %{state: :discarded}} ->
         {:error, "task_failed"}
+
+      {:ok, %{state: :cancelled}} ->
+        {:error, "task_cancelled"}
 
       {:ok, _} ->
         {:error, "result_not_ready"}

@@ -1,0 +1,578 @@
+{
+  "contract": "tay-job-options-v1",
+  "option_names": [
+    "id",
+    "submission_id",
+    "delay",
+    "delay_ms",
+    "run_at",
+    "retries",
+    "timeout",
+    "timeout_ms",
+    "backoff",
+    "queue",
+    "durability"
+  ],
+  "cases": [
+    {
+      "name": "defaults",
+      "options": {},
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default"
+      }
+    },
+    {
+      "name": "id",
+      "options": {
+        "id": "00000000000000000000000000000001"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "id": "00000000000000000000000000000001"
+      }
+    },
+    {
+      "name": "submission id",
+      "options": {
+        "submission_id": "order-42"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "id": "ffffa1a82dd522db967753bac0b5a0f8"
+      }
+    },
+    {
+      "name": "milliseconds units",
+      "options": {
+        "delay_ms": 1500,
+        "timeout_ms": 2500,
+        "retries": 2,
+        "queue": "slow",
+        "durability": "volatile"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 2,
+        "timeout_ms": 2500,
+        "queue": "slow",
+        "delay_ms": 1500,
+        "durability": "volatile"
+      }
+    },
+    {
+      "name": "fractional seconds",
+      "options": {
+        "delay": 1.2345,
+        "timeout": 0.0005
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 1,
+        "queue": "default",
+        "delay_ms": 1235
+      }
+    },
+    {
+      "name": "absolute milliseconds",
+      "options": {
+        "run_at": 2000000000000
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "scheduled_at": 2000000000000
+      }
+    },
+    {
+      "name": "maximum timeout and retries",
+      "options": {
+        "timeout": 86400,
+        "retries": 65534
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 65534,
+        "timeout_ms": 86400000,
+        "queue": "default"
+      }
+    },
+    {
+      "name": "zero delay",
+      "options": {
+        "delay": 0
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "delay_ms": 0
+      }
+    },
+    {
+      "name": "maximum timestamp",
+      "options": {
+        "run_at": 9223372036854775807
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "scheduled_at": 9223372036854775807
+      }
+    },
+    {
+      "name": "maximum delay milliseconds",
+      "options": {
+        "delay_ms": 9223372036854775807
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "delay_ms": 9223372036854775807
+      }
+    },
+    {
+      "name": "null optional aliases",
+      "options": {
+        "id": null,
+        "submission_id": null,
+        "delay": null,
+        "delay_ms": null,
+        "timeout": null,
+        "timeout_ms": null,
+        "run_at": null,
+        "backoff": null,
+        "durability": null
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default"
+      }
+    },
+    {
+      "name": "explicit exponential persistent",
+      "options": {
+        "backoff": "exponential",
+        "durability": "persistent"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "default",
+        "durability": "persistent"
+      }
+    },
+    {
+      "name": "unicode queue limit",
+      "options": {
+        "queue": "\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457"
+      }
+    },
+    {
+      "name": "queue protocol key",
+      "options": {
+        "queue": "q\nx"
+      },
+      "valid": true,
+      "canonical": {
+        "retries": 0,
+        "timeout_ms": 30000,
+        "queue": "q\nx"
+      }
+    },
+    {
+      "name": "unknown priority",
+      "options": {
+        "priority": 0
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown option",
+      "options": {
+        "typo": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "both identities",
+      "options": {
+        "id": "00000000000000000000000000000001",
+        "submission_id": "same"
+      },
+      "valid": false
+    },
+    {
+      "name": "zero id",
+      "options": {
+        "id": "00000000000000000000000000000000"
+      },
+      "valid": false
+    },
+    {
+      "name": "uppercase id",
+      "options": {
+        "id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "valid": false
+    },
+    {
+      "name": "short id",
+      "options": {
+        "id": "a"
+      },
+      "valid": false
+    },
+    {
+      "name": "empty submission",
+      "options": {
+        "submission_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "long submission",
+      "options": {
+        "submission_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": false
+    },
+    {
+      "name": "nul submission",
+      "options": {
+        "submission_id": "x\u0000"
+      },
+      "valid": false
+    },
+    {
+      "name": "two delay units",
+      "options": {
+        "delay": 0,
+        "delay_ms": 0
+      },
+      "valid": false
+    },
+    {
+      "name": "delay and run_at",
+      "options": {
+        "delay": 0,
+        "run_at": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "delay ms and run_at",
+      "options": {
+        "delay_ms": 0,
+        "run_at": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "two timeout units",
+      "options": {
+        "timeout": 1,
+        "timeout_ms": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "too small fractional timeout",
+      "options": {
+        "timeout": 0.0001
+      },
+      "valid": false
+    },
+    {
+      "name": "too large fractional timeout",
+      "options": {
+        "timeout": 86400.1
+      },
+      "valid": false
+    },
+    {
+      "name": "timestamp overflow",
+      "options": {
+        "run_at": 9223372036854775808
+      },
+      "valid": false
+    },
+    {
+      "name": "delay overflow",
+      "options": {
+        "delay_ms": 9223372036854775808
+      },
+      "valid": false
+    },
+    {
+      "name": "delay seconds overflow",
+      "options": {
+        "delay": 1e+20
+      },
+      "valid": false
+    },
+    {
+      "name": "invalid durability",
+      "options": {
+        "durability": "sync"
+      },
+      "valid": false
+    },
+    {
+      "name": "invalid backoff",
+      "options": {
+        "backoff": {}
+      },
+      "valid": false
+    },
+    {
+      "name": "null retries",
+      "options": {
+        "retries": null
+      },
+      "valid": false
+    },
+    {
+      "name": "null queue",
+      "options": {
+        "queue": null
+      },
+      "valid": false
+    },
+    {
+      "name": "long queue",
+      "options": {
+        "queue": "\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457\u0457"
+      },
+      "valid": false
+    },
+    {
+      "name": "nul queue",
+      "options": {
+        "queue": "q\u0000"
+      },
+      "valid": false
+    },
+    {
+      "name": "empty queue",
+      "options": {
+        "queue": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "retries rejects -1",
+      "options": {
+        "retries": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "retries rejects 65535",
+      "options": {
+        "retries": 65535
+      },
+      "valid": false
+    },
+    {
+      "name": "retries rejects True",
+      "options": {
+        "retries": true
+      },
+      "valid": false
+    },
+    {
+      "name": "retries rejects 1.5",
+      "options": {
+        "retries": 1.5
+      },
+      "valid": false
+    },
+    {
+      "name": "retries rejects '1'",
+      "options": {
+        "retries": "1"
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects 0",
+      "options": {
+        "timeout_ms": 0
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects -1",
+      "options": {
+        "timeout_ms": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects 86400001",
+      "options": {
+        "timeout_ms": 86400001
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects True",
+      "options": {
+        "timeout_ms": true
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects 1.1",
+      "options": {
+        "timeout_ms": 1.1
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout_ms rejects '1'",
+      "options": {
+        "timeout_ms": "1"
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout rejects 0",
+      "options": {
+        "timeout": 0
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout rejects -1",
+      "options": {
+        "timeout": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout rejects 86401",
+      "options": {
+        "timeout": 86401
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout rejects True",
+      "options": {
+        "timeout": true
+      },
+      "valid": false
+    },
+    {
+      "name": "timeout rejects '1'",
+      "options": {
+        "timeout": "1"
+      },
+      "valid": false
+    },
+    {
+      "name": "delay rejects -1",
+      "options": {
+        "delay": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "delay rejects True",
+      "options": {
+        "delay": true
+      },
+      "valid": false
+    },
+    {
+      "name": "delay rejects '1'",
+      "options": {
+        "delay": "1"
+      },
+      "valid": false
+    },
+    {
+      "name": "delay_ms rejects -1",
+      "options": {
+        "delay_ms": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "delay_ms rejects True",
+      "options": {
+        "delay_ms": true
+      },
+      "valid": false
+    },
+    {
+      "name": "delay_ms rejects 1.1",
+      "options": {
+        "delay_ms": 1.1
+      },
+      "valid": false
+    },
+    {
+      "name": "delay_ms rejects '1'",
+      "options": {
+        "delay_ms": "1"
+      },
+      "valid": false
+    },
+    {
+      "name": "run_at rejects -1",
+      "options": {
+        "run_at": -1
+      },
+      "valid": false
+    },
+    {
+      "name": "run_at rejects True",
+      "options": {
+        "run_at": true
+      },
+      "valid": false
+    },
+    {
+      "name": "run_at rejects 1.1",
+      "options": {
+        "run_at": 1.1
+      },
+      "valid": false
+    },
+    {
+      "name": "run_at rejects '1'",
+      "options": {
+        "run_at": "1"
+      },
+      "valid": false
+    }
+  ]
+}

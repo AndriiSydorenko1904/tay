@@ -40,7 +40,14 @@ async def run_task(
         # A thread may have finished by returning a coroutine. From here on,
         # remote cancellation can safely interrupt the loop-owned execution.
         if on_awaitable is not None:
-            on_awaitable()
+            try:
+                on_awaitable()
+            except BaseException:
+                if inspect.iscoroutine(result):
+                    result.close()
+                elif isinstance(result, asyncio.Future):
+                    result.cancel()
+                raise
         result = await result
     result = normalize_json(result)
     size = len(json_bytes(result))

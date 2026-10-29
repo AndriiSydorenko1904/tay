@@ -191,3 +191,52 @@ The final qualification report must retain exact commands, outputs, physical
 fixture hashes and platform evidence. Publish only measured envelopes and leave
 R5, hardware certification, actual workload RAM/disk headroom and unmeasured
 profiles explicit. See [compatibility and limits](../docs/compatibility.md).
+
+
+## Comparable release artifacts
+
+`bench/release.exs` uses only public Tay APIs so the same script can measure a
+candidate checkout and a previous release such as `v1.7.0`. Use a dedicated VM
+and new disposable paths for each cohort:
+
+```sh
+mix compile --warnings-as-errors
+mix run --no-start --no-compile bench/release.exs --mode write \
+  --path /private/tmp/tay-release-candidate-new --output /private/tmp/candidate-new.json \
+  --jobs 1000 --clients 8 --trials 3
+# Compile the baseline in a separate process too, then run the SAME absolute
+# script path with `mix run --no-start --no-compile` from that checkout,
+# selecting another new path and baseline-new.json.
+python3 bench/compare.py /private/tmp/baseline-new.json /private/tmp/candidate-new.json \
+  --output /private/tmp/comparison-new.json --markdown /private/tmp/comparison-new.md
+```
+
+Run only the comparison with:
+
+```sh
+gh workflow run qualification.yml -f performance_only=true \
+  -f baseline_ref=v1.7.0 -f performance_jobs=1000
+```
+
+The qualification workflow accepts `baseline_ref` and `performance_jobs` and
+compiles each checkout in a separate process, then runs three trials per
+checkout on the same macOS/Linux runner. This excludes compiler residue from
+the measured runtime process. Linux uses a
+disposable local Btrfs volume and explicit `sync` mode; macOS is labelled `write`
+development evidence. JSON reports and a Markdown comparison are retained as
+30-day artifacts, and the comparison is included in the workflow summary.
+Artifacts contain benchmark metadata and measurements, not stores or user jobs.
+
+Reports include the measured revision/version, dirty-tree marker, harness hash,
+OS/toolchain/schedulers/filesystem, workload, completed-job throughput, enqueue
+ACK p95, submission-to-callback p95, sampled RSS/BEAM memory and compaction time.
+Throughput includes durable completion verification. Callback latency excludes
+durable finish; RSS sampled every 50ms is an observed peak, not an upper bound.
+There is no production capacity or power-loss claim.
+
+Comparison refuses different harness/configuration/environment metadata and
+incomplete trial cohorts. Missing/zero/invalid metric samples remain missing,
+never an improvement. Median changes are descriptive by default. Enable
+`fail_on_regression` in the workflow (or `--fail-on-regression`) to fail on a
+regression beyond 20% or incomplete required metrics. Hosted-runner noise,
+cache state and the absence of hardware certification still limit conclusions.

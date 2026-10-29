@@ -5,10 +5,12 @@ image=${1:?usage: worker_execution_container.sh TAY_IMAGE WORKER_IMAGE}
 worker_image=${2:?usage: worker_execution_container.sh TAY_IMAGE WORKER_IMAGE}
 suffix=$$
 container="tay-worker-execution-$suffix"
+http_worker="tay-http-cli-worker-$suffix"
 data_volume="tay-worker-execution-data-$suffix"
 socket_volume="tay-worker-execution-socket-$suffix"
 
 cleanup() {
+  docker rm -f "$http_worker" >/dev/null 2>&1 || true
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm "$data_volume" "$socket_volume" >/dev/null 2>&1 || true
 }
@@ -44,6 +46,8 @@ docker run -d --name "$container" \
   -v "$socket_volume:/run/tay" \
   "$image" >/dev/null
 wait_healthy
+docker run --rm -v "$socket_volume:/run/tay:ro" \
+  "$worker_image" tay doctor --json >/dev/null
 docker run --rm \
   -v "$socket_volume:/run/tay" \
   "$worker_image" python /app/volatile_execution.py socket /run/tay/tay.sock
@@ -62,4 +66,22 @@ docker run -d --name "$container" \
 wait_healthy
 docker run --rm --network "container:$container" \
   "$worker_image" python /app/volatile_execution.py http http://127.0.0.1:8080
+assert_ready
+
+# The image's existing module:instance entry point also starts HTTP workers.
+docker run --rm --network "container:$container" \
+  "$worker_image" tay doctor --http-url http://127.0.0.1:8080 --json >/dev/null
+docker run -d --name "$http_worker" --network "container:$container" \
+  -e TAY_HTTP_URL=http://127.0.0.1:8080 "$worker_image" >/dev/null
+docker run --rm --network "container:$container" "$worker_image" python -c '
+import asyncio
+from tay import TayHTTP
+async def main():
+    async with TayHTTP("http://127.0.0.1:8080") as producer:
+        job = await producer.enqueue("example.echo.v1", {"message": "http-cli"})
+        assert await job.wait_result(timeout=20) == {"message": "http-cli"}
+asyncio.run(main())
+'
+docker stop --time 10 "$http_worker" >/dev/null
+test "$(docker inspect --format '{{.State.ExitCode}}' "$http_worker")" = 0
 assert_ready

@@ -78,4 +78,27 @@ defmodule Tay.Protocol.ServiceTest do
 
     assert_receive {:register_schedule, %{"declaration_id" => "daily"}}
   end
+
+  defmodule ResultAdapter do
+    def get_job({state, _}, _), do: {:ok, %{state: state}}
+    def result({_, result}, _), do: result
+  end
+
+  test "result values distinguish null, missing, unavailable and terminal states" do
+    for {state, result, expected} <- [
+          {:completed, {:ok, nil}, {:ok, "result", %{"result" => nil}}},
+          {:completed, {:ok, false}, {:ok, "result", %{"result" => false}}},
+          {:completed, :missing, {:error, "result_missing"}},
+          {:completed, {:error, :unavailable}, {:error, "unavailable"}},
+          {:completed, :unexpected, {:error, "unavailable"}},
+          {:cancelled, :missing, {:error, "task_cancelled"}},
+          {:discarded, :missing, {:error, "task_failed"}},
+          {:executing, :missing, {:error, "result_not_ready"}}
+        ] do
+      context = %{core: {ResultAdapter, {state, result}}}
+
+      assert Tay.Protocol.Service.handle(context, %{"type" => "result", "job_id" => "job"}) ==
+               expected
+    end
+  end
 end

@@ -65,3 +65,6 @@ jobs:
           uv run --with mypy --with cryptography mypy clients/python/tay
       - name: Test client
         run: uv run --with pytest pytest clients/python
+      - name: Test release report comparison
+        if: matrix.python == '3.13'
+        run: python -m unittest discover -s bench -p 'test_*.py'

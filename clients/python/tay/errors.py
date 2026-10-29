@@ -55,3 +55,11 @@ class ResultTooLarge(ValidationError):
 
 class ModeError(TayError):
     """The operation is not available in the client's selected mode."""
+
+
+class JobCancelled(ServerError):
+    """The job was cancelled and cannot produce a successful result."""
+
+
+class ResultMissing(ServerError):
+    """The completed job has no retained result value."""

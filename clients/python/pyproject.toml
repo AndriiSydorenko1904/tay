@@ -36,6 +36,7 @@ Issues = "https://github.com/AndriiSydorenko1904/tay/issues"
 Source = "https://github.com/AndriiSydorenko1904/tay"
 
 [project.scripts]
+tay = "tay.__main__:main"
 tay-worker = "tay.__main__:main"
 
 [tool.setuptools]

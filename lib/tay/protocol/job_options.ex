@@ -61,13 +61,10 @@ defmodule Tay.Protocol.JobOptions do
       {nil, nil} ->
         {:ok, nil}
 
-      {value, nil} when is_integer(value) and value >= 0 ->
-        {:ok, value * 1_000}
+      {value, nil} when is_number(value) and value >= 0 ->
+        milliseconds(value, 0, Tay.Event.V2.max_time(), :invalid_delay)
 
-      {value, nil} when is_float(value) and value >= 0 and value == value ->
-        {:ok, round(value * 1_000)}
-
-      {nil, value} when is_integer(value) and value >= 0 ->
+      {nil, value} when is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807 ->
         {:ok, value}
 
       _ ->
@@ -83,7 +80,8 @@ defmodule Tay.Protocol.JobOptions do
       {_value, delay, delay_ms} when not is_nil(delay) or not is_nil(delay_ms) ->
         {:error, :ambiguous_schedule}
 
-      {value, _, _} when is_integer(value) and value >= 0 ->
+      {value, _, _}
+      when is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807 ->
         {:ok, value}
 
       _ ->
@@ -100,11 +98,29 @@ defmodule Tay.Protocol.JobOptions do
 
   defp timeout(options) do
     case {Map.get(options, "timeout"), Map.get(options, "timeout_ms")} do
-      {nil, nil} -> {:ok, 30_000}
-      {value, nil} when is_integer(value) and value in 1..86_400 -> {:ok, value * 1_000}
-      {value, nil} when is_float(value) and value > 0 -> {:ok, round(value * 1_000)}
-      {nil, value} when is_integer(value) and value in 1..86_400_000 -> {:ok, value}
-      _ -> {:error, :invalid_timeout}
+      {nil, nil} ->
+        {:ok, 30_000}
+
+      {value, nil} when is_number(value) and value > 0 ->
+        milliseconds(value, 1, 86_400_000, :invalid_timeout)
+
+      {nil, value} when is_integer(value) and value in 1..86_400_000 ->
+        {:ok, value}
+
+      _ ->
+        {:error, :invalid_timeout}
+    end
+  end
+
+  defp milliseconds(value, minimum, maximum, error) do
+    if value <= maximum / 1_000 do
+      converted = round(value * 1_000)
+
+      if converted >= minimum and converted <= maximum,
+        do: {:ok, converted},
+        else: {:error, error}
+    else
+      {:error, error}
     end
   end
 

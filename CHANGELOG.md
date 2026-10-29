@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add `JobHandle.wait_result` and `HTTPJobHandle.wait_result` with one bounded
+  deadline, terminal errors, and cooperative local cancellation.
+- Run HTTP and Unix-socket workers through the same `tay worker` CLI, preserving
+  `tay-worker module:instance`. Add read-only `tay doctor` diagnostics, exact
+  socket-discovery origin, mTLS checks and a bounded HTTP readiness endpoint.
+- Compare candidate and previous-release throughput, enqueue/callback p95,
+  sampled RSS/BEAM memory and compaction time using the same public-API harness.
+  Qualification retains JSON/Markdown artifacts and supports an optional
+  regression gate with metadata/sample validation.
+
+### Fixed
+
+- Distinguish actual JSON null results, missing retained values, cancelled jobs
+  and unavailable Core reads. Expose typed missing-result/cancellation SDK errors.
+- Freeze the full job-options contract across Python and Elixir, rejecting
+  unsupported options, conflicting aliases, invalid limits and rounded-zero
+  timeouts before submission.
+- Fence completions to their original HTTP token or Unix connection. Retire
+  stale async work and wait for synchronous HTTP work before session replacement,
+  preserving local capacity across Tay restart.
+
 ## 1.8.0-rc2 — 2026-10-28
 
 ### Changed

@@ -37,7 +37,9 @@ from .responses import (
     _extract_identifier,
     _extract_job_durability,
     _server_error_from_payload,
+    extract_result,
 )
+from .results import wait_result
 from .socket_path import resolve_socket_path
 from .task import Durability, Task, TaskConfig, register_task
 from .validation import identifier, positive_finite
@@ -76,10 +78,13 @@ class JobHandle:
         """Return bounded result data, or raise a remote failure when supplied."""
 
         reply = await self._tay._request("result", {"job_id": self.id})
-        error = reply.get("error")
-        if error:
-            raise _server_error_from_payload(error)
-        return reply.get("result")
+        return extract_result(reply)
+
+    async def wait_result(
+        self, *, timeout: float = 30.0, poll_interval: float = 0.1
+    ) -> Any:
+        """Wait up to timeout seconds; propagate terminal errors without resubmission."""
+        return await wait_result(self, timeout=timeout, poll_interval=poll_interval)
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,7 @@ class Tay:
         self._event_request_ids: set[str] = set()
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
+        self._execution_connections: dict[str, asyncio.StreamWriter | None] = {}
         self._last_connection_error: BaseException | None = None
         Tay._instances.add(self)
 
@@ -366,6 +372,7 @@ class Tay:
             execution.cancel()
         self._executions.clear()
         self._execution_is_sync.clear()
+        self._execution_connections.clear()
         self._event_request_ids.clear()
         await self._close_writer(writer)
         self._reader = None
@@ -435,6 +442,11 @@ class Tay:
         if writer is None:
             return
         reader_task = self._reader_task
+        for key, connection in tuple(self._execution_connections.items()):
+            if connection is writer:
+                cancel_async_execution(
+                    self._executions.get(key), self._execution_is_sync.get(key, False)
+                )
         if self._writer is writer:
             self._writer = None
             self._reader = None
@@ -536,8 +548,13 @@ class Tay:
             if not future.done():
                 future.set_exception(error)
 
-    async def _send_envelope(self, envelope: Mapping[str, Any]) -> None:
-        writer = self._writer
+    async def _send_envelope(
+        self,
+        envelope: Mapping[str, Any],
+        *,
+        connection: asyncio.StreamWriter | None = None,
+    ) -> None:
+        writer = self._writer if connection is None else connection
         if writer is None or writer.is_closing():
             raise ConnectionLost("Tay socket is not connected")
         frame = encode_frame(envelope, max_frame_bytes=self.max_frame_bytes)
@@ -553,7 +570,13 @@ class Tay:
                 self._connection_lost.set()
                 raise ConnectionLost("failed to write to Tay") from exc
 
-    async def _send_event(self, message_type: str, fields: Mapping[str, Any]) -> None:
+    async def _send_event(
+        self,
+        message_type: str,
+        fields: Mapping[str, Any],
+        *,
+        connection: asyncio.StreamWriter | None = None,
+    ) -> None:
         request_id = uuid.uuid4().hex
         envelope = {
             "version": PROTOCOL_VERSION,
@@ -563,7 +586,7 @@ class Tay:
         }
         self._event_request_ids.add(request_id)
         try:
-            await self._send_envelope(envelope)
+            await self._send_envelope(envelope, connection=connection)
         except Exception:
             self._event_request_ids.discard(request_id)
             raise
@@ -588,23 +611,21 @@ class Tay:
             self._pending[request_id] = future
         try:
             await self._send_envelope(envelope)
-        except Exception:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(future), timeout=self.request_timeout
+                )
+            except TimeoutError as exc:
+                raise ConnectionLost(
+                    f"Tay did not reply to {message_type!r} within {self.request_timeout:g}s"
+                ) from exc
+        finally:
             async with self._pending_lock:
                 self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
-            raise
-        try:
-            return await asyncio.wait_for(
-                asyncio.shield(future), timeout=self.request_timeout
-            )
-        except TimeoutError as exc:
-            raise ConnectionLost(
-                f"Tay did not reply to {message_type!r} within {self.request_timeout:g}s"
-            ) from exc
-        finally:
-            async with self._pending_lock:
-                self._pending.pop(request_id, None)
+            elif not future.cancelled():
+                future.exception()
 
     async def _request(
         self, message_type: str, fields: Mapping[str, Any]
@@ -920,11 +941,13 @@ class Tay:
                     task,
                     dict(arguments),
                     synchronous,
+                    connection=self._writer,
                 ),
                 name=f"tay-execution-{execution_id}",
             )
             self._executions[execution_id] = execution
             self._execution_is_sync[execution_id] = synchronous
+            self._execution_connections[execution_id] = self._writer
 
             def finished(done: asyncio.Task[None]) -> None:
                 self._execution_finished(execution_id)
@@ -941,6 +964,7 @@ class Tay:
     def _execution_finished(self, execution_id: str) -> None:
         self._executions.pop(execution_id, None)
         self._execution_is_sync.pop(execution_id, None)
+        self._execution_connections.pop(execution_id, None)
 
     async def _cancel_execution(self, message: Mapping[str, Any]) -> None:
         execution_id = message.get("execution_id")
@@ -962,8 +986,25 @@ class Tay:
         task: Task,
         arguments: Mapping[str, Any],
         synchronous: bool,
+        *,
+        connection: asyncio.StreamWriter | None = None,
     ) -> None:
-        await self._send_event(
+        async def send_event(kind: str, fields: Mapping[str, Any]) -> None:
+            if connection is not None and self._writer is not connection:
+                return
+            if connection is None:
+                await self._send_event(kind, fields)
+            else:
+                await self._send_event(kind, fields, connection=connection)
+
+        def awaitable_started() -> None:
+            self._execution_is_sync[execution_id] = False
+            if connection is not None and self._writer is not connection:
+                raise asyncio.CancelledError
+
+        if connection is not None and self._writer is not connection:
+            return
+        await send_event(
             "started",
             {
                 "reservation_id": reservation_id,
@@ -971,19 +1012,19 @@ class Tay:
                 "job_id": job_id,
             },
         )
+        if connection is not None and self._writer is not connection:
+            return
         try:
             result = await run_task(
                 task,
                 arguments,
                 synchronous=synchronous,
                 max_result_bytes=self.max_result_bytes,
-                on_awaitable=lambda: self._execution_is_sync.update(
-                    {execution_id: False}
-                ),
+                on_awaitable=awaitable_started,
             )
         except asyncio.CancelledError:
             with contextlib.suppress(ConnectionLost, OSError):
-                await self._send_event(
+                await send_event(
                     "failed",
                     {
                         "reservation_id": reservation_id,
@@ -999,7 +1040,7 @@ class Tay:
             raise
         except Exception as exc:  # noqa: BLE001 - user task exceptions must become FAILED
             with contextlib.suppress(ConnectionLost, OSError):
-                await self._send_event(
+                await send_event(
                     "failed",
                     {
                         "reservation_id": reservation_id,
@@ -1009,7 +1050,7 @@ class Tay:
                     },
                 )
         else:
-            await self._send_event(
+            await send_event(
                 "succeeded",
                 {
                     "reservation_id": reservation_id,

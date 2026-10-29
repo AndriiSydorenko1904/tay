@@ -202,3 +202,18 @@ The CI container smoke test runs Tay and the Python worker without
 Tay container while keeping the worker running, checks a recovered result, and
 executes a new job through the reconnected worker. The HTTP-only smoke test
 sets only `TAY_HTTP_PORT` and verifies that no Unix socket is created.
+
+
+## Read-only readiness and client diagnostics
+
+`GET /health` returns a bounded `{ "type": "health", "state": "ready" }`
+response (or `compacting` during the accepted online preparation/switch phases).
+An unavailable/non-ready Engine returns HTTP 503. The route uses the listener's
+existing loopback/mTLS policy and contains no jobs or private Engine state.
+Use `tay doctor --http-url ORIGIN --json` or `tay doctor --socket-path PATH`
+from the Python SDK to diagnose the configured listener without creating jobs.
+
+The included `examples/standalone/worker.py` selects `TayHTTPWorker` when
+`TAY_HTTP_URL` is set, and a socket worker otherwise. Both use the same image
+entry point and task declarations; the container smoke test exercises HTTP CLI
+execution, result waiting, diagnostics and clean SIGTERM shutdown.

@@ -42,6 +42,8 @@ defmodule Tay.HTTP.APITest do
              end
            end)
 
+    assert {200, %{"type" => "health", "state" => "ready"}} = request(:get, base <> "/health")
+
     assert {201, %{"worker_token" => token}} =
              request(:post, base <> "/workers", %{
                runtime_id: "remote-test",

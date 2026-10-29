@@ -95,6 +95,25 @@ one-time delay/run-at, retries, timeout, queue, durability (`persistent` or
 lost after enqueue, the result is unknown: retry only with the same ID and
 definition, never with a fresh submission ID.
 
+A successful `result` always contains a `result` field; JSON `null` is a valid
+stored value. `result_missing` means a completed job has no retained result
+(for example, a trusted local worker whose return value was not stored).
+`task_cancelled` and `task_failed` are terminal errors; `result_not_ready`
+means the job is still pending. Core read failures return `unavailable`, never
+an invented successful null. HTTP maps these to 410, 409, 409, 409 and 503,
+respectively; `not_found` remains 404.
+
+Job option names are `id`, `submission_id`, `delay`, `delay_ms`, `run_at`,
+`retries`, `timeout`, `timeout_ms`, `backoff`, `queue`, and `durability`.
+`priority` is unsupported. Delay/timeout use seconds, their `_ms` aliases use
+integer milliseconds, and `run_at` is an absolute Unix millisecond timestamp.
+Positive halfway milliseconds round away from zero; a rounded-zero timeout is
+invalid. Timeout is at most 86,400,000 ms, retries are 0..65,534, and timestamps
+fit Event-v2's nonnegative signed-64-bit range. Relative schedules are also
+validated against the server clock when the job is constructed. Do not combine
+`id`/`submission_id`, delay units, timeout units, or delay with `run_at`.
+The shared catalog is `clients/python/tests/fixtures/job_options_v1.json`.
+
 For persistent jobs, completion state and a size-bounded successful JSON return
 value are durable. The value survives restart and is retained with its completed
 job; compaction removes it when that job expires under terminal retention.

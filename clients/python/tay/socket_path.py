@@ -24,6 +24,24 @@ def resolve_socket_path(
     usable_directory: Callable[[str], bool] | None = None,
     directory_exists: Callable[[str], bool] | None = None,
 ) -> str:
+    """Return the selected local socket path without creating files."""
+    return discover_socket_path(
+        explicit,
+        environ=environ,
+        uid=uid,
+        usable_directory=usable_directory,
+        directory_exists=directory_exists,
+    )[0]
+
+
+def discover_socket_path(
+    explicit: str | os.PathLike[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    uid: int | None = None,
+    usable_directory: Callable[[str], bool] | None = None,
+    directory_exists: Callable[[str], bool] | None = None,
+) -> tuple[str, str]:
     """Resolve the Protocol v1 local socket path without creating files.
 
     Precedence is explicit argument, ``TAY_SOCKET_PATH``, existing shared
@@ -39,15 +57,15 @@ def resolve_socket_path(
     usable = _usable_directory if usable_directory is None else usable_directory
 
     if explicit is not None:
-        return _validated_path(os.fspath(explicit))
+        return _validated_path(os.fspath(explicit)), "argument"
 
     configured = environment.get("TAY_SOCKET_PATH")
     if configured:
-        return _validated_path(configured)
+        return _validated_path(configured), "TAY_SOCKET_PATH"
 
     exists = os.path.isdir if directory_exists is None else directory_exists
     if exists("/run/tay"):
-        return "/run/tay/tay.sock"
+        return "/run/tay/tay.sock", "shared /run/tay"
 
     user_id = os.getuid() if uid is None else uid
     if type(user_id) is not int or user_id < 0:
@@ -59,16 +77,18 @@ def resolve_socket_path(
     if xdg and usable(xdg):
         candidate = _candidate(xdg, "tay", "tay.sock")
         if _valid_path(candidate):
-            return candidate
+            return candidate, "XDG_RUNTIME_DIR"
 
     tmpdir = environment.get("TMPDIR")
     if tmpdir and usable(tmpdir):
         candidate = _candidate(tmpdir, f"tay-{user_id}", "tay.sock")
         if _valid_path(candidate):
-            return candidate
+            return candidate, "TMPDIR"
 
     if usable("/tmp"):
-        return _validated_path(_candidate("/tmp", f"tay-{user_id}", "tay.sock"))
+        return _validated_path(
+            _candidate("/tmp", f"tay-{user_id}", "tay.sock")
+        ), "fallback /tmp"
     raise ValidationError(
         "no usable Tay socket directory: check XDG_RUNTIME_DIR, TMPDIR and /tmp"
     )

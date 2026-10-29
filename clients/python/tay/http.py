@@ -51,7 +51,9 @@ from .responses import (
     _extract_identifier,
     _extract_job_durability,
     _server_error_from_payload,
+    extract_result,
 )
+from .results import wait_result
 from .task import Durability, Task, TaskConfig, register_task
 from .validation import identifier, positive_finite
 
@@ -95,9 +97,13 @@ class HTTPJobHandle:
 
     async def result(self) -> Any:
         reply = await self._tay._request("GET", f"/jobs/{self.id}/result")
-        if reply.get("error"):
-            raise _server_error_from_payload(reply["error"])
-        return reply.get("result")
+        return extract_result(reply)
+
+    async def wait_result(
+        self, *, timeout: float = 30.0, poll_interval: float = 0.1
+    ) -> Any:
+        """Wait up to timeout seconds; propagate terminal errors without resubmission."""
+        return await wait_result(self, timeout=timeout, poll_interval=poll_interval)
 
 
 class TayHTTP:
@@ -291,6 +297,7 @@ class TayHTTPWorker(TayHTTP):
         self._execution_is_sync: dict[str, bool] = {}
         self._serve_task: asyncio.Task[Any] | None = None
         self._close_lock = asyncio.Lock()
+        self._registration_lock = asyncio.Lock()
         self._closing = False
 
     @property
@@ -318,11 +325,21 @@ class TayHTTPWorker(TayHTTP):
         return register(function) if function is not None else register
 
     async def register(self) -> None:
-        """Register this worker's task capabilities and obtain a session token.
+        """Register a session after all work from a retired session has settled."""
+        async with self._registration_lock:
+            if self._token is None:
+                previous = tuple(self._executions.values())
+                for key, execution in tuple(self._executions.items()):
+                    cancel_async_execution(
+                        execution, self._execution_is_sync.get(key, False)
+                    )
+                if previous:
+                    await asyncio.gather(*previous, return_exceptions=True)
+            await self._register_session()
 
-        Registration alone does not claim or execute jobs.  Use
-        :meth:`serve_forever` to run the worker loop.
-        """
+    async def _register_session(self) -> None:
+        if self._closing:
+            raise ConnectionLost("HTTP worker is closed")
         if self._token is not None:
             return
         if not self._tasks:
@@ -453,7 +470,9 @@ class TayHTTPWorker(TayHTTP):
                         declared is not None
                         and not inspect.iscoroutinefunction(declared.function)
                     )
-                    task = asyncio.create_task(self._execute(message))
+                    task = asyncio.create_task(
+                        self._execute(message, session_token=self._token)
+                    )
                     self._executions[execution] = task
 
                     task.add_done_callback(partial(self._execution_finished, execution))
@@ -467,6 +486,11 @@ class TayHTTPWorker(TayHTTP):
                 )
             elif message:
                 raise ProtocolError(f"unexpected worker event {kind!r}")
+
+    def _awaitable_started(self, key: str, session_token: str | None) -> None:
+        self._execution_is_sync[key] = False
+        if session_token != self._token or self._closing:
+            raise asyncio.CancelledError
 
     def _execution_finished(self, key: str, task: asyncio.Task[None]) -> None:
         self._executions.pop(key, None)
@@ -484,15 +508,28 @@ class TayHTTPWorker(TayHTTP):
             )
 
     async def _worker_request(
-        self, method: str, path: str, body: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        session_token: str | None = None,
     ) -> dict[str, Any]:
-        if self._token is None:
+        if session_token is not None and session_token != self._token:
+            raise ConnectionLost("execution belongs to a retired worker session")
+        token = self._token if session_token is None else session_token
+        if token is None:
             raise ConnectionLost("worker is not registered")
         return await self._request(
-            method, path, body, headers={"Authorization": f"Bearer {self._token}"}
+            method, path, body, headers={"Authorization": f"Bearer {token}"}
         )
 
-    async def _execute(self, message: dict[str, Any]) -> None:
+    async def _execute(
+        self, message: dict[str, Any], *, session_token: str | None = None
+    ) -> None:
+        session_token = self._token if session_token is None else session_token
+        if session_token != self._token:
+            return
         context = {
             "reservation_id": message["reservation_id"],
             "execution_id": message["execution_id"],
@@ -510,17 +547,22 @@ class TayHTTPWorker(TayHTTP):
                     "outcome": "failure",
                     "error": {"type": "TaskNotRegistered"},
                 },
+                session_token=session_token,
             )
             return
-        await self._worker_request("POST", "/workers/started", context)
+        await self._worker_request(
+            "POST", "/workers/started", context, session_token=session_token
+        )
+        if session_token != self._token or self._closing:
+            return
         try:
             result = await run_task(
                 task,
                 message["args"],
                 synchronous=not inspect.iscoroutinefunction(task.function),
                 max_result_bytes=_MAX_TASK_RESULT_BYTES,
-                on_awaitable=lambda: self._execution_is_sync.update(
-                    {message["execution_id"]: False}
+                on_awaitable=partial(
+                    self._awaitable_started, message["execution_id"], session_token
                 ),
                 size_error=lambda _size, limit: ValidationError(
                     f"task result exceeds {limit} bytes"
@@ -545,7 +587,10 @@ class TayHTTPWorker(TayHTTP):
                     max_message_characters=_MAX_ERROR_MESSAGE_CHARACTERS,
                 ),
             }
-        await self._worker_request("POST", "/workers/complete", completion)
+        if session_token == self._token and not self._closing:
+            await self._worker_request(
+                "POST", "/workers/complete", completion, session_token=session_token
+            )
 
 
 def _load_pkcs12(

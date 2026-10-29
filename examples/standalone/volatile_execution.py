@@ -6,17 +6,14 @@ from tay import Tay, TayHTTP, TayHTTPWorker
 
 
 async def completed(job) -> None:
-    for _ in range(300):
-        if await job.status() == "completed":
-            if await job.result() is not None:
-                raise RuntimeError("noop returned a non-null result")
-            return
-        await asyncio.sleep(0.01)
-    raise RuntimeError("volatile job did not complete")
+    if await job.wait_result(timeout=10, poll_interval=0.01) is not None:
+        raise RuntimeError("noop returned a non-null result")
 
 
 async def socket_execution(socket_path: str) -> None:
-    client = Tay(mode="embedded", socket_path=socket_path, client_id="docker-volatile-socket")
+    client = Tay(
+        mode="embedded", socket_path=socket_path, client_id="docker-volatile-socket"
+    )
 
     @client.task(name="loadtest.noop.v1", durability="volatile")
     def noop():

@@ -40,7 +40,7 @@ class JobOptionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_payloads_are_identical_and_do_not_mutate_caller_mappings(self):
         payloads = []
         for client in self.producers():
-            options = MappingProxyType({"queue": "default", "priority": 0})
+            options = MappingProxyType({"queue": "default", "timeout_ms": 1000})
             args = MappingProxyType({"n": 1})
             await client.enqueue(
                 "test.task",
@@ -51,7 +51,7 @@ class JobOptionsTests(unittest.IsolatedAsyncioTestCase):
                 durability="volatile",
             )
             payloads.append(client._request.await_args.args[-1])
-            self.assertEqual(dict(options), {"queue": "default", "priority": 0})
+            self.assertEqual(dict(options), {"queue": "default", "timeout_ms": 1000})
             self.assertEqual(dict(args), {"n": 1})
         self.assertEqual(payloads[0], payloads[1])
         self.assertEqual(payloads[0]["options"]["durability"], "volatile")

@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, cast
 
-from .errors import ProtocolError, RemoteTaskError, ServerError
+from .errors import (
+    JobCancelled,
+    ProtocolError,
+    RemoteTaskError,
+    ResultMissing,
+    ServerError,
+)
 from .job_options import DURABILITY_MODES as _DURABILITY_MODES
 from .task import Durability
 
@@ -20,6 +26,10 @@ def _server_error_from_payload(payload: Any) -> ServerError:
                 if code
                 else "Tay rejected the request"
             )
+        if code == "task_cancelled":
+            return JobCancelled(str(message), code=code, details=dict(payload))
+        if code == "result_missing":
+            return ResultMissing(str(message), code=code, details=dict(payload))
         if payload.get("remote_task") or (
             isinstance(code, str) and code in {"task_failed", "TaskFailed"}
         ):
@@ -50,3 +60,11 @@ def _extract_job_durability(reply: Mapping[str, Any]) -> Durability | None:
         if isinstance(durability, str) and durability in _DURABILITY_MODES:
             return cast(Durability, durability)
     return None
+
+
+def extract_result(reply: Mapping[str, Any]) -> Any:
+    if reply.get("error"):
+        raise _server_error_from_payload(reply["error"])
+    if "result" not in reply:
+        raise ProtocolError("Tay result reply did not include a result field")
+    return reply["result"]

@@ -10,7 +10,11 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from .errors import ModeError, TaskRegistrationError, ValidationError
-from .job_options import merge_enqueue_options, validate_execution_options
+from .job_options import (
+    ENQUEUE_OPTION_NAMES,
+    merge_enqueue_options,
+    validate_execution_options,
+)
 from .protocol import normalize_json, validate_task_name
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -31,19 +35,7 @@ class _TaskOwner(Protocol):
     ) -> JobHandle | HTTPJobHandle: ...
 
 
-_ENQUEUE_OPTION_NAMES = frozenset(
-    {
-        "delay",
-        "run_at",
-        "retries",
-        "backoff",
-        "submission_id",
-        "priority",
-        "queue",
-        "timeout",
-        "durability",
-    }
-)
+_ENQUEUE_OPTION_NAMES = ENQUEUE_OPTION_NAMES
 
 
 @dataclass(frozen=True)

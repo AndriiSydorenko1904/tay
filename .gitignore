@@ -17,3 +17,6 @@ clients/python/**/__pycache__/
 /clients/python/uv.lock
 /result.txt
 deploy-helper.sh
+
+/bench/__pycache__/
+/performance/

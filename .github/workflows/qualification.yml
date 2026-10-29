@@ -3,12 +3,30 @@ name: Tay qualification (not publication)
 # Expensive qualification is intentional and explicit, not repeated on every edit.
 on:
   workflow_dispatch:
+    inputs:
+      performance_only:
+        description: Run only release performance comparison
+        type: boolean
+        default: false
+      baseline_ref:
+        description: Previous release to compare using the same benchmark script
+        type: string
+        default: v1.7.0
+      performance_jobs:
+        description: Synthetic jobs per benchmark trial (1..100000)
+        type: string
+        default: "1000"
+      fail_on_regression:
+        description: Fail when a median metric degrades by more than 20 percent
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   qualify:
+    if: ${{ !inputs.performance_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,3 +110,101 @@ jobs:
 
 # These disposable hosted-runner tests are software evidence, not hardware
 # power-loss certification or release approval. No publish credentials/actions.
+
+
+  performance:
+    name: Release comparison (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      ERL_FLAGS: "+S 4:4 +A 4"
+      BASELINE_REF: ${{ inputs.baseline_ref }}
+      PERFORMANCE_JOBS: ${{ inputs.performance_jobs }}
+      FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: "29.1.2"
+          elixir-version: "1.20.4"
+          version-type: strict
+          install-rebar: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+      - name: Prepare isolated baseline and report directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_commit=$(git rev-parse --verify --end-of-options "$BASELINE_REF^{commit}")
+          git worktree add --detach "$RUNNER_TEMP/tay-baseline" "$baseline_commit"
+          mkdir "$GITHUB_WORKSPACE/performance"
+          root=$(mktemp -d "$RUNNER_TEMP/tay-performance.XXXXXX")
+          echo "PERFORMANCE_ROOT=$root" >> "$GITHUB_ENV"
+      - name: Create disposable local Btrfs for strict Linux measurements
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes btrfs-progs
+          truncate -s 8G "$PERFORMANCE_ROOT/data.img"
+          mkfs.btrfs "$PERFORMANCE_ROOT/data.img"
+          mkdir "$PERFORMANCE_ROOT/data"
+          sudo mount -o loop "$PERFORMANCE_ROOT/data.img" "$PERFORMANCE_ROOT/data"
+          sudo chown "$(id -u):$(id -g)" "$PERFORMANCE_ROOT/data"
+          test "$(stat -f -c %T "$PERFORMANCE_ROOT/data")" = btrfs
+      - name: Measure baseline and candidate with identical harness and workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode=write
+          flags=()
+          root="$PERFORMANCE_ROOT"
+          if [ "$RUNNER_OS" = Linux ]; then
+            mode=sync
+            flags+=(--validated-filesystem)
+            root="$PERFORMANCE_ROOT/data"
+          fi
+          for cohort in baseline candidate; do
+            checkout="$GITHUB_WORKSPACE"
+            if [ "$cohort" = baseline ]; then checkout="$RUNNER_TEMP/tay-baseline"; fi
+            (
+              cd "$checkout"
+              mix deps.get --check-locked
+              mix compile --warnings-as-errors
+              mix run --no-start --no-compile "$GITHUB_WORKSPACE/bench/release.exs" \
+                --path "$root/$cohort" --output "$GITHUB_WORKSPACE/performance/$cohort.json" \
+                --mode "$mode" "${flags[@]}" --jobs "$PERFORMANCE_JOBS" --clients 8 --trials 3
+            )
+          done
+      - name: Compare medians and optional regression threshold
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$FAIL_ON_REGRESSION" = true ]; then flags+=(--fail-on-regression); fi
+          python bench/compare.py performance/baseline.json performance/candidate.json \
+            --output performance/comparison.json --markdown performance/comparison.md "${flags[@]}"
+      - name: Add comparison to workflow summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f performance/comparison.md ]; then cat performance/comparison.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Preserve benchmark reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-performance-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            performance/*.json
+            performance/*.md
+          if-no-files-found: warn
+          retention-days: 30
