@@ -238,6 +238,13 @@ metric's **relative median absolute deviation exceeds 10%**: MAD is the median
 absolute distance from the cohort median, divided by that median. This exposes
 unstable runs even when their medians happen to match. No trials are discarded.
 
+Functional/sanitizer qualification retains the macOS arm64 runner. Performance
+uses the explicit `macos-15-intel` profile and Linux x86_64; reports identify the
+actual architecture. Local macOS arm64 comparisons use the same protocol.
+Earlier hosted arm64 measurements showed excessive baseline and candidate
+variability even when serialized; those are inconclusive, rather than evidence
+of a code regression or a capacity guarantee for that profile.
+
 The qualification workflow runs **two independent replicas per platform**, each
 with the same eight-trial ABBA protocol. Both replicas must pass; failed/noisy
 runs are retained for investigation rather than rerun until green. Performance

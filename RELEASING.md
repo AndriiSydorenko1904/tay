@@ -32,6 +32,8 @@ public.
    each platform must pass eight warmed fresh-VM trials per checkout, the 20%
    regression limit and the 10% relative-MAD variability limit. Investigate
    noisy/regressed measurements before tagging.
+   Functional macOS qualification covers arm64; the explicit macOS performance
+   profile is `macos-15-intel`. Retain architecture metadata with each report.
 7. Create `v<mix-version>`, push the tag, and verify that both the repository and
    tag are accessible without authentication.
 
