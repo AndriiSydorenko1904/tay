@@ -22,6 +22,7 @@ defmodule Tay.ReleaseBench do
           clients: :integer,
           args_bytes: :integer,
           trials: :integer,
+          warmup_jobs: :integer,
           mode: :string,
           validated_filesystem: :boolean
         ]
@@ -37,16 +38,17 @@ defmodule Tay.ReleaseBench do
     unless Path.type(output) == :absolute and not File.exists?(output),
       do: raise("report requires a new absolute path")
 
-    jobs = Keyword.get(opts, :jobs, 1000)
+    jobs = Keyword.get(opts, :jobs, 10_000)
     clients = Keyword.get(opts, :clients, 8)
     args_bytes = Keyword.get(opts, :args_bytes, 256)
     trials = Keyword.get(opts, :trials, 3)
+    warmup_jobs = Keyword.get(opts, :warmup_jobs, 250)
 
     unless jobs in 1..100_000 and clients in 1..32 and args_bytes in 0..262_000 and
-             trials in 1..10,
+             trials in 1..10 and warmup_jobs in 1..10_000,
            do:
              raise(
-               "benchmark bounds: jobs 1..100000, clients 1..32, args-bytes 0..262000, trials 1..10"
+               "benchmark bounds: jobs 1..100000, clients 1..32, args-bytes 0..262000, trials 1..10, warmup-jobs 1..10000"
              )
 
     mode =
@@ -70,6 +72,11 @@ defmodule Tay.ReleaseBench do
     {:ok, completed} = Agent.start_link(fn -> %{} end, name: Tay.ReleaseBench.Completed)
 
     try do
+      # Resolve modules, native paths and runtime caches before measuring, while
+      # keeping each cohort in a fresh VM and each trial on an empty store.
+      trial(Path.join(path, "warmup"), mode, validated, warmup_jobs, clients, args_bytes)
+      :erlang.garbage_collect()
+
       samples =
         for trial <- 1..trials do
           trial(Path.join(path, "store-#{trial}"), mode, validated, jobs, clients, args_bytes)
@@ -79,7 +86,7 @@ defmodule Tay.ReleaseBench do
 
       report = %{
         report_schema: 1,
-        benchmark: "tay-release-v1",
+        benchmark: "tay-release-v2",
         measured_at_utc: DateTime.to_iso8601(DateTime.utc_now()),
         harness_sha256:
           Base.encode16(:crypto.hash(:sha256, File.read!(__ENV__.file)), case: :lower),
@@ -91,6 +98,9 @@ defmodule Tay.ReleaseBench do
           clients: clients,
           args_bytes: args_bytes,
           trials: trials,
+          warmup_jobs: warmup_jobs,
+          max_inflight: clients,
+          rss_sample_interval_ms: 250,
           durability: mode
         },
         environment: %{
@@ -99,11 +109,12 @@ defmodule Tay.ReleaseBench do
           elixir: System.version(),
           otp: System.otp_release(),
           schedulers: :erlang.system_info(:schedulers_online),
+          logical_processors: :erlang.system_info(:logical_processors_available),
           filesystem: filesystem(path)
         },
         measurements: samples,
         notes:
-          "Synthetic public-API workload; throughput includes durable completion checks. Callback latency excludes durable finish. RSS sampled every 50ms, not a proven peak. Stores preserved. No production capacity or power-loss claim."
+          "Bounded public-API workload; each client waits for durable completion before submitting its next job. Warmup is excluded. Callback latency excludes durable finish. RSS sampled every 250ms, not a proven peak. Stores preserved. No production capacity or power-loss claim."
       }
 
       File.write!(output, Jason.encode!(report, pretty: true) <> "\n", [:exclusive])
@@ -149,16 +160,15 @@ defmodule Tay.ReleaseBench do
               })
 
             {:ok, inserted} = Tay.insert(job, name: @name)
-            {inserted.id, System.monotonic_time(:microsecond) - before}
+            ack_us = System.monotonic_time(:microsecond) - before
+            await_completed(inserted.id, System.monotonic_time(:millisecond) + @deadline_ms)
+            {inserted.id, ack_us}
           end,
           ordered: false,
           max_concurrency: clients,
           timeout: @deadline_ms
         )
         |> Enum.map(fn {:ok, value} -> value end)
-
-      for {id, _} <- records,
-          do: await_completed(id, System.monotonic_time(:millisecond) + @deadline_ms)
 
       elapsed = max(System.monotonic_time(:microsecond) - started, 1)
       callbacks = Agent.get(Tay.ReleaseBench.Completed, &Map.values/1)
@@ -233,7 +243,7 @@ defmodule Tay.ReleaseBench do
       {:finish, caller, ref} -> send(caller, {ref, peak})
       :stop -> :ok
     after
-      50 -> sample(peak)
+      250 -> sample(peak)
     end
   end
 

@@ -20,24 +20,9 @@ on:
       - mix.exs
       - mix.lock
   push:
+    # Release preflight requires this workflow for the exact release SHA,
+    # including commits that only adjust qualification/tests/documentation.
     branches: [main]
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - .github/workflows/standalone.yml
-      - config/**
-      - c_src/**
-      - standalone/**
-      - examples/standalone/**
-      - clients/python/**
-      - lib/**
-      - mix_helpers/**
-      - compose.yml
-      - README.md
-      - docs/dashboard-container.md
-      - docs/standalone.md
-      - mix.exs
-      - mix.lock
 
 permissions:
   contents: read

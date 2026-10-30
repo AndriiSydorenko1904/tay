@@ -195,75 +195,71 @@ profiles explicit. See [compatibility and limits](../docs/compatibility.md).
 
 ## Comparable release artifacts
 
-`bench/release.exs` uses only public Tay APIs so the same script can measure a
-candidate checkout and a previous release such as `v1.7.0`. Use a dedicated VM
-and new disposable paths for each cohort:
+`bench/release.exs` uses only public Tay APIs, so the SAME absolute script can
+measure a candidate checkout and a previous release such as `v1.7.0`. Compile
+both checkouts in separate processes before using `bench/release_compare.py`:
 
 ```sh
-mix compile --warnings-as-errors
-mix run --no-start --no-compile bench/release.exs --mode write \
-  --path /private/tmp/tay-release-candidate-new --output /private/tmp/candidate-new.json \
-  --jobs 1000 --clients 8 --trials 3
-# Compile the baseline in a separate process too, then run the SAME absolute
-# script path with `mix run --no-start --no-compile` from that checkout,
-# selecting another new path and baseline-new.json.
-python3 bench/compare.py /private/tmp/baseline-new.json /private/tmp/candidate-new.json \
-  --output /private/tmp/comparison-new.json --markdown /private/tmp/comparison-new.md
-```
-
-Run only the comparison with:
-
-```sh
-gh workflow run qualification.yml -f performance_only=true \
-  -f baseline_ref=v1.7.0 -f performance_jobs=1000
-```
-
-The qualification workflow accepts `baseline_ref` and `performance_jobs` and
-compiles each checkout in a separate process, then runs four fresh-VM trials per
-checkout in balanced ABBA order on the same macOS/Linux runner. This excludes compiler residue from
-the measured runtime process. Linux uses a
-disposable local Btrfs volume and explicit `sync` mode; macOS is labelled `write`
-development evidence. JSON reports and a Markdown comparison are retained as
-30-day artifacts, and the comparison is included in the workflow summary.
-Artifacts contain benchmark metadata and measurements, not stores or user jobs.
-
-Reports include the measured revision/version, dirty-tree marker, harness hash,
-OS/toolchain/schedulers/filesystem, workload, completed-job throughput, enqueue
-ACK p95, submission-to-callback p95, sampled RSS/BEAM memory and compaction time.
-Throughput includes durable completion verification. Callback latency excludes
-durable finish; RSS sampled every 50ms is an observed peak, not an upper bound.
-There is no production capacity or power-loss claim.
-
-Comparison refuses different harness/configuration/environment metadata and
-incomplete trial cohorts. Missing/zero/invalid metric samples remain missing,
-never an improvement. Local comparisons are descriptive unless `--fail-on-regression` is supplied.
-The qualification workflow defaults `fail_on_regression=true` and fails on a
-regression beyond 20% or incomplete required metrics. Release candidates require
-the full workflow with this gate enabled for the exact candidate SHA. Hosted-runner noise,
-cache state and the absence of hardware certification still limit conclusions.
-
-## Balanced release qualification
-
-The qualification workflow compiles both checkouts first, then uses
-`bench/release_compare.py` to run ABBA twice (four measured trials per checkout).
-Each trial starts a fresh VM with the same absolute `bench/release.exs` path.
-Linux sync trials call `sync -f` on the disposable data filesystem before the
-measured process starts. Balanced order keeps sequential filesystem drift from
-being attributed entirely to one checkout. Every individual JSON report is
-retained alongside the aggregates. The comparison checks trial count, workload,
-environment, harness hash, orchestrator hash and trial order before applying the
-unchanged 20% regression threshold.
-
-```sh
-python3 bench/release_compare.py --baseline /absolute/compiled-baseline \
-  --candidate "$PWD" --harness "$PWD/bench/release.exs" \
-  --data-root /private/tmp/tay-balanced-new --output-dir /private/tmp/tay-reports-new \
-  --mode write --jobs 1000 --clients 8 --trials 4
+ERL_FLAGS="+S 2:2 +A 2" python3 bench/release_compare.py \
+  --baseline /absolute/compiled-baseline --candidate "$PWD" \
+  --harness "$PWD/bench/release.exs" --mode write \
+  --data-root /private/tmp/tay-balanced-new \
+  --output-dir /private/tmp/tay-reports-new \
+  --jobs 10000 --clients 8 --trials 8
 python3 bench/compare.py /private/tmp/tay-reports-new/baseline.json \
-  /private/tmp/tay-reports-new/candidate.json --fail-on-regression
+  /private/tmp/tay-reports-new/candidate.json \
+  --output /private/tmp/tay-reports-new/comparison.json \
+  --markdown /private/tmp/tay-reports-new/comparison.md --fail-on-regression
 ```
 
-Compile both checkouts separately before invoking this runner. Its data root
-must not exist; existing comparison outputs are refused. Optional `--build-root`
-and `--deps-root` select isolated, already-compiled cohort directories (each root
-contains `baseline` and `candidate` children). Source files are never rewritten.
+The runner uses ABBA four times: eight measured trials per checkout. Every trial
+starts a fresh VM, runs 250 warmup jobs on a separate store, then measures the
+requested job count on an empty store. Each of the eight concurrent clients
+waits for its job's durable completion before submitting another; callback p95
+therefore measures bounded concurrency rather than an accumulating backlog.
+This is the `tay-release-v2` workload. It is intentionally incompatible with
+historical `tay-release-v1` reports; compare both versions using the new script.
+
+Linux sync trials call `sync -f` on the disposable, validated local Btrfs volume
+before starting the VM. macOS uses `write` and remains development-filesystem
+evidence. The workflow uses two BEAM schedulers on both platforms, avoiding
+oversubscription of small runners. RSS is sampled every 250 ms to reduce
+observer fork overhead; sampled RSS is not an upper bound. Throughput includes
+completion polling, and callback latency excludes durable finish. These are
+synthetic comparisons, not production capacity or power-loss certification.
+
+Reports retain every trial, measured revision/version, dirty-tree marker,
+harness/orchestrator hashes, workload, VM/host CPU counts, filesystem and
+protocol. Comparison refuses mismatched metadata and incomplete cohorts.
+Missing, zero or invalid metrics remain missing. The unchanged regression gate
+rejects a median worsening by more than **20%**. It also refuses a cohort if any
+metric's **relative median absolute deviation exceeds 10%**: MAD is the median
+absolute distance from the cohort median, divided by that median. This exposes
+unstable runs even when their medians happen to match. No trials are discarded.
+
+The qualification workflow runs **two independent replicas per platform**, each
+with the same eight-trial ABBA protocol. Both replicas must pass; failed/noisy
+runs are retained for investigation rather than rerun until green. Full release
+qualification requires at least 10,000 measured jobs per trial. Smaller explicit
+workloads remain useful for development but cannot authorize publication.
+
+```sh
+# Measurements only; this cannot authorize publication.
+gh workflow run qualification.yml -f performance_only=true \
+  -f baseline_ref=v1.7.0 -f performance_jobs=10000
+# Full exact-commit release qualification.
+gh workflow run qualification.yml --ref main -f performance_only=false \
+  -f baseline_ref=v1.7.0 -f performance_jobs=10000 -f fail_on_regression=true
+```
+
+Reports and Markdown comparisons are retained as 30-day artifacts, with a unique
+artifact per platform/replica. Each comparison appears in the workflow summary.
+Artifacts contain measurements, not stores or user jobs. The final release gate
+requires full functional qualification and both performance replicas on each
+platform for the exact candidate SHA. API failures do not authorize publication.
+
+The data root must not exist, and existing comparison outputs are refused.
+Optional `--build-root` and `--deps-root` select isolated, already-compiled cohort
+directories, each containing `baseline` and `candidate` children. Sources are
+never rewritten. `bench/release.exs` also supports smaller direct smoke runs,
+including `--warmup-jobs`, while reporting their exact configuration.

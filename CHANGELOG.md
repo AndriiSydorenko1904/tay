@@ -38,9 +38,17 @@
   enforce a successful full qualification gate before container/PyPI publication.
   Balance baseline/candidate trials in ABBA order with fresh VMs and retain
   individual reports to separate filesystem drift from code regressions.
+- Bound the release benchmark to eight in-flight jobs, exclude a warmup store,
+  and qualify two independent replicas per platform with eight trials and
+  10,000 measured jobs each. Refuse noisy cohorts above 10% relative MAD in
+  addition to the unchanged 20% regression threshold.
 
 ### Fixed
 
+- Use an explicit CA-verifying Python TLS probe for HTTPS qualification on
+  macOS and Linux. Check trusted-client acceptance, missing/untrusted-client
+  rejection, server CA trust and hostname validation independently of curl's
+  platform TLS backend.
 - Share `max_state_bytes` between jobs, schedules, retained results and admitted
   operations. Reserve result and lifecycle headroom before accepting work; keep
   cancellation and settlement available at capacity and preserve recovery limits.

@@ -20,10 +20,15 @@ METRICS = {
 
 
 def compare(
-    baseline: dict[str, Any], candidate: dict[str, Any], threshold: float = 20.0
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    threshold: float = 20.0,
+    max_relative_mad: float = 10.0,
 ) -> dict[str, Any]:
     if not math.isfinite(threshold) or threshold < 0:
         raise ValueError("regression threshold must be finite and nonnegative")
+    if not math.isfinite(max_relative_mad) or max_relative_mad < 0:
+        raise ValueError("variability threshold must be finite and nonnegative")
     for key in [
         "report_schema",
         "benchmark",
@@ -36,15 +41,16 @@ def compare(
     ]:
         if baseline.get(key) != candidate.get(key):
             raise ValueError(f"incompatible reports: {key} differs")
-    if (
-        baseline.get("report_schema") != 1
-        or baseline.get("benchmark") != "tay-release-v1"
-    ):
+    if baseline.get("report_schema") != 1 or baseline.get("benchmark") not in {
+        "tay-release-v1",
+        "tay-release-v2",
+    }:
         raise ValueError("unsupported benchmark report")
     rows = []
     for name, direction in METRICS.items():
         medians = []
         counts = []
+        dispersions = []
         for report in [baseline, candidate]:
             samples = report.get("measurements", [])
             if len(samples) != report["workload"]["trials"] or not samples:
@@ -58,8 +64,15 @@ def compare(
             ]
             if len(valid) != len(values):
                 medians.append(None)
+                dispersions.append(None)
             else:
-                medians.append(statistics.median(valid))
+                median = statistics.median(valid)
+                medians.append(median)
+                dispersions.append(
+                    100
+                    * statistics.median(abs(value - median) for value in valid)
+                    / median
+                )
             counts.append(len(valid))
         before, after = medians
         regression = (
@@ -81,6 +94,12 @@ def compare(
                 "direction": direction,
                 "regression_percent": regression,
                 "regressed": regression is not None and regression > threshold,
+                "baseline_relative_mad_percent": dispersions[0],
+                "candidate_relative_mad_percent": dispersions[1],
+                "noisy": any(
+                    value is not None and value > max_relative_mad
+                    for value in dispersions
+                ),
             }
         )
     return {
@@ -90,10 +109,12 @@ def compare(
         "baseline_version": baseline["version"],
         "candidate_version": candidate["version"],
         "max_regression_percent": threshold,
+        "max_relative_mad_percent": max_relative_mad,
         "workload": candidate["workload"],
         "environment": candidate["environment"],
         "metrics": rows,
         "regressed": any(row["regressed"] for row in rows),
+        "noisy": any(row["noisy"] for row in rows),
         "complete": all(
             row["baseline"] is not None and row["candidate"] is not None for row in rows
         ),
@@ -107,8 +128,8 @@ def markdown(report: dict[str, Any]) -> str:
         "",
         f"Baseline `{report['baseline_revision']}` → candidate `{report['candidate_revision']}`",
         "",
-        "| Metric | Baseline median | Candidate median | Regression | Samples |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Metric | Baseline median | Candidate median | Regression | Relative MAD baseline/candidate | Samples |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in report["metrics"]:
 
@@ -122,12 +143,19 @@ def markdown(report: dict[str, Any]) -> str:
         )
         if row["regressed"]:
             change += " **threshold exceeded**"
+        variability = (
+            f"{number(row['baseline_relative_mad_percent'])}% / "
+            f"{number(row['candidate_relative_mad_percent'])}%"
+        )
+        if row["noisy"]:
+            variability += " **too noisy**"
         lines.append(
-            f"| {row['metric']} | {number(row['baseline'])} | {number(row['candidate'])} | {change} | {row['baseline_samples']}/{row['candidate_samples']} |"
+            f"| {row['metric']} | {number(row['baseline'])} | {number(row['candidate'])} | {change} | {variability} | {row['baseline_samples']}/{row['candidate_samples']} |"
         )
     lines += [
         "",
         "Positive regression means worse; negative means improved.",
+        f"Relative MAD is median absolute deviation divided by the median; qualification requires each cohort to stay within {report['max_relative_mad_percent']:g}% for every metric. No trials are discarded.",
         "",
         report["notes"],
         "",
@@ -142,6 +170,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--markdown", type=Path, required=True)
     parser.add_argument("--max-regression-percent", type=float, default=20.0)
+    parser.add_argument("--max-relative-mad-percent", type=float, default=10.0)
     parser.add_argument("--fail-on-regression", action="store_true")
     args = parser.parse_args()
     try:
@@ -149,6 +178,7 @@ def main() -> int:
             json.loads(args.baseline.read_text()),
             json.loads(args.candidate.read_text()),
             args.max_regression_percent,
+            args.max_relative_mad_percent,
         )
         with args.output.open("x") as target:
             json.dump(report, target, indent=2, allow_nan=False)
@@ -158,7 +188,8 @@ def main() -> int:
     except (ValueError, KeyError, OSError, TypeError) as exc:
         parser.error(str(exc))
     return int(
-        args.fail_on_regression and (report["regressed"] or not report["complete"])
+        args.fail_on_regression
+        and (report["regressed"] or report["noisy"] or not report["complete"])
     )
 
 

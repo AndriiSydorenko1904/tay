@@ -655,63 +655,47 @@ defmodule Tay.HTTP.APITest do
       end
     end)
 
-    url = "https://127.0.0.1:#{port}/unknown"
+    untrusted_cert = Path.join(directory, "untrusted.pem")
 
-    {body, 0} =
+    {_, 0} =
       System.cmd(
-        "curl",
+        "openssl",
         [
-          "-sS",
-          "--cacert",
-          ca,
-          "--cert",
-          client_cert,
-          "--key",
+          "x509",
+          "-req",
+          "-in",
+          Path.join(directory, "client.csr"),
+          "-signkey",
           client_key,
-          "--max-time",
-          "5",
-          url
+          "-days",
+          "1",
+          "-out",
+          untrusted_cert,
+          "-extfile",
+          Path.join(directory, "client.ext")
         ],
         stderr_to_stdout: true
       )
 
-    assert %{"error" => %{"code" => "not_found"}} = :json.decode(body)
+    # Use an explicit OpenSSL-backed CA context on both platforms. System curl's
+    # TLS backend and native trust store differ between macOS runner images.
+    {output, status} =
+      System.cmd(
+        NativeHelpers.python!(),
+        [
+          Path.expand("test/support/https_probe.py"),
+          Integer.to_string(port),
+          ca,
+          client_cert,
+          client_key,
+          untrusted_cert
+        ],
+        stderr_to_stdout: true
+      )
 
-    python = NativeHelpers.python!()
+    assert status == 0, output
 
-    script = """
-    import asyncio
-    import sys
-    sys.path.insert(0, #{inspect(Path.expand("clients/python"))})
-    from tay import ServerError, TayHTTP
-
-    async def main():
-        async with TayHTTP(
-            sys.argv[1],
-            tls_ca_file=sys.argv[2],
-            tls_cert_file=sys.argv[3],
-            tls_key_file=sys.argv[4],
-        ) as tay:
-            try:
-                await tay._request("GET", "/unknown")
-            except ServerError as error:
-                assert error.code == "not_found"
-            else:
-                raise AssertionError("mTLS request unexpectedly succeeded without an API error")
-
-    asyncio.run(main())
-    """
-
-    assert {"", 0} =
-             System.cmd(
-               python,
-               ["-c", script, "https://127.0.0.1:#{port}", ca, client_cert, client_key],
-               stderr_to_stdout: true
-             )
-
-    {_output, status} =
-      System.cmd("curl", ["-sS", "--cacert", ca, "--max-time", "5", url], stderr_to_stdout: true)
-
-    refute status == 0
+    assert output =~
+             "mTLS: trusted client accepted; missing/untrusted clients, wrong CA and hostname rejected"
   end
 end

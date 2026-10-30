@@ -28,7 +28,10 @@ public.
    `fail_on_regression=true`, the preceding stable release as `baseline_ref`, and
    the full qualification enabled. Both Linux and macOS qualification and
    performance jobs must pass; retain the comparison reports with the release.
-   Investigate noisy/regressed measurements before tagging.
+   Use at least 10,000 measured jobs per trial. Both independent replicas on
+   each platform must pass eight warmed fresh-VM trials per checkout, the 20%
+   regression limit and the 10% relative-MAD variability limit. Investigate
+   noisy/regressed measurements before tagging.
 7. Create `v<mix-version>`, push the tag, and verify that both the repository and
    tag are accessible without authentication.
 

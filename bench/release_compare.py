@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROTOCOL = "balanced-abba-v1; fresh VM per trial; syncfs before Linux sync trials"
+PROTOCOL = "balanced-abba-v2; warmed fresh VM; bounded in-flight jobs; syncfs before Linux sync trials"
 IDENTITY = (
     "report_schema",
     "benchmark",
@@ -124,9 +124,9 @@ def main() -> None:
     parser.add_argument("--deps-root", type=Path)
     parser.add_argument("--mode", choices=["write", "sync"], default="write")
     parser.add_argument("--validated-filesystem", action="store_true")
-    parser.add_argument("--jobs", type=int, default=1000)
+    parser.add_argument("--jobs", type=int, default=10000)
     parser.add_argument("--clients", type=int, default=8)
-    parser.add_argument("--trials", type=int, default=4)
+    parser.add_argument("--trials", type=int, default=8)
     try:
         run(parser.parse_args())
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:

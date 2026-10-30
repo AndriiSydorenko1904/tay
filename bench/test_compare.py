@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from compare import METRICS, compare, markdown
@@ -20,6 +25,34 @@ def report():
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_equal_medians_do_not_hide_unstable_trials_or_pass_the_cli_gate(self):
+        baseline, candidate = report(), report()
+        for sample, value in zip(candidate["measurements"], [40, 100, 160]):
+            sample["enqueue_ack_p95_us"] = value
+        result = compare(baseline, candidate)
+        self.assertFalse(result["regressed"])
+        self.assertTrue(result["noisy"])
+        self.assertIn("too noisy", markdown(result))
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name, value in [("baseline", baseline), ("candidate", candidate)]:
+                (root / f"{name}.json").write_text(json.dumps(value))
+            command = [
+                sys.executable,
+                str(pathlib.Path(__file__).with_name("compare.py")),
+                str(root / "baseline.json"),
+                str(root / "candidate.json"),
+                "--output",
+                str(root / "comparison.json"),
+                "--markdown",
+                str(root / "comparison.md"),
+                "--fail-on-regression",
+            ]
+            completed = subprocess.run(
+                command, check=False, capture_output=True, text=True
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+
     def test_uses_medians_and_correct_regression_directions(self):
         baseline, candidate = report(), report()
         candidate["measurements"][1]["completed_jobs_per_second"] = 50
@@ -72,3 +105,5 @@ class ComparisonTests(unittest.TestCase):
         for threshold in [-1, float("nan"), float("inf")]:
             with self.assertRaises(ValueError):
                 compare(report(), report(), threshold)
+            with self.assertRaises(ValueError):
+                compare(report(), report(), max_relative_mad=threshold)
