@@ -101,6 +101,7 @@ defmodule Tay.ReleaseBench do
           warmup_jobs: warmup_jobs,
           max_inflight: clients,
           rss_sample_interval_ms: 250,
+          beam_sample_interval_ms: 25,
           durability: mode
         },
         environment: %{
@@ -114,7 +115,7 @@ defmodule Tay.ReleaseBench do
         },
         measurements: samples,
         notes:
-          "Bounded public-API workload; each client waits for durable completion before submitting its next job. Warmup is excluded. Callback latency excludes durable finish. RSS sampled every 250ms, not a proven peak. Stores preserved. No production capacity or power-loss claim."
+          "Bounded public-API workload; each client waits for durable completion before submitting its next job. Warmup is excluded. Callback latency excludes durable finish. RSS sampled every 250ms and BEAM memory every 25ms, not proven peaks. Stores preserved. No production capacity or power-loss claim."
       }
 
       File.write!(output, Jason.encode!(report, pretty: true) <> "\n", [:exclusive])
@@ -143,7 +144,10 @@ defmodule Tay.ReleaseBench do
 
     {:ok, root} = Tay.start_link(options)
     Process.unlink(root)
-    sampler = spawn_link(fn -> sample(%{rss: 0, beam: 0, count: 0}) end)
+
+    sampler =
+      spawn_link(fn -> sample(%{rss: 0, beam: 0, count: 0, rss_count: 0, rss_at: nil}) end)
+
     started = System.monotonic_time(:microsecond)
 
     try do
@@ -194,6 +198,7 @@ defmodule Tay.ReleaseBench do
         peak_rss_bytes: if(memory.rss > 0, do: memory.rss, else: nil),
         peak_beam_bytes: memory.beam,
         memory_samples: memory.count,
+        rss_samples: memory.rss_count,
         jobs: jobs
       }
     after
@@ -221,29 +226,40 @@ defmodule Tay.ReleaseBench do
   end
 
   defp sample(peak) do
-    rss =
-      case System.cmd("ps", ["-o", "rss=", "-p", System.pid()]) do
-        {text, 0} ->
-          case Integer.parse(String.trim(text)) do
-            {kb, _} -> kb * 1024
-            _ -> 0
+    now = System.monotonic_time(:millisecond)
+
+    peak =
+      if is_nil(peak.rss_at) or now - peak.rss_at >= 250 do
+        rss =
+          case System.cmd("ps", ["-o", "rss=", "-p", System.pid()]) do
+            {text, 0} ->
+              case Integer.parse(String.trim(text)) do
+                {kb, _} -> kb * 1024
+                _ -> 0
+              end
+
+            _ ->
+              0
           end
 
-        _ ->
-          0
+        %{peak | rss: max(peak.rss, rss), rss_count: peak.rss_count + 1, rss_at: now}
+      else
+        peak
       end
 
     peak = %{
-      rss: max(peak.rss, rss),
+      rss: peak.rss,
       beam: max(peak.beam, :erlang.memory(:total)),
-      count: peak.count + 1
+      count: peak.count + 1,
+      rss_count: peak.rss_count,
+      rss_at: peak.rss_at
     }
 
     receive do
       {:finish, caller, ref} -> send(caller, {ref, peak})
       :stop -> :ok
     after
-      250 -> sample(peak)
+      25 -> sample(peak)
     end
   end
 

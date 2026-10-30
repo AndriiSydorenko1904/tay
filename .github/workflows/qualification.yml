@@ -114,7 +114,12 @@ jobs:
 
 
   performance:
+    needs: qualify
+    if: ${{ always() && (inputs.performance_only || needs.qualify.result == 'success') }}
     name: Release comparison (${{ matrix.os }}, replica ${{ matrix.replica }})
+    concurrency:
+      group: release-performance-${{ matrix.os }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:

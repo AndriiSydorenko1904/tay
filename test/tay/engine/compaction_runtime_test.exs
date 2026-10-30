@@ -809,7 +809,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert stats.reclaimed_bytes == stats.source_bytes + source_manifest_bytes
     assert stats.candidate_bytes <= admitted_estimate.candidate_upper_bytes
     assert admitted_estimate.reclaimable_bytes <= stats.source_bytes - stats.candidate_bytes
-    assert Tay.status(name: @name).jobs == 2_000
+    assert ExecutionHelpers.eventually(fn -> Tay.status(name: @name).jobs == 2_000 end)
 
     for index <- 1..10_000 do
       id = Tay.JobID.encode(Tay.Test.EventHelpers.id(index))
@@ -824,7 +824,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
     current = File.read!(Path.join(path, "CURRENT"))
     assert :ok = Tay.restart(name: @name, timeout: 900_000)
-    assert Tay.status(name: @name).jobs == 2_000
+    assert ExecutionHelpers.eventually(fn -> Tay.status(name: @name).jobs == 2_000 end)
     ExecutionHelpers.set_clock(90_000_100 + 3_600_000)
 
     for _ <- 1..100 do

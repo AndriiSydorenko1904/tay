@@ -30,17 +30,7 @@ defmodule Tay.HTTP.APITest do
     end)
 
     base = "http://127.0.0.1:#{port}"
-
-    assert ExecutionHelpers.eventually(fn ->
-             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
-               {:ok, connection} ->
-                 :gen_tcp.close(connection)
-                 true
-
-               _ ->
-                 false
-             end
-           end)
+    await_listener(port)
 
     assert {200, %{"type" => "health", "state" => "ready"}} = request(:get, base <> "/health")
 
@@ -238,17 +228,7 @@ defmodule Tay.HTTP.APITest do
     end)
 
     base = "http://127.0.0.1:#{port}"
-
-    assert ExecutionHelpers.eventually(fn ->
-             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
-               {:ok, connection} ->
-                 :gen_tcp.close(connection)
-                 true
-
-               _ ->
-                 false
-             end
-           end)
+    await_listener(port)
 
     assert {429, %{"error" => %{"code" => "capacity", "reason" => "retained_bytes"}}} =
              request(:post, base <> "/jobs", %{
@@ -290,17 +270,7 @@ defmodule Tay.HTTP.APITest do
     end)
 
     base = "http://127.0.0.1:#{port}"
-
-    assert ExecutionHelpers.eventually(fn ->
-             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
-               {:ok, connection} ->
-                 :gen_tcp.close(connection)
-                 true
-
-               _ ->
-                 false
-             end
-           end)
+    await_listener(port)
 
     assert {201, %{"job_id" => id, "type" => "enqueued"}} =
              request(:post, base <> "/jobs", %{
@@ -370,17 +340,7 @@ defmodule Tay.HTTP.APITest do
     end)
 
     base = "http://127.0.0.1:#{port}"
-
-    assert ExecutionHelpers.eventually(fn ->
-             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
-               {:ok, conn} ->
-                 :gen_tcp.close(conn)
-                 true
-
-               _ ->
-                 false
-             end
-           end)
+    await_listener(port)
 
     assert {400, %{"error" => %{"code" => "invalid_schedule"}}} =
              request(:post, base <> "/schedules", %{
@@ -456,6 +416,7 @@ defmodule Tay.HTTP.APITest do
     end)
 
     base = "http://127.0.0.1:#{port}"
+    await_listener(port)
 
     assert {201, %{"worker_token" => token}} =
              request(:post, base <> "/workers", %{
@@ -507,6 +468,19 @@ defmodule Tay.HTTP.APITest do
     assert Tay.State.Memory.used(state.memory) == state.budget.bytes + state.auxiliary_bytes
     assert {:ok, %{"blob" => retained}} = Tay.result(id, name: __MODULE__)
     assert byte_size(retained) == 60_000
+  end
+
+  defp await_listener(port) do
+    assert ExecutionHelpers.eventually(fn ->
+             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
+               {:ok, connection} ->
+                 :gen_tcp.close(connection)
+                 true
+
+               _ ->
+                 false
+             end
+           end)
   end
 
   defp request(method, url, payload \\ nil, headers \\ []) do

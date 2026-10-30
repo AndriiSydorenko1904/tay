@@ -224,7 +224,8 @@ Linux sync trials call `sync -f` on the disposable, validated local Btrfs volume
 before starting the VM. macOS uses `write` and remains development-filesystem
 evidence. The workflow uses two BEAM schedulers on both platforms, avoiding
 oversubscription of small runners. RSS is sampled every 250 ms to reduce
-observer fork overhead; sampled RSS is not an upper bound. Throughput includes
+observer fork overhead; BEAM memory is sampled every 25 ms so shorter GC peaks
+are less likely to be missed. Sampled maxima are not upper bounds. Throughput includes
 completion polling, and callback latency excludes durable finish. These are
 synthetic comparisons, not production capacity or power-loss certification.
 
@@ -239,7 +240,9 @@ unstable runs even when their medians happen to match. No trials are discarded.
 
 The qualification workflow runs **two independent replicas per platform**, each
 with the same eight-trial ABBA protocol. Both replicas must pass; failed/noisy
-runs are retained for investigation rather than rerun until green. Full release
+runs are retained for investigation rather than rerun until green. Performance
+starts after functional qualification and serializes replicas per
+platform across workflow runs to avoid overlapping benchmark loads. Full release
 qualification requires at least 10,000 measured jobs per trial. Smaller explicit
 workloads remain useful for development but cannot authorize publication.
 

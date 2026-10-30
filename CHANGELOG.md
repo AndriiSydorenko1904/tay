@@ -51,6 +51,8 @@
   platform TLS backend. Generate fixture CA extensions from a private config
   and verify the chain offline, avoiding duplicate extensions from OpenSSL
   1.1.1 machine defaults.
+- Wait for HTTP listener readiness and asynchronous post-compaction status
+  publication in integration tests instead of racing their startup/snapshot.
 - Share `max_state_bytes` between jobs, schedules, retained results and admitted
   operations. Reserve result and lifecycle headroom before accepting work; keep
   cancellation and settlement available at capacity and preserve recovery limits.
