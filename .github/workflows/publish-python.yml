@@ -23,6 +23,7 @@ jobs:
     outputs:
       changed: ${{ steps.changes.outputs.changed }}
       previous_tag: ${{ steps.changes.outputs.previous_tag }}
+      release_commit: ${{ steps.changes.outputs.release_commit }}
     steps:
       - name: Check out release history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,6 +41,7 @@ jobs:
           mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$mix_version"
           test "$RELEASE_TAG" = "v$mix_version"
+          printf 'release_commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           previous_tag=$(git describe --tags --abbrev=0 "$RELEASE_TAG^" 2>/dev/null || true)
           printf 'previous_tag=%s\n' "$previous_tag" >> "$GITHUB_OUTPUT"
@@ -51,9 +53,45 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+  qualification:
+    name: Wait for release qualification
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.changes.outputs.release_commit }}
+          persist-credentials: false
+
+      - name: Wait for the existing full qualification run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.changes.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+          while ! python3 .github/scripts/check_release_qualification.py --commit "$RELEASE_COMMIT"; do
+            active_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow qualification.yml \
+              --commit "$RELEASE_COMMIT" --event workflow_dispatch --limit 20 \
+              --json status,url --jq '[.[] | select(.status != "completed")][0].url // empty')
+            if test -z "$active_run"; then
+              # Allow the successful run's API index to settle before refusing.
+              sleep 5
+              python3 .github/scripts/check_release_qualification.py --commit "$RELEASE_COMMIT"
+              break
+            fi
+            echo "Waiting for release qualification: $active_run"
+            sleep 20
+          done
+
   publish:
     name: Build and publish tay-client
-    needs: changes
+    needs: [changes, qualification]
     if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -65,10 +103,10 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - name: Check out the release tag
+      - name: Check out the qualified release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ needs.changes.outputs.release_commit }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -94,6 +132,7 @@ jobs:
           mix_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$mix_version"
           test "$RELEASE_TAG" = "v$mix_version"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$(git rev-parse HEAD)"
           package_version=$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("clients/python/pyproject.toml").read_text())["project"]["version"])')
           python - "$package_version" <<'PY'
           import re

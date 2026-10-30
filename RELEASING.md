@@ -64,7 +64,14 @@ The container and PyPI workflows refuse publication unless the same commit SHA
 has a successful `Release qualification gate` job in `qualification.yml`. That
 job requires both platform matrices, full qualification and
 `fail_on_regression=true`; performance-only and ungated runs cannot authorize a
-release. An API failure also refuses publication. Before manual Hex publication,
+release. An API failure also refuses publication.
+
+PyPI publication waits for an already-running qualification in a preflight job
+before opening the `pypi` environment; it pins the validated source commit and
+checks qualification again before building/uploading. A missing or failed
+qualification still refuses publication.
+
+Before manual Hex publication,
 verify the same evidence using an authenticated GitHub CLI session:
 
 ```sh
