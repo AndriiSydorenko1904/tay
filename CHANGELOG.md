@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+## 1.8.0-rc3 — 2026-10-29
+
+### Added
+
+- Enforce schedule `allow`, `skip` and `queue` policies against the preceding
+  nonterminal occurrences, including policy changes. Persist the active job link and reconcile interrupted
+  delivery with the unchanged deterministic occurrence ID.
+- Add HTTP schedule registration, listing, inspection and cancellation, with
+  the same producer methods and handles in both Python transports. HTTP worker
+  decorators can reconcile durable startup schedules.
+- Add bounded Engine-local queue/task execution rate limits and standalone
+  `TAY_RATE_LIMITS` JSON configuration. Only committed starts consume credit;
+  monotonic fixed windows reset with the Engine generation.
+- Export oldest ready-job age, schedule lag, last checkpoint timestamp and
+  capacity-refusal reasons, with example Prometheus alerts.
+- Add schema-2 semantic types 11 (schedule delivery), 12 (historical schedule state/checkpoint),
+  and 13 (complete occurrence membership checkpoints).
+  Checkpoints preserve logical schedule revisions and overlap links, including
+  while replaying concurrent compaction tails. Earlier binaries refuse these
+  events; downgrade after writing them requires restoring a prior backup.
+
+### Changed
+
+- Release `tay-client` 1.4.2. Share schedule payload construction and validation
+  between decorators, Unix producers and HTTP producers. Keep cancelled startup
+  declarations withdrawn during automatic reconnect.
+- Cache native compiler outputs by source, flags, compiler identity, OTP headers,
+  platform and Mix environment. Rebuild missing artifacts, publish outputs
+  atomically, and preserve the production/test-helper boundary on cached builds.
+- Remove the obsolete non-Store-v2 live persistence and execution paths while
+  retaining historical Event decoding.
+- Require full qualification and a passing performance regression gate for the
+  exact release candidate commit. Enable the comparison gate by default and
+  enforce a successful full qualification gate before container/PyPI publication.
+  Balance baseline/candidate trials in ABBA order with fresh VMs and retain
+  individual reports to separate filesystem drift from code regressions.
+
+### Fixed
+
+- Share `max_state_bytes` between jobs, schedules, retained results and admitted
+  operations. Reserve result and lifecycle headroom before accepting work; keep
+  cancellation and settlement available at capacity and preserve recovery limits.
+- Bound schedule operation admission, page schedule lists and directly fetch one
+  declaration. Automatically paginate SDK lists and bound Dashboard/metrics reads.
+- Preserve every active occurrence across policy changes and checkpoints; refuse
+  unsafe tightening of historical allow declarations with incomplete membership.
+- Centralize schedule field validation, public projections and auxiliary event
+  classification.
+
+- Remove the obsolete missing recovery-test path from qualification; retain
+  Store-v2 large recovery and large-segment coverage.
+- Bound schedule intervals, timestamps, timer waits and UTF-8 declaration IDs.
+- Classify proven online headroom refusals as deferred, preserving unknown
+  publication outcomes. Clean up test reservations even when allocation fails.
+- Monitor coordinator operations so a failed asynchronous call cannot leave the
+  schedule operation queue permanently occupied.
+
 ### Added
 
 - Add `JobHandle.wait_result` and `HTTPJobHandle.wait_result` with one bounded

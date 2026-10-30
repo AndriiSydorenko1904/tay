@@ -22,13 +22,34 @@ defmodule Tay.Protocol.Service do
     schedule = schedule(context)
 
     case type do
-      "enqueue" -> enqueue(core, message)
-      "status" -> status(core, message)
-      "cancel" -> cancel_job(core, message)
-      "result" -> result(core, message)
-      "schedule" -> schedule(schedule, message)
-      "cancel_schedule" -> cancel_schedule(schedule, message)
-      _ -> {:error, "unsupported_request"}
+      "enqueue" ->
+        enqueue(core, message)
+
+      "status" ->
+        status(core, message)
+
+      "cancel" ->
+        cancel_job(core, message)
+
+      "result" ->
+        result(core, message)
+
+      "schedule" ->
+        schedule(schedule, message)
+
+      "cancel_schedule" ->
+        cancel_schedule(schedule, message)
+
+      "schedules" ->
+        schedules(core, message)
+
+      "schedule_status" ->
+        if Tay.Protocol.V1.identifier?(message["schedule_id"]),
+          do: get_schedule(core, message["schedule_id"]),
+          else: {:error, "invalid_schedule_id"}
+
+      _ ->
+        {:error, "unsupported_request"}
     end
   catch
     :exit, _ ->
@@ -119,6 +140,32 @@ defmodule Tay.Protocol.Service do
   end
 
   defp result(_, _), do: {:error, "invalid_request"}
+
+  defp schedules(core, message) do
+    query = %{limit: Map.get(message, "limit", 50), after: message["cursor"]}
+
+    with {:ok, query} <- Tay.State.ScheduleIndex.query(query),
+         {:ok, page} <- API.call(core, :schedule_page, [query]) do
+      {:ok, "schedules",
+       %{
+         "schedules" => Enum.map(page.schedules, &public_schedule/1),
+         "next_cursor" => page.next_cursor
+       }}
+    else
+      {:error, :invalid_schedule_page} -> {:error, "invalid_request"}
+      _ -> {:error, "unavailable"}
+    end
+  end
+
+  defp get_schedule(core, id) do
+    case API.call(core, :get_schedule, [id]) do
+      {:ok, schedule} -> {:ok, "schedule_status", %{"schedule" => public_schedule(schedule)}}
+      {:error, :not_found} -> {:error, "schedule_not_found"}
+      _ -> {:error, "unavailable"}
+    end
+  end
+
+  defp public_schedule(schedule), do: Tay.Schedule.public_view(schedule)
 
   defp schedule(executor, message) do
     fields = Map.drop(message, ["version", "type", "request_id"])

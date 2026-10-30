@@ -20,6 +20,9 @@ defmodule Tay.Execution.Dispatcher do
       {:ok, worker} ->
         {:ok, {:local, worker}}
 
+      _ when is_map_key(workers, worker_key) ->
+        {:error, :unavailable_worker}
+
       _ when is_pid(server) ->
         case Server.reserve(server, worker_key, queue_key) do
           {:ok, reservation} -> {:ok, {:external, server, reservation}}
@@ -60,6 +63,7 @@ defmodule Tay.Execution.Dispatcher do
 
         entry = %{
           kind: :external,
+          schedule_id: Map.get(state.schedule_owners, job.id),
           id: job.id,
           queue: queue,
           execution: executing.execution,
@@ -115,16 +119,18 @@ defmodule Tay.Execution.Dispatcher do
   end
 
   defp settle_job(state, job, result) do
-    case Outcome.event(job, outcome(result), Clock.wall(state.config.clock)) do
-      {:ok, finished} ->
-        case Persistence.commit(state, job, finished) do
-          {:ok, completed, next} -> persist_result(next, completed, result)
-          _ -> exit(:external_execution_settlement_failed)
-        end
+    Tay.State.Memory.settling(state.memory, fn ->
+      case Outcome.event(job, outcome(result), Clock.wall(state.config.clock)) do
+        {:ok, finished} ->
+          case Persistence.commit(state, job, finished) do
+            {:ok, completed, next} -> persist_result(next, completed, result)
+            _ -> exit(:external_execution_settlement_failed)
+          end
 
-      _ ->
-        exit(:external_execution_outcome_invalid)
-    end
+        _ ->
+          exit(:external_execution_outcome_invalid)
+      end
+    end)
   end
 
   defp persist_result(state, completed, {:success, result}) do

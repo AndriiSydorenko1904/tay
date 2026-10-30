@@ -19,7 +19,7 @@ on:
       fail_on_regression:
         description: Fail when a median metric degrades by more than 20 percent
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes btrfs-progs
+          sudo apt-get install --yes btrfs-progs clang libclang-rt-dev file procps
           qualification_dir=$(mktemp -d "$RUNNER_TEMP/tay-btrfs.XXXXXX")
           test -d "$qualification_dir"
           image_path="$qualification_dir/qualification.img"
@@ -80,13 +80,14 @@ jobs:
           TAY_NATIVE_SANITIZE: "1"
           MIX_BUILD_PATH: _build/sanitized-qualification
         run: mix test --warnings-as-errors
+      - name: Fuzz the production CRC32C core with ASan and UBSan
+        run: bash c_src/fuzz_crc32c.sh
       - name: Full retained-history scale qualification
         env:
           TAY_LARGE_SEGMENT_TEST: "1"
           TAY_LARGE_RECOVERY_TEST: "1"
         run: >-
           mix test test/tay/storage/segment_large_test.exs
-          test/tay/storage/recovery_large_test.exs
           test/tay/engine/large_recovery_test.exs --warnings-as-errors
       - name: Detached consuming application and production release
         env:
@@ -174,18 +175,18 @@ jobs:
           for cohort in baseline candidate; do
             checkout="$GITHUB_WORKSPACE"
             if [ "$cohort" = baseline ]; then checkout="$RUNNER_TEMP/tay-baseline"; fi
-            # macOS ships Bash 3.2: an empty array under nounset is unbound.
-            # Keep mandatory arguments in the array before adding optional flags.
-            arguments=(--path "$root/$cohort" --output "$GITHUB_WORKSPACE/performance/$cohort.json"
-              --mode "$mode" --jobs "$PERFORMANCE_JOBS" --clients 8 --trials 3)
-            if [ "$RUNNER_OS" = Linux ]; then arguments+=(--validated-filesystem); fi
             (
               cd "$checkout"
               mix deps.get --check-locked
               mix compile --warnings-as-errors
-              mix run --no-start --no-compile "$GITHUB_WORKSPACE/bench/release.exs" "${arguments[@]}"
             )
           done
+          arguments=(--baseline "$RUNNER_TEMP/tay-baseline" --candidate "$GITHUB_WORKSPACE"
+            --harness "$GITHUB_WORKSPACE/bench/release.exs" --data-root "$root/release-comparison"
+            --output-dir "$GITHUB_WORKSPACE/performance" --mode "$mode"
+            --jobs "$PERFORMANCE_JOBS" --clients 8 --trials 4)
+          if [ "$RUNNER_OS" = Linux ]; then arguments+=(--validated-filesystem); fi
+          python bench/release_compare.py "${arguments[@]}"
       - name: Compare medians and optional regression threshold
         shell: bash
         run: |
@@ -208,3 +209,17 @@ jobs:
             performance/*.md
           if-no-files-found: warn
           retention-days: 30
+
+  release_gate:
+    name: Release qualification gate
+    needs: [qualify, performance]
+    if: ${{ always() && !inputs.performance_only && inputs.fail_on_regression }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every platform and regression check
+        env:
+          QUALIFICATION_RESULT: ${{ needs.qualify.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+        run: |
+          test "$QUALIFICATION_RESULT" = success
+          test "$PERFORMANCE_RESULT" = success

@@ -219,8 +219,8 @@ gh workflow run qualification.yml -f performance_only=true \
 ```
 
 The qualification workflow accepts `baseline_ref` and `performance_jobs` and
-compiles each checkout in a separate process, then runs three trials per
-checkout on the same macOS/Linux runner. This excludes compiler residue from
+compiles each checkout in a separate process, then runs four fresh-VM trials per
+checkout in balanced ABBA order on the same macOS/Linux runner. This excludes compiler residue from
 the measured runtime process. Linux uses a
 disposable local Btrfs volume and explicit `sync` mode; macOS is labelled `write`
 development evidence. JSON reports and a Markdown comparison are retained as
@@ -236,7 +236,34 @@ There is no production capacity or power-loss claim.
 
 Comparison refuses different harness/configuration/environment metadata and
 incomplete trial cohorts. Missing/zero/invalid metric samples remain missing,
-never an improvement. Median changes are descriptive by default. Enable
-`fail_on_regression` in the workflow (or `--fail-on-regression`) to fail on a
-regression beyond 20% or incomplete required metrics. Hosted-runner noise,
+never an improvement. Local comparisons are descriptive unless `--fail-on-regression` is supplied.
+The qualification workflow defaults `fail_on_regression=true` and fails on a
+regression beyond 20% or incomplete required metrics. Release candidates require
+the full workflow with this gate enabled for the exact candidate SHA. Hosted-runner noise,
 cache state and the absence of hardware certification still limit conclusions.
+
+## Balanced release qualification
+
+The qualification workflow compiles both checkouts first, then uses
+`bench/release_compare.py` to run ABBA twice (four measured trials per checkout).
+Each trial starts a fresh VM with the same absolute `bench/release.exs` path.
+Linux sync trials call `sync -f` on the disposable data filesystem before the
+measured process starts. Balanced order keeps sequential filesystem drift from
+being attributed entirely to one checkout. Every individual JSON report is
+retained alongside the aggregates. The comparison checks trial count, workload,
+environment, harness hash, orchestrator hash and trial order before applying the
+unchanged 20% regression threshold.
+
+```sh
+python3 bench/release_compare.py --baseline /absolute/compiled-baseline \
+  --candidate "$PWD" --harness "$PWD/bench/release.exs" \
+  --data-root /private/tmp/tay-balanced-new --output-dir /private/tmp/tay-reports-new \
+  --mode write --jobs 1000 --clients 8 --trials 4
+python3 bench/compare.py /private/tmp/tay-reports-new/baseline.json \
+  /private/tmp/tay-reports-new/candidate.json --fail-on-regression
+```
+
+Compile both checkouts separately before invoking this runner. Its data root
+must not exist; existing comparison outputs are refused. Optional `--build-root`
+and `--deps-root` select isolated, already-compiled cohort directories (each root
+contains `baseline` and `candidate` children). Source files are never rewritten.

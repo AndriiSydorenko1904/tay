@@ -1,4 +1,6 @@
 defmodule Tay.Storage.V2.Publisher do
+  require Tay.Event.V2
+
   @moduledoc """
   Store-v2 candidate construction and publication. Online callers build the
   candidate against a frozen frontier while the Writer journals later mutations,
@@ -810,7 +812,7 @@ defmodule Tay.Storage.V2.Publisher do
           error -> {:halt, error}
         end
 
-      {type, 2, payload}, {:ok, logical, current, bytes} when type in 7..10 ->
+      {type, 2, payload}, {:ok, logical, current, bytes} when Tay.Event.V2.is_auxiliary(type) ->
         sequence = current.first_sequence + current.count
 
         with {:ok, event, _} <- Tay.Event.decode_payload(type, 2, payload, source.value_limits),

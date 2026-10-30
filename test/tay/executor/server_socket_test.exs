@@ -130,9 +130,9 @@ defmodule Tay.Executor.ServerSocketTest do
       "options" => %{"queue" => "default"}
     }
 
-    assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
+    assert {:ok, first} = Server.register_schedule(server, fields)
     first_entry = schedule_state(server).schedules["stable-schedule"]
-    assert {:ok, second} = GenServer.call(server, {:put_schedule, fields})
+    assert {:ok, second} = Server.register_schedule(server, fields)
     second_entry = schedule_state(server).schedules["stable-schedule"]
 
     assert second == first
@@ -140,7 +140,7 @@ defmodule Tay.Executor.ServerSocketTest do
     assert second_entry.schedule.next_at == first_entry.schedule.next_at
 
     changed = put_in(fields, ["every"], %{"hours" => 12})
-    assert {:ok, _} = GenServer.call(server, {:put_schedule, changed})
+    assert {:ok, _} = Server.register_schedule(server, changed)
     changed_entry = schedule_state(server).schedules["stable-schedule"]
     refute changed_entry.timer == first_entry.timer
     assert changed_entry.schedule.expression == 12 * 60 * 60 * 1_000
@@ -164,7 +164,7 @@ defmodule Tay.Executor.ServerSocketTest do
       "options" => %{"queue" => "default"}
     }
 
-    assert {:ok, first} = GenServer.call(server, {:put_schedule, fields})
+    assert {:ok, first} = Server.register_schedule(server, fields)
     EngineHelpers.stop(root)
     Process.sleep(100)
     entry = schedule_state(server).schedules["retrying-schedule"]
@@ -204,15 +204,12 @@ defmodule Tay.Executor.ServerSocketTest do
     assert_receive {:executor_server_ready, ^server}
 
     assert {:error, "invalid_schedule"} =
-             GenServer.call(server, {
-               :put_schedule,
-               %{
-                 "declaration_id" => "invalid-schedule",
-                 "task" => "media.cleanup-orphans.v1",
-                 "args" => %{},
-                 "every" => %{"seconds" => 30},
-                 "options" => %{"unknown" => true}
-               }
+             Server.register_schedule(server, %{
+               "declaration_id" => "invalid-schedule",
+               "task" => "media.cleanup-orphans.v1",
+               "args" => %{},
+               "every" => %{"seconds" => 30},
+               "options" => %{"unknown" => true}
              })
 
     GenServer.stop(server)
@@ -230,7 +227,7 @@ defmodule Tay.Executor.ServerSocketTest do
       "options" => %{"queue" => "default"}
     }
 
-    assert {:error, "unavailable"} = GenServer.call(server, {:put_schedule, fields})
+    assert {:error, "unavailable"} = Server.register_schedule(server, fields)
     assert schedule_state(server).schedules == %{}
     GenServer.stop(server)
   end

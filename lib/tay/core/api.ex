@@ -7,6 +7,11 @@ defmodule Tay.Core.API do
   @callback get_job(target(), String.t()) :: term()
   @callback cancel(target(), String.t()) :: term()
   @callback result(target(), String.t()) :: term()
+  @callback schedules(target()) :: term()
+  @callback schedule_page(target(), map()) :: term()
+  @callback get_schedule(target(), String.t()) :: term()
+  @callback deliver_schedule(target(), Tay.Schedule.t(), integer(), integer(), integer()) ::
+              term()
   @callback register_schedule(target(), Tay.Schedule.t()) :: term()
   @callback cancel_schedule(target(), String.t(), non_neg_integer()) :: term()
   @callback advance_schedule(
@@ -18,6 +23,8 @@ defmodule Tay.Core.API do
               integer()
             ) ::
               term()
+
+  @optional_callbacks schedule_page: 2, get_schedule: 2, schedules: 1, deliver_schedule: 5
 
   @spec call({module(), term()}, atom(), list()) :: term()
   def call({adapter, target}, operation, arguments)

@@ -438,4 +438,16 @@ defmodule Tay.Engine.CompactionPolicyTest do
     assert {:error, :publication_failed} =
              CompactionEvents.result({:deferred, {:payload, "secret"}})
   end
+
+  test "known online headroom refusals defer while opaque publication outcomes remain unknown" do
+    for reason <- [:insufficient_headroom, {:uncertain, :insufficient_headroom}] do
+      error = Tay.Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)
+      assert CompactionEvents.result({:error, error}) == {:deferred, :insufficient_headroom}
+    end
+
+    for reason <- [:opaque_driver_failure, {:unknown_publication_outcome, %{}}] do
+      error = Tay.Error.new(:unknown_outcome, {:compaction_failed, reason}, nil, :compact)
+      assert CompactionEvents.result({:error, error}) == {:error, :unknown_outcome}
+    end
+  end
 end

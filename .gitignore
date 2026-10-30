@@ -20,3 +20,5 @@ deploy-helper.sh
 
 /bench/__pycache__/
 /performance/
+
+/.github/scripts/__pycache__/

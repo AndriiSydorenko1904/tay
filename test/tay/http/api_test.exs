@@ -338,6 +338,177 @@ defmodule Tay.HTTP.APITest do
     assert {"", 0} = System.cmd(python, ["-c", script, base], stderr_to_stdout: true)
   end
 
+  test "HTTP and Unix SDK schedules share registration, inspection and cancellation" do
+    Process.flag(:trap_exit, true)
+    ExecutionHelpers.install()
+    path = NativeHelpers.path()
+    socket = path <> ".sock"
+    ExecutionHelpers.initialize(path)
+
+    on_exit(fn ->
+      File.rm(socket)
+      File.rm_rf!(path)
+    end)
+
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, {:ip, {127, 0, 0, 1}}])
+    {:ok, port} = :inet.port(listener)
+    :gen_tcp.close(listener)
+
+    {:ok, root} =
+      ExecutionHelpers.start(path, __MODULE__,
+        workers: %{},
+        executor_socket: socket,
+        http_port: port
+      )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    base = "http://127.0.0.1:#{port}"
+
+    assert ExecutionHelpers.eventually(fn ->
+             case :gen_tcp.connect({127, 0, 0, 1}, port, [:binary], 100) do
+               {:ok, conn} ->
+                 :gen_tcp.close(conn)
+                 true
+
+               _ ->
+                 false
+             end
+           end)
+
+    assert {400, %{"error" => %{"code" => "invalid_schedule"}}} =
+             request(:post, base <> "/schedules", %{
+               task: "task.v1",
+               every: %{seconds: 1},
+               extra: true
+             })
+
+    assert {404, %{"error" => %{"code" => "schedule_not_found"}}} =
+             request(:get, base <> "/schedules/missing")
+
+    script = """
+    import asyncio, sys, time
+    sys.path.insert(0, #{inspect(Path.expand("clients/python"))})
+    from tay import Tay, TayHTTP
+    async def main():
+        uds = Tay(mode="client", socket_path=sys.argv[2])
+        await uds.start()
+        try:
+            async with TayHTTP(sys.argv[1]) as http:
+                start = int(time.time() * 1000) + 60000
+                for client, key in [(http, "http-hourly"), (uds, "uds-hourly")]:
+                    schedule = await client.every("tests.schedule.v1", hours=1,
+                        declaration_id=key, overlap="queue", start_at=start)
+                    current = await schedule.status()
+                    assert current["overlap"] == "queue"
+                    assert current["next_at"] == start
+                    assert any(item["id"] == key for item in await http.schedules())
+                    assert any(item["id"] == key for item in await uds.schedules())
+                    assert (await http.get_schedule(key))["revision"] == current["revision"]
+                    await schedule.cancel()
+                    assert (await client.get_schedule(key))["cancelled_at"] is not None
+                cron = await http.schedule("tests.schedule.v1", cron="0 8 * * *",
+                    declaration_id="http-cron", overlap="skip")
+                await cron.cancel()
+        finally:
+            await uds.close()
+    asyncio.run(main())
+    """
+
+    assert {"", 0} =
+             System.cmd(NativeHelpers.python!(), ["-c", script, base, socket],
+               stderr_to_stdout: true
+             )
+  end
+
+  test "HTTP completion retains its result when the common budget is full" do
+    Process.flag(:trap_exit, true)
+    ExecutionHelpers.install()
+    path = NativeHelpers.path()
+    ExecutionHelpers.initialize(path)
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, {:ip, {127, 0, 0, 1}}])
+    {:ok, port} = :inet.port(listener)
+    :gen_tcp.close(listener)
+
+    assert {:ok, root} =
+             ExecutionHelpers.start(path, __MODULE__,
+               workers: %{},
+               executor_socket: nil,
+               http_port: port,
+               execution_wake_ms: 5,
+               max_state_bytes: 8_000_000
+             )
+
+    on_exit(fn ->
+      try do
+        EngineHelpers.stop(root)
+      catch
+        :exit, _ -> :ok
+      end
+
+      File.rm_rf!(path)
+    end)
+
+    base = "http://127.0.0.1:#{port}"
+
+    assert {201, %{"worker_token" => token}} =
+             request(:post, base <> "/workers", %{
+               runtime_id: "budget-worker",
+               tasks: ["budget.v1"],
+               capacity: 1
+             })
+
+    auth = ["Authorization: Bearer " <> token]
+    claim = Task.async(fn -> request(:post, base <> "/queues/default/claim", nil, auth) end)
+
+    assert {201, %{"job_id" => id}} =
+             request(:post, base <> "/jobs", %{task: "budget.v1", args: %{}})
+
+    assert {200, %{"reservation_id" => reservation, "execution_id" => execution}} =
+             Task.await(claim, 8_000)
+
+    context = %{reservation_id: reservation, execution_id: execution}
+    assert {200, _} = request(:post, base <> "/workers/started", context, auth)
+    {:ok, meta} = Tay.Engine.Admission.metadata(__MODULE__)
+    remaining = meta.memory.limit - Tay.State.Memory.used(meta.memory)
+    assert :ok = Tay.State.Memory.reserve(meta.memory, remaining)
+
+    try do
+      assert {200, _} =
+               request(
+                 :post,
+                 base <> "/workers/complete",
+                 Map.merge(context, %{
+                   outcome: "success",
+                   result: %{"blob" => String.duplicate("r", 60_000)}
+                 }),
+                 auth
+               )
+
+      assert ExecutionHelpers.eventually(fn ->
+               match?({:ok, _}, Tay.result(id, name: __MODULE__))
+             end)
+
+      assert {:ok, %{"blob" => blob}} = Tay.result(id, name: __MODULE__)
+      assert byte_size(blob) == 60_000
+      assert Tay.status(name: __MODULE__).state == :ready
+    after
+      Tay.State.Memory.release(meta.memory, remaining)
+    end
+
+    assert {:ok, _} = Tay.compact(name: __MODULE__, timeout: 60_000)
+    state = :sys.get_state(EngineHelpers.engine(root))
+    assert Tay.State.Memory.used(state.memory) == state.budget.bytes + state.auxiliary_bytes
+    assert {:ok, %{"blob" => retained}} = Tay.result(id, name: __MODULE__)
+    assert byte_size(retained) == 60_000
+  end
+
   defp request(method, url, payload \\ nil, headers \\ []) do
     args = ["-sS", "--max-time", "5", "-X", method |> Atom.to_string() |> String.upcase()]
     args = args ++ Enum.flat_map(headers, &["-H", &1])

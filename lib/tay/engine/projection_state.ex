@@ -75,12 +75,15 @@ defmodule Tay.Engine.ProjectionState do
 
     %{
       state: state.mode,
+      last_checkpoint_at: state.last_checkpoint_at,
       paused_queues: state.paused |> MapSet.to_list() |> Enum.sort(),
       jobs: state.active_budget.count + state.terminal_budget.count,
       active_jobs: state.active_budget.count - volatile_terminal.count,
       terminal_jobs: state.terminal_budget.count + volatile_terminal.count,
       blocked_jobs: state.blocked,
-      state_bytes_charged: state.active_budget.bytes + state.terminal_budget.bytes,
+      state_bytes_charged: Tay.State.Memory.used(state.memory),
+      retained_state_bytes_charged: state.budget.bytes + state.auxiliary_bytes,
+      auxiliary_state_bytes_charged: state.auxiliary_bytes,
       active_state_bytes_charged: state.active_budget.bytes - volatile_terminal.bytes,
       terminal_state_bytes_charged: state.terminal_budget.bytes + volatile_terminal.bytes,
       volatile_jobs: MapSet.size(state.volatile_ids),
@@ -104,6 +107,7 @@ defmodule Tay.Engine.ProjectionState do
       remaining_segment_coordinates: Storage.Segment.max_id() - state.segment.id,
       max_history_bytes: state.config.max_history_bytes,
       max_segments: state.config.max_segments,
+      schedule_stats: Tay.State.ScheduleIndex.stats(state.schedule_index),
       insertion_space:
         if(state.next_sequence > Storage.Segment.max_id(), do: :exhausted, else: :available)
     }
@@ -136,7 +140,8 @@ defmodule Tay.Engine.ProjectionState do
   def blocked?(projection, config, job) do
     not terminal?(job) and
       ((not Map.has_key?(projection.registry, job.definition["worker_key"]) and
-          not external_enabled?(config)) or
+          (Map.has_key?(config.workers, job.definition["worker_key"]) or
+             not external_enabled?(config))) or
          not Map.has_key?(config.queues, job.definition["queue_key"]))
   end
 

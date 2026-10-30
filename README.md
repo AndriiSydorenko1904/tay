@@ -318,6 +318,31 @@ never a newly generated ID.
 External worker effects may run again after a crash, so make them idempotent or
 reconcile them in the application.
 
+## Execution rate limits
+
+Concurrency and execution rate can be configured independently. On an
+operator-validated Linux filesystem, extend the Engine configuration with:
+
+```elixir
+Tay.child_spec(
+  data_dir: "/var/lib/tay",
+  durability: :sync,
+  validated_filesystem: true,
+  queues: [default: 10],
+  rate_limits: [
+    queues: %{"default" => %{limit: 100, interval_ms: 1_000}},
+    tasks: %{"billing.capture.v1" => %{limit: 5, interval_ms: 1_000}}
+  ]
+)
+```
+
+Both applicable fixed-window limits must permit a start. Pending jobs stay in
+Tay, and another eligible task may run while one task is rate-limited. Every
+committed execution attempt consumes credit, including retries. Limits use local
+monotonic time and reset on Engine restart; configure the service owning a strict
+cross-restart external quota separately. Standalone hosts use `TAY_RATE_LIMITS`;
+see [operations](docs/operations.md).
+
 ## Python integration
 
 Python is a first-class external-worker integration.
@@ -442,8 +467,13 @@ Use `start_at=<UTC milliseconds>` for an absolute first run instead of
 Schedule declarations, advancement, and cancellation are durable. They survive
 listener, Engine, and client-process restarts as well as compaction; reconnecting
 clients may safely redeclare the same stable declaration ID. Missed-time
-catch-up follows the selected `latest` or `all` policy. Enforced overlap policies
-are not yet implemented. Once a timer is due, temporary admission pressure
+catch-up follows the selected `latest` or `all` policy. `overlap="allow"` admits
+independent occurrences; `skip` advances past a due occurrence while the previous
+job remains nonterminal; `queue` holds the due occurrence until the previous job
+finishes. `skip` is the default. The active-job link survives restart and
+compaction, and a delivery interrupted after insertion reconciles the same job.
+For `queue`, `catch_up="all"` delivers missed occurrences serially; `latest`
+coalesces the remaining missed times after delivery. Once a timer is due, temporary admission pressure
 delays that occurrence instead of dropping it; its deterministic job ID makes
 retries idempotent.
 
@@ -461,7 +491,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.8.0-rc2
+ghcr.io/andriisydorenko1904/tay:1.8.0-rc3
 ghcr.io/andriisydorenko1904/tay:latest
 ```
 

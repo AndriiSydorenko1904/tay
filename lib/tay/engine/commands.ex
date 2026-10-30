@@ -50,14 +50,15 @@ defmodule Tay.Engine.Commands do
     {{:ok, queues}, state}
   end
 
-  def execute(:inspect_schedules, state, _insert_new, _cancel_task) do
-    schedules =
-      state.schedules
-      |> Map.values()
-      |> Enum.sort_by(& &1.id)
-      |> Enum.map(&Schedule.view/1)
+  def execute({:inspect_schedules, query}, state, _insert_new, _cancel_task) do
+    {{:ok, Tay.State.ScheduleIndex.page(state.schedule_index, state.schedules, query)}, state}
+  end
 
-    {{:ok, schedules}, state}
+  def execute({:get_schedule, id}, state, _, _) do
+    case Map.fetch(state.schedules, id) do
+      {:ok, schedule} -> {{:ok, Schedule.view(schedule)}, state}
+      :error -> {{:error, :not_found}, state}
+    end
   end
 
   def execute({:get_result, raw}, state, _insert_new, _cancel_task) do
@@ -67,42 +68,112 @@ defmodule Tay.Engine.Commands do
     end
   end
 
+  def execute(
+        {:deliver_schedule, id, definition, due, next_at, at, raw, worker, bytes, durability},
+        state,
+        insert_new,
+        cancel_task
+      ) do
+    case Map.get(state.schedules, id) do
+      %{definition: ^definition, cancelled_at: nil, next_at: current} = schedule
+      when current > due ->
+        {{:ok, Schedule.view(schedule)}, state}
+
+      %{definition: ^definition, cancelled_at: nil, next_at: ^due} = schedule ->
+        active_id = Map.get(schedule, :active_job_id)
+        active_ids = Enum.uniq(Map.get(schedule, :active_job_ids, []) ++ List.wrap(active_id))
+
+        busy? =
+          Enum.any?(active_ids, fn encoded ->
+            case JobID.decode(encoded) do
+              {:ok, raw_id} ->
+                job = ProjectionState.lookup(state, raw_id)
+
+                Map.has_key?(state.executions, raw_id) or
+                  (job && not ProjectionState.terminal?(job))
+
+              _ ->
+                false
+            end
+          end) or
+            Enum.any?(state.running, fn {_, entry} -> Map.get(entry, :schedule_id) == id end)
+
+        existing = ProjectionState.lookup(state, raw)
+        policy = definition["overlap"]
+
+        cond do
+          is_nil(existing) and busy? and policy == "queue" ->
+            {{:error, Error.new(:unavailable, :schedule_overlap, id, :deliver_schedule)}, state}
+
+          is_nil(existing) and busy? and policy == "skip" ->
+            deliver_advance(state, schedule, due, next_at, at, active_id)
+
+          true ->
+            worker = Map.get(state.config.workers, definition["task"], worker)
+
+            case execute(
+                   {:insert, raw, worker, bytes, durability},
+                   state,
+                   insert_new,
+                   cancel_task
+                 ) do
+              {{:ok, _}, next} ->
+                deliver_advance(next, next.schedules[id], due, next_at, at, JobID.encode(raw))
+
+              failure ->
+                failure
+            end
+        end
+
+      _ ->
+        {{:error, Error.new(:conflict, :schedule_changed, id, :deliver_schedule)}, state}
+    end
+  end
+
   def execute({:register_schedule, %Schedule{} = schedule}, state, _insert_new, _cancel_task) do
     previous = Map.get(state.schedules, schedule.id)
 
-    if previous && is_nil(previous.cancelled_at) && previous.definition == schedule.definition do
-      {{:ok, Schedule.view(previous)}, state}
-    else
-      event = %Event{
-        record_type: 7,
-        payload_schema_version: 2,
-        data: %{
-          "at" => schedule.registered_at,
-          "definition" => schedule.definition,
-          "expected_revision" => if(previous, do: previous.revision, else: 0),
-          "next_at" => schedule.next_at,
-          "schedule_id" => schedule.id
-        }
-      }
+    cond do
+      previous && previous.definition["overlap"] == "allow" && schedule.overlap != "allow" &&
+          not Map.get(previous, :membership_complete, false) ->
+        {{:error,
+          Error.new(:conflict, :schedule_membership_unknown, schedule.id, :register_schedule)},
+         state}
 
-      auxiliary_commit(state, event, schedule.id, :register_schedule)
+      previous && is_nil(previous.cancelled_at) && previous.definition == schedule.definition ->
+        {{:ok, Schedule.view(previous)}, state}
+
+      true ->
+        revision = if previous, do: previous.revision, else: 0
+
+        event =
+          schedule_state_event(schedule.id, revision, schedule.registered_at, %{
+            definition: schedule.definition,
+            registered_at: schedule.registered_at,
+            next_at: schedule.next_at,
+            last_at: nil,
+            cancelled_at: nil,
+            active_job_id: if(previous, do: Map.get(previous, :active_job_id), else: nil),
+            active_job_ids: if(previous, do: Map.get(previous, :active_job_ids, []), else: []),
+            membership_complete:
+              if(previous, do: Map.get(previous, :membership_complete, false), else: true)
+          })
+
+        auxiliary_commit(state, event, schedule.id, :register_schedule)
     end
   end
 
   def execute({:advance_schedule, id, revision, due_at, next_at, at}, state, _, _) do
-    event = %Event{
-      record_type: 8,
-      payload_schema_version: 2,
-      data: %{
-        "at" => at,
-        "due_at" => due_at,
-        "expected_revision" => revision,
-        "next_at" => next_at,
-        "schedule_id" => id
-      }
-    }
+    case Map.get(state.schedules, id) do
+      %{revision: ^revision, next_at: ^due_at, cancelled_at: nil} = schedule
+      when next_at > due_at and at >= due_at ->
+        next = %{schedule | last_at: due_at, next_at: next_at}
+        event = schedule_state_event(id, revision, at, next)
+        auxiliary_commit(state, event, id, :advance_schedule)
 
-    auxiliary_commit(state, event, id, :advance_schedule)
+      _ ->
+        {{:error, Error.new(:conflict, :schedule_changed, id, :advance_schedule)}, state}
+    end
   end
 
   def execute({:cancel_schedule, id, revision, at}, state, _, _) do
@@ -110,18 +181,12 @@ defmodule Tay.Engine.Commands do
       %{cancelled_at: cancelled_at} = schedule when not is_nil(cancelled_at) ->
         {{:ok, Schedule.view(schedule)}, state}
 
-      _ ->
-        event = %Event{
-          record_type: 9,
-          payload_schema_version: 2,
-          data: %{
-            "at" => at,
-            "expected_revision" => revision,
-            "schedule_id" => id
-          }
-        }
-
+      %{revision: ^revision} = schedule ->
+        event = schedule_state_event(id, revision, at, %{schedule | cancelled_at: at})
         auxiliary_commit(state, event, id, :cancel_schedule)
+
+      _ ->
+        {{:error, Error.new(:conflict, :schedule_changed, id, :cancel_schedule)}, state}
     end
   end
 
@@ -178,6 +243,12 @@ defmodule Tay.Engine.Commands do
       paused: MapSet.member?(state.paused, key),
       concurrency: Map.fetch!(state.config.queue_limits, key),
       executing: Map.get(state.slots, key, 0),
+      oldest_ready_age_ms:
+        Tay.State.QueueIndex.oldest_age(
+          state.projection.ready,
+          key,
+          Clock.wall(state.config.clock)
+        ),
       jobs:
         InspectionIndex.queue_count(state.projection.inspection, key) +
           (get_in(state.terminal_stats, [:queues, key, :count]) || 0),
@@ -189,11 +260,55 @@ defmodule Tay.Engine.Commands do
     }
   end
 
+  defp schedule_state_event(id, revision, at, schedule) do
+    %Event{
+      record_type: 13,
+      payload_schema_version: 2,
+      data: %{
+        "at" => at,
+        "expected_revision" => revision,
+        "revision" => revision + 1,
+        "schedule_id" => id,
+        "definition" => schedule.definition,
+        "registered_at" => schedule.registered_at,
+        "next_at" => schedule.next_at,
+        "last_at" => schedule.last_at,
+        "cancelled_at" => schedule.cancelled_at,
+        "active_job_id" => Map.get(schedule, :active_job_id),
+        "active_job_ids" => Map.get(schedule, :active_job_ids, []),
+        "membership_complete" => Map.get(schedule, :membership_complete, false)
+      }
+    }
+  end
+
+  defp deliver_advance(state, schedule, due, next_at, at, active_id) do
+    event = %Event{
+      record_type: 11,
+      payload_schema_version: 2,
+      data: %{
+        "at" => at,
+        "due_at" => due,
+        "next_at" => next_at,
+        "expected_revision" => schedule.revision,
+        "schedule_id" => schedule.id,
+        "active_job_id" => active_id
+      }
+    }
+
+    auxiliary_commit(state, event, schedule.id, :deliver_schedule)
+  end
+
   defp auxiliary_commit(state, event, id, operation) do
     case Persistence.commit_auxiliary(state, event) do
       {:ok, next} ->
         Tay.Telemetry.schedule_transition(state.config.name, operation, id)
         {{:ok, Schedule.view(next.schedules[id])}, next}
+
+      {:error, {:resource_limit, key}} ->
+        {{:error, Error.new(:capacity, key, id, operation)}, state}
+
+      {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
+        {{:error, Error.new(:capacity, reason, id, operation)}, state}
 
       {:error, reason} ->
         {{:error, Error.new(:conflict, reason, id, operation)}, state}

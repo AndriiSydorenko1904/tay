@@ -64,7 +64,7 @@ defmodule Tay.Storage.RecordInspection do
 
   defp describe_event(%Event{record_type: type, data: data}, details?) do
     name = Tay.Event.V2.type_name(type)
-    identity_field = Tay.Event.V2.binary_identity_field(type)
+    identity_field = Tay.Event.V2.identity_field(type)
     data = normalize_identity(data, identity_field)
     identity = if identity_field, do: Map.get(data, identity_field)
     entity = if identity_field == "schedule_id", do: "schedule", else: "job"

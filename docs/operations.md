@@ -165,12 +165,36 @@ positive finite numbers at most one. Automatic configuration rejects infinity.
 
 Terminal jobs are removed from the hot ETS job projection as soon as they
 finish and remain queryable through a disposable disk-backed inspection index.
-Active-job and terminal-history counts are informational and never reject
-admission or trigger maintenance. `max_state_bytes` protects active payload data
-with one conservative in-memory byte budget calculated from the job's flat BEAM
-heap shape, runtime machine-word size, retained canonical encoding, and binary
-payload bytes. The former `max_state_nodes` option is accepted when valid but
-ignored for 1.x configuration compatibility.
+Active-job and terminal-history counts are informational. `max_state_bytes`
+(default 256 MiB) is one shared operational memory budget for active jobs,
+in-memory schedules (including cancellation records), successful results and
+admitted payloads awaiting processing. No percentages or per-feature pools are
+reserved: each item consumes the shared remaining bytes. Accounting conservatively
+includes copied BEAM heap shapes, binaries, schedule timers/indexes and lifecycle
+headroom. External-capable jobs also reserve their bounded result representation
+before admission; completion exchanges that reservation for actual result bytes.
+Explicit local worker mappings do not need that reservation and remain
+authoritative: an unavailable local callback cannot fall back to an external
+executor with unreserved output.
+Cancelling, reading and settling accepted work remain possible at capacity.
+
+This is not a hard VM RSS ceiling: runtime stacks, GC, transport buffers and
+checkpoint construction need additional process/container headroom. Disk-only
+terminal jobs are outside this memory budget. Completed results remain charged
+until terminal-retention compaction removes them; cancelled declarations remain
+charged so cancellation/revision identity is preserved. Re-registering the same
+ID replaces its charge rather than adding a second declaration.
+
+Admission returns `capacity` before accepting an operation that cannot fit.
+Schedule operations have a bounded admission window derived from `client_slots`,
+without another public configuration setting. A timed-out submitted request
+retains its permit until its actual outcome, preventing abandoned payloads from
+escaping the budget. Recovery uses the same data accounting; a smaller limit
+refuses activation with `max_state_bytes`, the bytes required at the refusal
+point and the configured limit. Increase the same setting and retry; no stored
+data is silently discarded. The former `max_state_nodes` option remains an
+ignored 1.x compatibility setting.
+
 Aggregate terminal state and queue counters remain in memory. The append-only
 Store remains authoritative for both projections and rebuilds them on restart.
 When the last active job becomes terminal, Tay schedules an idle full collection
@@ -290,3 +314,27 @@ space. Distinguish ownership contention and operational budget refusal from
 bad bytes. Increase a budget only for a new full inspection of unchanged data.
 There is no automatic repair, retention/compaction, or live backup. Protect
 plaintext args, stores, catalogs, and backups with deployment access controls.
+
+## Execution rate limits
+
+Set Engine `rate_limits: [queues: %{"default" => %{limit: 100, interval_ms: 1000}},
+tasks: %{"billing.capture.v1" => %{limit: 5, interval_ms: 1000}}]` or standalone:
+
+```sh
+export TAY_RATE_LIMITS='{"queues":{"default":{"limit":100,"interval_ms":1000}},"tasks":{"billing.capture.v1":{"limit":5,"interval_ms":1000}}}'
+```
+
+Queue names must be configured; task keys are stable worker keys. Each map accepts
+up to 1024 policies, each with `limit` 1..65536 and `interval_ms` 1..86400000.
+Both applicable policies must allow an attempt. Credit is consumed by the committed
+job-start transition, including retry attempts and starts whose worker later
+fails. Validation and failed pre-start reservations consume no credit. A task
+limit cannot block unrelated tasks in the same queue. Configured concurrency
+continues to apply independently.
+
+These are fixed windows anchored at the first start in each scope. A window
+boundary can permit a burst; the limit is not a sliding-window quota. Windows use
+monotonic time and reset on Engine restart, independently of persistent job
+recovery and wall-clock corrections. They are local operational controls, not a
+durable or multi-host lease. Observe queued work with oldest ready-job age and
+schedule lag; see [metrics and alerts](observability.md).

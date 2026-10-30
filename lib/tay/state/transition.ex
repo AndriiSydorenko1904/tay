@@ -28,7 +28,11 @@ defmodule Tay.State.Transition do
   def apply(_, _), do: {:error, :invalid_position}
 
   def candidate(limits \\ %{}, value_limits \\ Value.defaults()) do
-    limits = Map.merge(%{max_bytes: 268_435_456}, Map.take(limits, [:max_bytes]))
+    limits =
+      Map.merge(
+        %{max_bytes: 268_435_456},
+        Map.take(limits, [:max_bytes, :result_reserve_bytes, :report_required, :local_worker_keys])
+      )
 
     %{
       jobs: %{},
@@ -36,6 +40,7 @@ defmodule Tay.State.Transition do
       results: %{},
       count: 0,
       bytes: 0,
+      auxiliary_bytes: 0,
       limits: limits,
       value_limits: value_limits
     }
@@ -51,7 +56,7 @@ defmodule Tay.State.Transition do
   end
 
   def put_candidate(candidate, previous, job) do
-    with {:ok, job} <- charge(job, candidate.value_limits),
+    with {:ok, job} <- charge(job, candidate.value_limits, candidate.limits),
          old <- if(active?(previous), do: previous.charge, else: %{bytes: 0}),
          added <- if(active?(job), do: job.charge, else: %{bytes: 0}),
          count <-
@@ -70,11 +75,11 @@ defmodule Tay.State.Transition do
   end
 
   @doc false
-  def accounting(candidate), do: Map.delete(candidate, :jobs)
+  def accounting(candidate), do: Map.take(candidate, [:count, :bytes, :limits, :value_limits])
 
   @doc false
   def account(budget, previous, job) do
-    with {:ok, job} <- charge(job, budget.value_limits) do
+    with {:ok, job} <- charge(job, budget.value_limits, budget.limits) do
       old = if previous, do: previous.charge, else: %{bytes: 0}
       bytes = budget.bytes - old.bytes + job.charge.bytes
       count = budget.count + if(previous, do: 0, else: 1)
@@ -84,15 +89,30 @@ defmodule Tay.State.Transition do
     end
   end
 
-  defp charge(%{charge: %{bytes: bytes}} = job, _value_limits)
-       when is_integer(bytes) and bytes >= 0,
-       do: {:ok, job}
+  defp charge(job, value_limits, limits) do
+    base =
+      case Map.get(job, :charge) do
+        %{base_bytes: n} ->
+          n
 
-  defp charge(job, value_limits) do
-    {:ok, stats} = Value.measure(job.definition, value_limits)
-    charge = %{bytes: retained_bytes(job, stats.binary_bytes)}
+        %{bytes: n} ->
+          n
 
-    {:ok, Map.put(job, :charge, charge)}
+        _ ->
+          {:ok, stats} = Value.measure(job.definition, value_limits)
+          retained_bytes(job, stats.binary_bytes)
+      end
+
+    local? =
+      MapSet.member?(
+        Map.get(limits, :local_worker_keys, MapSet.new()),
+        job.definition["worker_key"]
+      )
+
+    reserve =
+      if active?(job) and not local?, do: Map.get(limits, :result_reserve_bytes, 0), else: 0
+
+    {:ok, Map.put(job, :charge, %{bytes: base + reserve, base_bytes: base})}
   end
 
   @doc false
@@ -130,11 +150,7 @@ defmodule Tay.State.Transition do
     flat_heap_bytes + definition_binary_bytes + byte_size(job.definition_bytes)
   end
 
-  defp within_limits(limits, bytes) do
-    if bytes > limits.max_bytes,
-      do: {:error, {:resource_limit, :retained_bytes}},
-      else: :ok
-  end
+  defp within_limits(limits, bytes), do: Tay.State.Memory.check(limits, bytes)
 
   defp active?(nil), do: false
   defp active?(%{state: state}), do: state not in [:completed, :cancelled, :discarded]

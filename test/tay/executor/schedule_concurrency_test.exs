@@ -79,14 +79,19 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
       "options" => %{"queue" => "default"}
     }
 
-    registration = Task.async(fn -> GenServer.call(server, {:put_schedule, fields}) end)
+    registration = Task.async(fn -> Server.register_schedule(server, fields) end)
     assert_receive {:durable_reply_blocked, durable_engine, register_token}, 1_000
     refute Task.yield(registration, 0)
 
-    duplicate = Task.async(fn -> GenServer.call(server, {:put_schedule, fields}) end)
+    duplicate = Task.async(fn -> Server.register_schedule(server, fields) end)
+    # Establish admission order before starting an independent caller. Task
+    # creation alone does not order messages from different processes.
+    assert ExecutionHelpers.eventually(fn ->
+             :ets.match_object(@name, {{:schedule, :_}, :_, duplicate.pid, :submitted, :_}) != []
+           end)
 
     cancellation =
-      Task.async(fn -> GenServer.call(server, {:cancel_schedule, "ordered-schedule"}) end)
+      Task.async(fn -> Server.cancel_schedule(server, "ordered-schedule") end)
 
     started = System.monotonic_time(:millisecond)
     assert [] == Server.available_tasks(server)
@@ -147,7 +152,7 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
       "options" => %{"queue" => "default"}
     }
 
-    assert {:ok, _registered} = GenServer.call(server, {:put_schedule, fields})
+    assert {:ok, _registered} = Server.register_schedule(server, fields)
     Agent.update(gate, fn _ -> true end)
 
     cancellation =

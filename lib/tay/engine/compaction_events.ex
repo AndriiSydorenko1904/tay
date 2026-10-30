@@ -95,6 +95,11 @@ defmodule Tay.Engine.CompactionEvents do
   def result({:error, reason}) when reason in @reasons, do: {:error, reason}
   def result({:error, %Tay.Error{kind: :timeout}}), do: {:deferred, :unable_to_drain}
 
+  # Online preparation reports this proven pre-publication refusal directly.
+  # Keep uncertain publication and opaque driver errors classified as unknown.
+  def result({:error, %Tay.Error{reason: {:compaction_failed, :insufficient_headroom}}}),
+    do: {:deferred, :insufficient_headroom}
+
   def result(
         {:error, %Tay.Error{reason: {:compaction_failed, {:uncertain, :insufficient_headroom}}}}
       ),

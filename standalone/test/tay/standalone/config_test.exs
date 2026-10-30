@@ -231,4 +231,24 @@ defmodule Tay.Standalone.ConfigTest do
                (GatewayConfig.validate_http(gateway) == :ok)
     end
   end
+
+  test "rate limits use bounded JSON policies and reject unknown queue names" do
+    value =
+      ~s({"queues":{"default":{"limit":5,"interval_ms":1000}},"tasks":{"task.v1":{"limit":1,"interval_ms":5000}}})
+
+    assert {:ok, config} = Config.load(%{"TAY_RATE_LIMITS" => value})
+    assert config.rate_limits[:queues]["default"] == %{limit: 5, interval_ms: 1000}
+
+    for invalid <- [
+          "null",
+          "[]",
+          "{",
+          ~s({"queues":{"unknown":{"limit":1,"interval_ms":1}}}),
+          ~s({"tasks":{"task.v1":{"limit":true,"interval_ms":1}}}),
+          ~s({"unknown":{}})
+        ] do
+      assert {:error, message} = Config.load(%{"TAY_RATE_LIMITS" => invalid})
+      assert message =~ "TAY_RATE_LIMITS"
+    end
+  end
 end

@@ -3,7 +3,7 @@ Code.require_file("mix_helpers/tay_native_editor.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.8.0-rc2"
+  @version "1.8.0-rc3"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -78,7 +78,8 @@ defmodule Tay.MixProject do
         "docs/standalone.md",
         "docs/dashboard.md",
         "docs/dashboard-container.md",
-        "docs/observability.md"
+        "docs/observability.md",
+        "docs/alerts.yml"
       ],
       build_tools: ["mix"],
       links: %{

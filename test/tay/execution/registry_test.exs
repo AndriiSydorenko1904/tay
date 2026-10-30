@@ -26,6 +26,25 @@ defmodule Tay.Execution.RegistryTest do
     assert {:error, :unavailable_worker} = Registry.resolve(%{}, <<255>>)
   end
 
+  test "an unavailable explicit local mapping cannot fall back to an unreserved external executor" do
+    assert {:error, :unavailable_worker} =
+             Tay.Execution.Dispatcher.select(%{"key" => Enum}, self(), "key", "default")
+
+    assert {:ok, {:local, Worker}} =
+             Tay.Execution.Dispatcher.select(%{"key" => Worker}, self(), "key", "default")
+
+    config = %{
+      workers: %{"key" => Enum},
+      queues: %{"default" => :default},
+      executor_socket: "/tmp/external.sock",
+      http_port: nil
+    }
+
+    job = %{state: :available, definition: %{"worker_key" => "key", "queue_key" => "default"}}
+    assert Tay.Engine.ProjectionState.blocked?(%{registry: %{}}, config, job)
+    refute Tay.Engine.ProjectionState.blocked?(%{registry: %{}}, %{config | workers: %{}}, job)
+  end
+
   test "persisted text never loads a module or creates atoms; trusted remapping preserves key" do
     # This module atom exists in the source but has no loaded code. Resolving its
     # explicit mapping must not attempt ensure_loaded or infer a module from key.

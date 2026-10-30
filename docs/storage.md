@@ -49,7 +49,15 @@ inserted, available, started, finished, cancelled, and retried. Payloads have
 canonical bounded value encoding and immutable schema-1 field meanings.
 Event v2 additionally assigns schema-2 pairs `(7,2)` through `(10,2)` to
 schedule registration, schedule advancement, schedule cancellation, and
-successful-result recording. Schema 2 keeps logical Event types 7 and 8
+successful-result recording. Tay 1.8.0-rc3 adds `(11,2)` for delivery/skip advancement
+with a persisted `active_job_id`, `(12,2)` for historical schedule checkpoints,
+and `(13,2)` for new registration/state/checkpoints with the complete
+`active_job_ids` set and `membership_complete` flag.
+The checkpoint records definition, original logical revision, registration time,
+next/last due times, cancellation time and occurrence membership. It preserves schedule
+CAS identity across compaction, independently of physical record coordinates.
+Earlier type/schema pairs and Record framing remain byte-for-byte unchanged.
+Schema 2 keeps logical Event types 7 and 8
 unambiguous from Store-v2's schema-1 snapshot and mutation record types.
 The engine emits and projects these pairs during live operation, recovery, and
 Store-v2 compaction. Store-v2 canonical bases retain schedules and the results

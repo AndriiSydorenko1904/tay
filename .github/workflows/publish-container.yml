@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
       - name: Check out the release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -42,6 +43,11 @@ jobs:
             *-*) printf 'stable=false\n' >> "$GITHUB_OUTPUT" ;;
             *) printf 'stable=true\n' >> "$GITHUB_OUTPUT" ;;
           esac
+
+      - name: Verify full release qualification for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check_release_qualification.py
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3

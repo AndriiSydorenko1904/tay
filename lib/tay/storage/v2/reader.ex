@@ -1,4 +1,6 @@
 defmodule Tay.Storage.V2.Reader do
+  require Tay.Event.V2
+
   @moduledoc """
   Store-v2 recovery through the lock-owning native session. No path is opened
   through File; every read is pinned, positional, bounded and revalidated.
@@ -466,7 +468,7 @@ defmodule Tay.Storage.V2.Reader do
          _base?,
          state
        )
-       when type in 7..10 do
+       when Tay.Event.V2.is_auxiliary(type) do
     with {:ok, event, _} <- Event.decode_payload(type, 2, payload, state.candidate.value_limits),
          {:ok, next} <- Reducer.apply_event(state.candidate, event, %{sequence: record.sequence}) do
       {:ok, next, state.last_snapshot_id}

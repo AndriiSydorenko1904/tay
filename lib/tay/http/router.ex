@@ -40,6 +40,60 @@ defmodule Tay.HTTP.Router do
     end
   end
 
+  defp dispatch(%Plug.Conn{method: "POST", path_info: ["schedules"]} = conn, options) do
+    with :ok <- content_type(conn),
+         {:ok, body, conn} <- read_body(conn, options.max_body_bytes),
+         {:ok, request} <- decode_object(body),
+         true <- Tay.Schedule.valid_fields?(request) do
+      result = Service.handle(service_context(options), Map.put(request, "type", "schedule"))
+      respond(conn, result, 201, options.max_body_bytes)
+    else
+      {:error, code, conn} -> error(conn, code)
+      {:error, code} -> error(conn, code)
+      _ -> error(conn, "invalid_schedule")
+    end
+  end
+
+  defp dispatch(%Plug.Conn{method: "GET", path_info: ["schedules"]} = conn, options) do
+    conn = Plug.Conn.fetch_query_params(conn)
+    query = conn.query_params
+
+    limit =
+      case Map.get(query, "limit") do
+        nil ->
+          50
+
+        value when is_binary(value) ->
+          case Integer.parse(value) do
+            {n, ""} -> n
+            _ -> :invalid
+          end
+
+        _ ->
+          :invalid
+      end
+
+    result =
+      Service.handle(service_context(options), %{
+        "type" => "schedules",
+        "limit" => limit,
+        "cursor" => query["cursor"]
+      })
+
+    respond(conn, result, 200, options.max_body_bytes)
+  end
+
+  defp dispatch(%Plug.Conn{method: method, path_info: ["schedules", id]} = conn, options)
+       when method in ["GET", "DELETE"] do
+    if Protocol.identifier?(id) do
+      kind = if method == "GET", do: "schedule_status", else: "cancel_schedule"
+      result = Service.handle(service_context(options), %{"type" => kind, "schedule_id" => id})
+      respond(conn, result, 200, options.max_body_bytes)
+    else
+      error(conn, "invalid_schedule_id")
+    end
+  end
+
   defp dispatch(%Plug.Conn{method: "POST", path_info: ["workers"]} = conn, options) do
     with :ok <- content_type(conn),
          {:ok, body, current_conn} <- read_body(conn, options.max_body_bytes) do
@@ -289,6 +343,7 @@ defmodule Tay.HTTP.Router do
     status =
       case code do
         "not_found" -> 404
+        "schedule_not_found" -> 404
         "unknown_worker" -> 401
         "unauthorized" -> 401
         "wrong_queue" -> 409

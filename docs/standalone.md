@@ -26,6 +26,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_DEFAULT_QUEUE_CONCURRENCY` | `10` | Maximum concurrently executing jobs in the standalone `default` queue (`1..65536`). Actual execution is also bounded by registered worker capacity. |
 | `TAY_CALLER_TIMEOUT_MS` | `5000` | Maximum time an admitted Engine call may wait for its reply. A timeout after submission is reported as `unknown_outcome`; reconcile with the same job ID. |
 | `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | Durable enqueue group-commit window in milliseconds (`0..1000`). `0` preserves immediate fsync behavior. Invalid values stop startup. |
+| `TAY_RATE_LIMITS` | `{}` | JSON queue/task execution limits; see [operations](operations.md#execution-rate-limits). Monotonic fixed windows reset on Engine restart. |
 | `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Automatic checkpoints run after new durable events even with active jobs, capture live state at a durable frontier without replaying old journal segments, and recovery replays the snapshot plus its tail. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`. These suffixes use binary multiples. |
 | `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. The Dashboard/API may use zero as a one-shot full terminal-history purge, after which the persisted retention is `1h`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
@@ -146,7 +147,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.8.0-rc2
+  ghcr.io/andriisydorenko1904/tay:1.8.0-rc3
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source

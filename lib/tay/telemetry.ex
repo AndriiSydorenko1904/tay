@@ -28,6 +28,8 @@ defmodule Tay.Telemetry do
   @engine_snapshot_event [:tay, :engine, :snapshot]
   @queue_snapshot_event [:tay, :queue, :snapshot]
 
+  @capacity_event [:tay, :capacity, :refused]
+
   @events [
     [:tay, :command, :start],
     [:tay, :command, :stop],
@@ -38,7 +40,8 @@ defmodule Tay.Telemetry do
     @group_commit_event,
     @engine_availability_event,
     @engine_snapshot_event,
-    @queue_snapshot_event
+    @queue_snapshot_event,
+    @capacity_event
   ]
 
   @doc "Returns every stable Telemetry event emitted by Tay."
@@ -63,6 +66,33 @@ defmodule Tay.Telemetry do
       end
 
     [
+      counter("tay.capacity.refused.count",
+        event_name: @capacity_event,
+        measurement: :count,
+        tags: [:engine, :operation, :reason],
+        description: "Known Tay capacity refusals"
+      ),
+      last_value("tay.queue.oldest_ready_age.seconds",
+        event_name: @queue_snapshot_event,
+        measurement: :oldest_ready_age_ms,
+        unit: {:millisecond, :second},
+        tags: [:engine, :queue],
+        description: "Age of the oldest eligible unclaimed job"
+      ),
+      last_value("tay.schedule.lag.seconds",
+        event_name: @engine_snapshot_event,
+        measurement: :schedule_lag_ms,
+        unit: {:millisecond, :second},
+        tags: [:engine],
+        description: "Maximum overdue active schedule occurrence"
+      ),
+      last_value("tay.storage.last_checkpoint.timestamp.seconds",
+        event_name: @engine_snapshot_event,
+        measurement: :last_checkpoint_at_ms,
+        unit: {:millisecond, :second},
+        tags: [:engine],
+        description: "Last successful checkpoint Unix timestamp; zero before the first checkpoint"
+      ),
       counter("tay.command.count",
         event_name: [:tay, :command, :stop],
         measurement: :duration,
@@ -316,9 +346,8 @@ defmodule Tay.Telemetry do
 
     with state when state != :unavailable <- status.state,
          {:ok, stats} <- Tay.stats(name: engine, timeout: timeout),
-         {:ok, queues} <- Tay.queues(name: engine, timeout: timeout),
-         {:ok, schedules} <- Tay.schedules(name: engine, timeout: timeout) do
-      schedule_counts = Enum.frequencies_by(schedules, &schedule_state/1)
+         {:ok, queues} <- Tay.queues(name: engine, timeout: timeout) do
+      schedule_stats = Map.get(status, :schedule_stats, %{})
 
       :telemetry.execute(@engine_availability_event, %{up: 1}, %{engine: engine})
 
@@ -337,8 +366,15 @@ defmodule Tay.Telemetry do
         ])
         |> Map.merge(stats)
         |> Map.merge(%{
-          active_schedules: Map.get(schedule_counts, :active, 0),
-          cancelled_schedules: Map.get(schedule_counts, :cancelled, 0)
+          active_schedules: Map.get(schedule_stats, :active_schedules, 0),
+          cancelled_schedules: Map.get(schedule_stats, :cancelled_schedules, 0),
+          last_checkpoint_at_ms: Map.get(status, :last_checkpoint_at) || 0,
+          schedule_lag_ms:
+            max(
+              System.system_time(:millisecond) -
+                (schedule_stats[:schedule_next_at] || System.system_time(:millisecond)),
+              0
+            )
         })
 
       :telemetry.execute(@engine_snapshot_event, measurements, %{engine: engine})
@@ -348,6 +384,7 @@ defmodule Tay.Telemetry do
           @queue_snapshot_event,
           %{
             jobs: queue.jobs,
+            oldest_ready_age_ms: queue.oldest_ready_age_ms,
             executing: queue.executing,
             concurrency: queue.concurrency,
             paused: if(queue.paused, do: 1, else: 0)
@@ -407,8 +444,26 @@ defmodule Tay.Telemetry do
     )
   end
 
-  defp schedule_state(%{cancelled_at: nil}), do: :active
-  defp schedule_state(_), do: :cancelled
+  @doc false
+  def capacity_refused(engine, operation, reason) do
+    reason =
+      if reason in [
+           :client_slots,
+           :client_bytes,
+           :max_state_bytes,
+           :max_history_bytes,
+           :max_segments,
+           :sequence_exhausted,
+           :segment_id_exhausted,
+           :event_budget
+         ], do: reason, else: :other
+
+    :telemetry.execute(@capacity_event, %{count: 1}, %{
+      engine: engine,
+      operation: operation,
+      reason: reason
+    })
+  end
 
   defp label(value) when is_atom(value), do: Atom.to_string(value)
   defp label(value), do: inspect(value, limit: 10, printable_limit: 100)

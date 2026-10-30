@@ -40,6 +40,7 @@ defmodule Tay.Engine.OnlineCheckpoint do
   end
 
   def adopt(state, %{recovered: recovered} = stats, retention) do
+    previous_bytes = state.budget.bytes + state.auxiliary_bytes
     state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
     jobs = recovered.candidate.jobs
     retained = MapSet.new(Map.keys(jobs))
@@ -63,31 +64,67 @@ defmodule Tay.Engine.OnlineCheckpoint do
       |> Enum.map(&Map.take(&1, [:id, :state, :bytes, :count, :first_sequence, :last_sequence]))
       |> Enum.take(-@segment_catalog_limit)
 
-    %{
-      state
-      | config: put_retention(state.config, stats.terminal_retention),
-        epoch_id: recovered.epoch_id,
-        next_sequence: recovered.next_sequence,
-        next_availability_order: recovered.candidate.next_availability_order,
-        schedules: recovered.candidate.schedules,
-        results: Map.merge(recovered.candidate.results, volatile_results),
-        segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
-        segment_catalog: segment_catalog,
-        history_bytes: recovered.total_segment_bytes,
-        segment_count: recovered.segment_count,
-        active_budget: state.active_budget,
-        terminal_budget: terminal_budget,
-        volatile_terminal_budget: state.volatile_terminal_budget,
-        budget: state.budget,
-        terminal_stats: terminal_statistics(jobs),
-        compaction_estimate:
-          Enum.reduce(jobs, CompactionEstimate.new(), fn {_id, job}, estimate ->
-            CompactionEstimate.replace(estimate, nil, job)
-          end),
-        events_since_checkpoint: recovered.next_sequence - recovered.manifest.tail_first_sequence,
-        last_compaction_at: max(stats.captured_at, Clock.wall(state.config.clock)),
-        online_compaction: nil
-    }
+    results = Map.merge(recovered.candidate.results, volatile_results)
+    schedules = retain_volatile_memberships(recovered.candidate.schedules, state)
+    auxiliary_bytes = Tay.State.Memory.auxiliary_bytes(schedules, results)
+    next_bytes = state.budget.bytes + auxiliary_bytes
+
+    {:ok, next} =
+      Tay.State.Memory.transaction(state.memory, next_bytes - previous_bytes, fn ->
+        {:ok,
+         %{
+           state
+           | config: put_retention(state.config, stats.terminal_retention),
+             epoch_id: recovered.epoch_id,
+             next_sequence: recovered.next_sequence,
+             next_availability_order: recovered.candidate.next_availability_order,
+             schedules: schedules,
+             results: results,
+             auxiliary_bytes: auxiliary_bytes,
+             schedule_owners: Tay.State.Auxiliary.owners(schedules),
+             segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
+             segment_catalog: segment_catalog,
+             history_bytes: recovered.total_segment_bytes,
+             segment_count: recovered.segment_count,
+             active_budget: state.active_budget,
+             terminal_budget: terminal_budget,
+             volatile_terminal_budget: state.volatile_terminal_budget,
+             budget: state.budget,
+             terminal_stats: terminal_statistics(jobs),
+             compaction_estimate:
+               Enum.reduce(jobs, CompactionEstimate.new(), fn {_id, job}, estimate ->
+                 CompactionEstimate.replace(estimate, nil, job)
+               end),
+             events_since_checkpoint:
+               recovered.next_sequence - recovered.manifest.tail_first_sequence,
+             last_compaction_at: max(stats.captured_at, Clock.wall(state.config.clock)),
+             last_checkpoint_at: stats.captured_at,
+             online_compaction: nil
+         }}
+      end)
+
+    next
+  end
+
+  defp retain_volatile_memberships(schedules, state) do
+    Enum.reduce(state.schedule_owners, schedules, fn {raw, id}, acc ->
+      job =
+        if MapSet.member?(state.volatile_ids, raw), do: JobIndex.get(state.projection.jobs, raw)
+
+      if job && not terminal?(job) && Map.has_key?(acc, id) do
+        Map.update!(acc, id, fn schedule ->
+          Map.put(
+            schedule,
+            :active_job_ids,
+            Enum.sort(
+              Enum.uniq(Map.get(schedule, :active_job_ids, []) ++ [Tay.JobID.encode(raw)])
+            )
+          )
+        end)
+      else
+        acc
+      end
+    end)
   end
 
   def adopt_rotation(

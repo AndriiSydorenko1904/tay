@@ -49,8 +49,7 @@ defmodule Tay.Engine.DurableScheduleTest do
     assert advanced.last_at == listed.next_at
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
     assert {:ok, %{records: records}} = Tay.storage_records(1, name: @name)
-    assert Enum.any?(records, &(&1.payload_schema_version == 2 and &1.record_type == 7))
-    assert Enum.any?(records, &(&1.payload_schema_version == 2 and &1.record_type == 8))
+    assert Enum.any?(records, &(&1.payload_schema_version == 2 and &1.record_type == 13))
     EngineHelpers.stop(root)
 
     {:ok, root} = EngineHelpers.restart(path, @name)

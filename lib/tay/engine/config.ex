@@ -45,6 +45,7 @@ defmodule Tay.Engine.Config do
                 execution_batch: 32,
                 execution_wake_ms: 1_000,
                 start_paused: false,
+                rate_limits: [],
                 max_history_bytes: :infinity,
                 max_segments: :infinity,
                 compaction: []
@@ -81,9 +82,15 @@ defmodule Tay.Engine.Config do
          {:ok, config} <- GatewayConfig.resolve(config, base.data_dir),
          {:ok, recovery} <- Recovery.options(config.recovery),
          {:ok, compaction} <- Tay.Engine.CompactionConfig.new(config.compaction),
+         {:ok, _} <-
+           Tay.Execution.RateLimiter.normalize(
+             config.rate_limits,
+             Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
+           ),
          :ok <- validate(Map.put(config, :data_dir, base.data_dir), recovery) do
       queues = Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
       queue_limits = Map.new(base.queues, fn {name, limit} -> {Atom.to_string(name), limit} end)
+      {:ok, rate_limits} = Tay.Execution.RateLimiter.normalize(config.rate_limits, queues)
 
       {:ok,
        Map.merge(config, %{
@@ -92,6 +99,7 @@ defmodule Tay.Engine.Config do
          journal_batch: journal_batch(base.journal, options, config),
          queues: queues,
          queue_limits: queue_limits,
+         rate_limits: rate_limits,
          execution: execution_enabled(config),
          clock: execution_clock(config),
          recovery: Map.to_list(recovery),
@@ -99,7 +107,14 @@ defmodule Tay.Engine.Config do
          value_limits: recovery.event_limits,
          slot_bytes: div(config.client_bytes, config.client_slots),
          candidate_limits: %{
-           max_bytes: config.max_state_bytes
+           max_bytes: config.max_state_bytes,
+           report_required: true,
+           local_worker_keys: MapSet.new(Map.keys(config.workers)),
+           result_reserve_bytes:
+             if(is_binary(config.executor_socket) or is_integer(config.http_port),
+               do: Tay.State.Memory.result_reserve(config.executor_result_bytes),
+               else: 0
+             )
          }
        })}
     else

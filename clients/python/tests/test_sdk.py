@@ -13,7 +13,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from tay import (
     ConnectionLost,
     HTTPJobHandle,
-    ModeError,
     ProtocolError,
     ServerError,
     TaskRegistrationError,
@@ -339,8 +338,17 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry.config.backoff, "exponential")
         self.assertEqual(retry.config.durability, "volatile")
 
-        with self.assertRaisesRegex(ModeError, "does not support schedules"):
-            await retry.schedule(cron="0 * * * *")
+        calls = []
+
+        async def schedule_request(method, path, body=None):
+            calls.append((method, path, body))
+            return {"schedule_id": "http-schedule"}
+
+        worker._request = schedule_request
+        schedule = await retry.schedule(cron="0 * * * *")
+        self.assertEqual(schedule.id, "http-schedule")
+        self.assertEqual(calls[0][0:2], ("POST", "/schedules"))
+        self.assertEqual(calls[0][2]["task"], "tests.http.retry")
 
         with self.assertRaisesRegex(ValidationError, "0..65534"):
             worker.task(name="tests.invalid", retries=65_535)

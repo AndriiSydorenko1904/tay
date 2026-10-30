@@ -29,6 +29,7 @@ defmodule Tay.Standalone.Config do
             group_commit_interval_ms: @default_group_commit_interval_ms,
             checkpoint_interval_ms: @default_checkpoint_interval_ms,
             max_state_bytes: @default_max_state_bytes,
+            rate_limits: [],
             terminal_retention: {:hours, 24}
 
   @type t :: %__MODULE__{
@@ -73,7 +74,8 @@ defmodule Tay.Standalone.Config do
          {:ok, checkpoint_interval_ms} <- checkpoint_interval(environment),
          {:ok, max_state_bytes} <-
            byte_size(environment, "TAY_MAX_STATE_BYTES", @default_max_state_bytes),
-         {:ok, terminal_retention} <- terminal_retention(environment) do
+         {:ok, terminal_retention} <- terminal_retention(environment),
+         {:ok, rate_limits} <- rate_limits(environment) do
       {:ok,
        %__MODULE__{
          data_dir: data_dir,
@@ -90,12 +92,41 @@ defmodule Tay.Standalone.Config do
          group_commit_interval_ms: group_commit_interval_ms,
          checkpoint_interval_ms: checkpoint_interval_ms,
          max_state_bytes: max_state_bytes,
+         rate_limits: rate_limits,
          terminal_retention: terminal_retention
        }}
     end
   end
 
   def load(_), do: {:error, "environment must be a string map"}
+
+  defp rate_limits(environment) do
+    with value when is_binary(value) and byte_size(value) <= 1_048_576 <-
+           Map.get(environment, "TAY_RATE_LIMITS", "{}"),
+         {:ok, decoded} when is_map(decoded) <- Jason.decode(value),
+         true <- Enum.all?(Map.keys(decoded), &(&1 in ["queues", "tasks"])),
+         {:ok, queues} <- rate_rules(Map.get(decoded, "queues", %{})),
+         {:ok, tasks} <- rate_rules(Map.get(decoded, "tasks", %{})),
+         options = [queues: queues, tasks: tasks],
+         {:ok, _} <- Tay.Execution.RateLimiter.normalize(options, %{"default" => :default}) do
+      {:ok, options}
+    else
+      _ -> {:error, "TAY_RATE_LIMITS must contain bounded queues/tasks execution limits as JSON"}
+    end
+  end
+
+  defp rate_rules(rules) when is_map(rules) do
+    Enum.reduce_while(rules, {:ok, %{}}, fn
+      {key, %{"limit" => limit, "interval_ms" => interval} = policy}, {:ok, acc}
+      when map_size(policy) == 2 ->
+        {:cont, {:ok, Map.put(acc, key, %{limit: limit, interval_ms: interval})}}
+
+      _, _ ->
+        {:halt, {:error, :invalid_rate_policy}}
+    end)
+  end
+
+  defp rate_rules(_), do: {:error, :invalid_rate_policy}
 
   defp legacy_grpc_environment(environment) do
     if Enum.any?(Map.keys(environment), fn key ->

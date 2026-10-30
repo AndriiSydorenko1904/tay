@@ -32,6 +32,7 @@ defmodule Tay.Engine.Admission do
 
       {:ok,
        Map.merge(m.status, %{
+         state_bytes_charged: Tay.State.Memory.used(m.memory),
          client_slots: m.slots,
          client_slots_used: m.slots - states.free,
          client_slot_states: states,
@@ -68,6 +69,14 @@ defmodule Tay.Engine.Admission do
           expected_revision
         )
 
+      case result do
+        {:error, %Error{kind: :capacity, reason: reason}} ->
+          Tay.Telemetry.capacity_refused(name, operation, reason)
+
+        _ ->
+          :ok
+      end
+
       {result, Map.put(metadata, :outcome, outcome(result))}
     end)
   end
@@ -103,12 +112,31 @@ defmodule Tay.Engine.Admission do
   end
 
   defp request_once(name, meta, payload, bytes, operation, id, timeout, expected_revision) do
-    with true <- bytes <= meta.slot_bytes || {:error, :client_bytes},
-         {:ok, permit} <- claim(name, meta, timeout) do
+    # Payloads that can grow retained state reserve their copied heap before
+    # crossing the process boundary. Bounded reads/control remain available at
+    # capacity so cancellation and draining can always release accepted work.
+    charged =
+      case payload do
+        {:schedule_operation, _, {:cancel, _}} ->
+          0
+
+        _
+        when operation in [:insert, :register_schedule, :deliver_schedule, :schedule_operation] ->
+          Tay.State.Memory.bytes(payload)
+
+        _ ->
+          0
+      end
+
+    with true <- max(bytes, charged) <= meta.slot_bytes || {:error, :client_bytes},
+         {:ok, permit} <- claim(name, meta, timeout, operation) do
       try do
-        case GenServer.call(meta.guardian, {:reserve, meta.generation, permit}, timeout) do
+        case GenServer.call(meta.guardian, {:reserve, meta.generation, permit, charged}, timeout) do
           :ok ->
             submit(meta, permit, payload, operation, id, timeout, expected_revision)
+
+          {:error, :retained_bytes} ->
+            {:error, Error.new(:capacity, :retained_bytes, id, operation, expected_revision)}
 
           {:error, reason} ->
             {:error, Error.new(:unavailable, reason, id, operation, expected_revision)}
@@ -189,8 +217,10 @@ defmodule Tay.Engine.Admission do
                :insert,
                :cancel,
                :retry,
+               :schedule_operation,
                :register_schedule,
                :advance_schedule,
+               :deliver_schedule,
                :cancel_schedule,
                :pause_queue,
                :resume_queue,
@@ -204,11 +234,12 @@ defmodule Tay.Engine.Admission do
   end
 
   # Claim is bounded by configured slot count; there is no waiting queue.
-  def claim(name, meta, timeout) do
+  def claim(name, meta, timeout, operation \\ nil) do
     token = make_ref()
     expires = System.monotonic_time(:millisecond) + timeout
 
-    Enum.reduce_while(1..meta.slots, {:error, :client_slots}, fn slot, _ ->
+    Enum.reduce_while(1..meta.slots, {:error, :client_slots}, fn index, _ ->
+      slot = if operation == :schedule_operation, do: {:schedule, index}, else: index
       replacement = {slot, token, self(), :claimed, expires}
 
       if cas(name, {slot, nil, nil, :free, 0}, replacement),

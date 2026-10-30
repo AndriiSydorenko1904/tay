@@ -1,13 +1,22 @@
 defmodule Tay.State.Auxiliary do
+  require Tay.Event.V2
   @moduledoc false
 
   alias Tay.Event
 
   def reduce(%Event{record_type: type, data: data} = event, %{sequence: sequence}, candidate)
-      when type in 7..10 do
+      when Tay.Event.V2.is_auxiliary(type) do
     with {:ok, _} <- Event.encode(event, candidate.value_limits),
          true <- Tay.Event.V2.sequence?(sequence) || {:error, :invalid_position} do
-      apply_event(type, data, sequence, candidate)
+      with {:ok, next} <- apply_event(type, data, sequence, candidate) do
+        old = entry_bytes(candidate, type, data)
+        added = entry_bytes(next, type, data)
+        bytes = candidate.bytes - old + added
+
+        with :ok <- Tay.State.Memory.check(candidate.limits, bytes) do
+          {:ok, %{next | bytes: bytes, auxiliary_bytes: candidate.auxiliary_bytes - old + added}}
+        end
+      end
     end
   end
 
@@ -24,7 +33,10 @@ defmodule Tay.State.Auxiliary do
         registered_at: data["at"],
         next_at: data["next_at"],
         last_at: nil,
-        cancelled_at: nil
+        cancelled_at: nil,
+        active_job_id: nil,
+        active_job_ids: [],
+        membership_complete: false
       }
 
       {:ok, %{candidate | schedules: Map.put(candidate.schedules, schedule.id, schedule)}}
@@ -52,6 +64,70 @@ defmodule Tay.State.Auxiliary do
     end
   end
 
+  defp apply_event(12, data, _sequence, candidate) do
+    id = data["schedule_id"]
+
+    previous = Map.get(candidate.schedules, id)
+
+    if data["expected_revision"] != if(previous, do: previous.revision, else: 0) do
+      {:error, :revision_conflict}
+    else
+      schedule = %{
+        id: id,
+        definition: data["definition"],
+        revision: data["revision"],
+        registered_at: data["registered_at"],
+        next_at: data["next_at"],
+        last_at: data["last_at"],
+        cancelled_at: data["cancelled_at"],
+        active_job_id: data["active_job_id"],
+        active_job_ids:
+          if(previous,
+            do: Map.get(previous, :active_job_ids, []),
+            else: List.wrap(data["active_job_id"])
+          ),
+        membership_complete:
+          if(previous, do: Map.get(previous, :membership_complete, false), else: false)
+      }
+
+      {:ok, %{candidate | schedules: Map.put(candidate.schedules, id, schedule)}}
+    end
+  end
+
+  defp apply_event(13, data, sequence, candidate) do
+    with {:ok, next} <- apply_event(12, data, sequence, candidate) do
+      schedule = next.schedules[data["schedule_id"]]
+
+      schedule = %{
+        schedule
+        | active_job_ids: data["active_job_ids"],
+          membership_complete: data["membership_complete"]
+      }
+
+      {:ok, %{next | schedules: Map.put(next.schedules, schedule.id, schedule)}}
+    end
+  end
+
+  defp apply_event(11, data, sequence, candidate) do
+    with {:ok, next} <- apply_event(8, data, sequence, candidate) do
+      id = data["schedule_id"]
+
+      schedule =
+        next.schedules[id]
+        |> Map.put(:active_job_id, data["active_job_id"])
+        |> Map.put(:revision, data["expected_revision"] + 1)
+        |> Map.put(
+          :active_job_ids,
+          active_members(
+            candidate.jobs,
+            Map.get(next.schedules[id], :active_job_ids, []) ++ List.wrap(data["active_job_id"])
+          )
+        )
+
+      {:ok, %{next | schedules: Map.put(next.schedules, id, schedule)}}
+    end
+  end
+
   defp apply_event(9, data, sequence, candidate) do
     with %{} = schedule <- Map.get(candidate.schedules, data["schedule_id"]),
          true <- schedule.revision == data["expected_revision"] || {:error, :revision_conflict} do
@@ -75,63 +151,83 @@ defmodule Tay.State.Auxiliary do
     end
   end
 
+  def active_members(jobs, ids) do
+    ids
+    |> Enum.uniq()
+    |> Enum.filter(fn encoded ->
+      case Tay.JobID.decode(encoded) do
+        {:ok, raw} ->
+          case Map.get(jobs, raw) do
+            %{state: state} -> state not in [:completed, :cancelled, :discarded]
+            _ -> false
+          end
+
+        _ ->
+          false
+      end
+    end)
+    |> Enum.sort()
+  end
+
+  def replace_owners(owners, previous, next) do
+    previous_ids = if previous, do: Map.get(previous, :active_job_ids, []), else: []
+
+    owners =
+      Enum.reduce(previous_ids, owners, fn encoded, acc ->
+        case Tay.JobID.decode(encoded) do
+          {:ok, raw} -> Map.delete(acc, raw)
+          _ -> acc
+        end
+      end)
+
+    Enum.reduce(Map.get(next, :active_job_ids, []), owners, fn encoded, acc ->
+      case Tay.JobID.decode(encoded) do
+        {:ok, raw} -> Map.put(acc, raw, next.id)
+        _ -> acc
+      end
+    end)
+  end
+
+  def owners(schedules) do
+    for {id, schedule} <- schedules,
+        encoded <- Map.get(schedule, :active_job_ids, []),
+        {:ok, raw} <- [Tay.JobID.decode(encoded)],
+        into: %{},
+        do: {raw, id}
+  end
+
+  defp entry_bytes(candidate, 10, data),
+    do: Tay.State.Memory.result_bytes(Map.get(candidate.results, data["job_id"]))
+
+  defp entry_bytes(candidate, _, data),
+    do: Tay.State.Memory.schedule_bytes(Map.get(candidate.schedules, data["schedule_id"]))
+
   def canonical_events(candidate, first_sequence) do
     schedules = candidate.schedules |> Map.values() |> Enum.sort_by(& &1.id)
 
-    {schedule_events, next} =
-      Enum.reduce(schedules, {[], first_sequence}, fn schedule, {events, sequence} ->
-        definition = schedule.definition
-        initial_next = schedule.last_at || schedule.next_at
-
-        registered = %Event{
-          record_type: 7,
+    schedule_events =
+      Enum.map(schedules, fn schedule ->
+        %Event{
+          record_type: 13,
           payload_schema_version: 2,
           data: %{
             "at" => schedule.registered_at,
-            "definition" => definition,
             "expected_revision" => 0,
-            "next_at" => initial_next,
-            "schedule_id" => schedule.id
+            "schedule_id" => schedule.id,
+            "definition" => schedule.definition,
+            "registered_at" => schedule.registered_at,
+            "revision" => schedule.revision,
+            "last_at" => schedule.last_at,
+            "next_at" => schedule.next_at,
+            "cancelled_at" => schedule.cancelled_at,
+            "active_job_id" => Map.get(schedule, :active_job_id),
+            "active_job_ids" => Map.get(schedule, :active_job_ids, []),
+            "membership_complete" => Map.get(schedule, :membership_complete, false)
           }
         }
-
-        {events, revision, sequence} = {[registered | events], sequence, sequence + 1}
-
-        {events, revision, sequence} =
-          if schedule.last_at do
-            advanced = %Event{
-              record_type: 8,
-              payload_schema_version: 2,
-              data: %{
-                "at" => max(schedule.last_at, schedule.registered_at),
-                "due_at" => schedule.last_at,
-                "expected_revision" => revision,
-                "next_at" => schedule.next_at,
-                "schedule_id" => schedule.id
-              }
-            }
-
-            {[advanced | events], sequence, sequence + 1}
-          else
-            {events, revision, sequence}
-          end
-
-        if schedule.cancelled_at do
-          cancelled = %Event{
-            record_type: 9,
-            payload_schema_version: 2,
-            data: %{
-              "at" => schedule.cancelled_at,
-              "expected_revision" => revision,
-              "schedule_id" => schedule.id
-            }
-          }
-
-          {[cancelled | events], sequence + 1}
-        else
-          {events, sequence}
-        end
       end)
+
+    next = first_sequence + length(schedule_events)
 
     result_events =
       candidate.results
@@ -150,6 +246,6 @@ defmodule Tay.State.Auxiliary do
         }
       end)
 
-    {Enum.reverse(schedule_events) ++ result_events, next}
+    {schedule_events ++ result_events, next}
   end
 end

@@ -30,6 +30,9 @@ def compare(
         "harness_sha256",
         "workload",
         "environment",
+        "comparison_protocol",
+        "orchestrator_sha256",
+        "trial_order",
     ]:
         if baseline.get(key) != candidate.get(key):
             raise ValueError(f"incompatible reports: {key} differs")

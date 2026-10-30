@@ -24,7 +24,12 @@ public.
 4. Commit and push the release commit to `main` without creating the tag yet.
 5. Wait for both `Continuous integration` and `Standalone runtime` to succeed
    for that exact commit SHA.
-6. Create `v<mix-version>`, push the tag, and verify that both the repository and
+6. Run `Tay qualification (not publication)` against that exact commit SHA, with
+   `fail_on_regression=true`, the preceding stable release as `baseline_ref`, and
+   the full qualification enabled. Both Linux and macOS qualification and
+   performance jobs must pass; retain the comparison reports with the release.
+   Investigate noisy/regressed measurements before tagging.
+7. Create `v<mix-version>`, push the tag, and verify that both the repository and
    tag are accessible without authentication.
 
 ## Qualify
@@ -49,6 +54,17 @@ Install the wheel into a fresh virtual environment and verify both `import tay`
 and `tay-worker --help` before uploading it.
 
 ## Publish
+
+The container and PyPI workflows refuse publication unless the same commit SHA
+has a successful `Release qualification gate` job in `qualification.yml`. That
+job requires both platform matrices, full qualification and
+`fail_on_regression=true`; performance-only and ungated runs cannot authorize a
+release. An API failure also refuses publication. Before manual Hex publication,
+verify the same evidence using an authenticated GitHub CLI session:
+
+```sh
+python3 .github/scripts/check_release_qualification.py --repository AndriiSydorenko1904/tay
+```
 
 Authenticate interactively for the first Hex release, inspect the file list,
 and publish the package and HexDocs:

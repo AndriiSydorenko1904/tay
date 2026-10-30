@@ -43,6 +43,9 @@ class ComparisonTests(unittest.TestCase):
             "harness_sha256",
             "workload",
             "environment",
+            "comparison_protocol",
+            "orchestrator_sha256",
+            "trial_order",
         ]:
             other = report()
             other[field] = "changed"

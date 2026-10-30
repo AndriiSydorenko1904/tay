@@ -1,0 +1,38 @@
+groups:
+  - name: tay
+    rules:
+      - alert: TayUnavailable
+        expr: tay_engine_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Tay engine is unavailable
+      - alert: TayReadyWorkDelayed
+        expr: tay_queue_oldest_ready_age_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Eligible Tay jobs have waited more than a minute
+      - alert: TayScheduleDelayed
+        expr: tay_schedule_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A Tay schedule occurrence remains overdue
+      - alert: TayCapacityRefused
+        expr: sum by (engine, reason) (increase(tay_capacity_refused_count[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tay is refusing commands because a capacity budget is exhausted
+      - alert: TayCheckpointStale
+        expr: (time() - tay_storage_last_checkpoint_timestamp_seconds > 3600) and (tay_storage_last_checkpoint_timestamp_seconds > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tay has no recent successful checkpoint

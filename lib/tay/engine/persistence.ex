@@ -14,7 +14,7 @@ defmodule Tay.Engine.Persistence do
   @segment_catalog_limit 128
 
   def commit(state, previous, event, encoded \\ nil) do
-    {durability, encoded} =
+    {durability, _encoded} =
       case encoded do
         {:durability, mode, payload} when mode in [:persistent, :volatile] -> {mode, payload}
         payload -> {nil, payload}
@@ -26,59 +26,9 @@ defmodule Tay.Engine.Persistence do
 
     case mode do
       :volatile -> commit_volatile(state, previous, event)
-      :persistent -> commit_persistent(state, previous, event, encoded)
+      :persistent -> commit_v2(state, previous, event)
     end
   end
-
-  defp commit_persistent(%{epoch_id: epoch_id} = state, previous, event, _encoded)
-       when is_binary(epoch_id),
-       do: commit_v2(state, previous, event)
-
-  defp commit_persistent(state, previous, event, encoded) do
-    ensure_generation_live!(state)
-
-    with {:ok, {type, schema, payload}} <- encoded_event(state, event, encoded),
-         {:ok, effect} <- Transition.prepare(previous, event, state.config.value_limits),
-         reserve = reservation_after(state, previous, type),
-         :ok <- headroom(state, byte_size(payload), reserve),
-         {:ok, predicted} <- Transition.apply(effect, %{sequence: state.next_sequence}),
-         {:ok, _, budget} <- ProjectionState.account_active(state, previous, predicted) do
-      hook(state.config, {:execution, type, :pre_append})
-      hook(state.config, :pre_append)
-
-      {writer_result, state} = append_record(state, type, schema, payload)
-
-      case writer_result do
-        {:ok, receipt} ->
-          validate_receipt!(state, receipt, byte_size(payload))
-          hook(state.config, :post_append)
-          hook(state.config, {:execution, type, :post_append})
-          {:ok, job} = Transition.apply(effect, receipt)
-          {:ok, job, ^budget} = ProjectionState.account_active(state, previous, job)
-
-          job =
-            Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
-
-          finish_commit(state, previous, job, budget, receipt, payload, reserve, type)
-
-        {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
-          {:error, reason}
-
-        _ ->
-          exit(:writer_commit_unknown)
-      end
-    end
-  end
-
-  def encoded_event(state, event, nil) do
-    Event.encode(
-      event,
-      state.config.value_limits,
-      Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
-    )
-  end
-
-  def encoded_event(_state, event, payload), do: {:ok, {event.record_type, 1, payload}}
 
   def commit_auxiliary(state, event, job \\ nil) do
     if job && ProjectionState.durability(state, job) == :volatile,
@@ -89,12 +39,7 @@ defmodule Tay.Engine.Persistence do
   defp commit_persistent_auxiliary(state, event, job) do
     ensure_generation_live!(state)
 
-    seed = %{
-      Transition.candidate(state.config.candidate_limits, state.config.value_limits)
-      | jobs: if(job, do: %{job.id => job}, else: %{}),
-        schedules: state.schedules,
-        results: state.results
-    }
+    seed = auxiliary_seed(state, event, job)
 
     with {:ok, {type, 2, payload}} <-
            Event.encode(
@@ -104,39 +49,100 @@ defmodule Tay.Engine.Persistence do
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: state.next_sequence}, seed),
          :ok <- headroom(state, byte_size(payload), state.persistent_settlement_reserve) do
-      {writer_result, state} = append_record(state, type, 2, payload)
+      Tay.State.Memory.transaction(
+        state.memory,
+        candidate.auxiliary_bytes - state.auxiliary_bytes,
+        fn ->
+          {writer_result, state} = append_record(state, type, 2, payload)
 
-      case writer_result do
-        {:ok, receipt} ->
-          validate_receipt!(state, receipt, byte_size(payload))
+          case writer_result do
+            {:ok, receipt} ->
+              validate_receipt!(state, receipt, byte_size(payload))
 
-          next = %{
-            state
-            | schedules: candidate.schedules,
-              results: Map.merge(state.results, candidate.results),
-              next_sequence: state.next_sequence + 1,
-              events_since_checkpoint: state.events_since_checkpoint + 1,
-              history_bytes: state.history_bytes + history_delta(state, byte_size(payload)),
-              segment_count: state.segment_count + receipt.segment_id - state.segment.id,
-              segment: %{
-                id: receipt.segment_id,
-                state: :active,
-                bytes: receipt.offset + byte_size(payload) + 28,
-                count:
-                  if(receipt.segment_id == state.segment.id, do: state.segment.count + 1, else: 1)
-              },
-              segment_catalog: update_segment_catalog(state, receipt, byte_size(payload))
-          }
+              {:ok, candidate} =
+                Auxiliary.reduce(
+                  event,
+                  %{sequence: state.next_sequence},
+                  auxiliary_seed(state, event, job)
+                )
 
-          {:ok, next}
+              actual_delta = candidate.auxiliary_bytes - state.auxiliary_bytes
 
-        {:error, reason} ->
-          {:error, reason}
+              next = %{
+                state
+                | schedules: candidate.schedules,
+                  auxiliary_bytes: candidate.auxiliary_bytes,
+                  schedule_owners:
+                    if(event.data["schedule_id"],
+                      do:
+                        Tay.State.Auxiliary.replace_owners(
+                          state.schedule_owners,
+                          state.schedules[event.data["schedule_id"]],
+                          candidate.schedules[event.data["schedule_id"]]
+                        ),
+                      else: state.schedule_owners
+                    ),
+                  results: candidate.results,
+                  next_sequence: state.next_sequence + 1,
+                  events_since_checkpoint: state.events_since_checkpoint + 1,
+                  history_bytes: state.history_bytes + history_delta(state, byte_size(payload)),
+                  segment_count: state.segment_count + receipt.segment_id - state.segment.id,
+                  segment: %{
+                    id: receipt.segment_id,
+                    state: :active,
+                    bytes: receipt.offset + byte_size(payload) + 28,
+                    count:
+                      if(receipt.segment_id == state.segment.id,
+                        do: state.segment.count + 1,
+                        else: 1
+                      )
+                  },
+                  segment_catalog: update_segment_catalog(state, receipt, byte_size(payload))
+              }
 
-        _ ->
-          exit(:writer_commit_unknown)
-      end
+              if event.data["schedule_id"],
+                do:
+                  Tay.State.ScheduleIndex.put(
+                    state.schedule_index,
+                    candidate.schedules[event.data["schedule_id"]]
+                  )
+
+              {:memory_delta, actual_delta, {:ok, next}}
+
+            {:error, reason} ->
+              {:error, reason}
+
+            _ ->
+              exit(:writer_commit_unknown)
+          end
+        end
+      )
     end
+  end
+
+  defp auxiliary_seed(state, event, job) do
+    schedule = state.schedules[event.data["schedule_id"]]
+    ids = if schedule, do: Map.get(schedule, :active_job_ids, []), else: []
+    ids = Enum.uniq(ids ++ List.wrap(event.data["active_job_id"]))
+
+    jobs =
+      Enum.reduce(ids, %{}, fn encoded, acc ->
+        with {:ok, raw} <- Tay.JobID.decode(encoded),
+             value when not is_nil(value) <- ProjectionState.lookup(state, raw),
+             do: Map.put(acc, raw, value),
+             else: (_ -> acc)
+      end)
+
+    jobs = if job, do: Map.put(jobs, job.id, job), else: jobs
+
+    %{
+      Transition.candidate(state.config.candidate_limits, state.config.value_limits)
+      | jobs: jobs,
+        schedules: state.schedules,
+        results: state.results,
+        bytes: state.budget.bytes + state.auxiliary_bytes,
+        auxiliary_bytes: state.auxiliary_bytes
+    }
   end
 
   defp append_record(state, type, schema, payload) do
@@ -168,34 +174,36 @@ defmodule Tay.Engine.Persistence do
          reserve = reservation_after(state, previous, event.record_type),
          :ok <- headroom(state, byte_size(payload), reserve),
          {:ok, job, budget} <- ProjectionState.account_active(state, previous, predicted) do
-      hook(state.config, {:execution, event.record_type, :pre_append})
-      hook(state.config, :pre_append)
-      {writer_result, state} = append_record(state, 8, 1, payload)
+      Tay.State.Memory.transaction(state.memory, budget.bytes - state.budget.bytes, fn ->
+        hook(state.config, {:execution, event.record_type, :pre_append})
+        hook(state.config, :pre_append)
+        {writer_result, state} = append_record(state, 8, 1, payload)
 
-      case writer_result do
-        {:ok, receipt} ->
-          validate_receipt!(state, receipt, byte_size(payload))
-          hook(state.config, :post_append)
-          hook(state.config, {:execution, event.record_type, :post_append})
+        case writer_result do
+          {:ok, receipt} ->
+            validate_receipt!(state, receipt, byte_size(payload))
+            hook(state.config, :post_append)
+            hook(state.config, {:execution, event.record_type, :post_append})
 
-          finish_commit(
-            state,
-            previous,
-            job,
-            budget,
-            receipt,
-            payload,
-            reserve,
-            event.record_type,
-            next_order
-          )
+            finish_commit(
+              state,
+              previous,
+              job,
+              budget,
+              receipt,
+              payload,
+              reserve,
+              event.record_type,
+              next_order
+            )
 
-        {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
-          {:error, reason}
+          {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
+            {:error, reason}
 
-        _ ->
-          exit(:writer_commit_unknown)
-      end
+          _ ->
+            exit(:writer_commit_unknown)
+        end
+      end)
     end
   end
 
@@ -215,55 +223,53 @@ defmodule Tay.Engine.Persistence do
            ),
          {:ok, job, budget} <-
            ProjectionState.account_active(state, previous, predicted, :volatile) do
-      job = Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
-      :ok = ProjectionState.publish(state, previous, job, :volatile)
-      reserve = reservation_after(state, previous, event.record_type, :volatile)
+      Tay.State.Memory.transaction(state.memory, budget.bytes - state.budget.bytes, fn ->
+        job = Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
+        :ok = ProjectionState.publish(state, previous, job, :volatile)
+        reserve = reservation_after(state, previous, event.record_type, :volatile)
 
-      next = %{
-        state
-        | volatile_ids: MapSet.put(state.volatile_ids, job.id),
-          volatile_next_availability_order: next_order,
-          budget: budget,
-          active_budget:
-            ProjectionState.replace_partition(
-              state.active_budget,
-              previous,
-              job,
-              :active,
-              :volatile
-            ),
-          volatile_terminal_budget:
-            ProjectionState.replace_partition(
-              state.volatile_terminal_budget,
-              previous,
-              job,
-              :terminal
-            ),
-          blocked: state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
-          settlement_reserve: reserve
-      }
+        next = %{
+          state
+          | volatile_ids: MapSet.put(state.volatile_ids, job.id),
+            volatile_next_availability_order: next_order,
+            budget: budget,
+            active_budget:
+              ProjectionState.replace_partition(
+                state.active_budget,
+                previous,
+                job,
+                :active,
+                :volatile
+              ),
+            volatile_terminal_budget:
+              ProjectionState.replace_partition(
+                state.volatile_terminal_budget,
+                previous,
+                job,
+                :terminal
+              ),
+            blocked: state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
+            settlement_reserve: reserve
+        }
 
-      next =
-        next
-        |> record_transition(telemetry_operation(event.record_type), previous, job)
-        |> maybe_schedule_memory_reclaim(previous, job)
-        |> ProjectionState.ensure_active_accounting!()
+        next =
+          next
+          |> record_start(event.record_type, job)
+          |> record_transition(telemetry_operation(event.record_type), previous, job)
+          |> maybe_schedule_memory_reclaim(previous, job)
+          |> ProjectionState.ensure_active_accounting!()
 
-      hook(state.config, :post_projection)
-      hook(state.config, {:execution, event.record_type, :post_projection})
-      {:ok, job, next}
+        hook(state.config, :post_projection)
+        hook(state.config, {:execution, event.record_type, :post_projection})
+        {:ok, job, next}
+      end)
     end
   end
 
   defp commit_volatile_auxiliary(state, event, job) do
     ensure_generation_live!(state)
 
-    seed = %{
-      Transition.candidate(state.config.candidate_limits, state.config.value_limits)
-      | jobs: %{job.id => job},
-        schedules: %{},
-        results: state.results
-    }
+    seed = auxiliary_seed(state, event, job)
 
     with {:ok, {_, 2, _}} <-
            Event.encode(
@@ -272,7 +278,13 @@ defmodule Tay.Engine.Persistence do
              Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: 1}, seed) do
-      {:ok, %{state | results: candidate.results}}
+      Tay.State.Memory.transaction(
+        state.memory,
+        candidate.auxiliary_bytes - state.auxiliary_bytes,
+        fn ->
+          {:ok, %{state | results: candidate.results, auxiliary_bytes: candidate.auxiliary_bytes}}
+        end
+      )
     end
   end
 
@@ -280,13 +292,14 @@ defmodule Tay.Engine.Persistence do
          state,
          previous,
          job,
-         budget,
+         _budget,
          receipt,
          payload,
          reserve,
          operation,
-         next_order \\ nil
+         next_order
        ) do
+    {:ok, job, budget} = ProjectionState.account_active(state, previous, job)
     :ok = ProjectionState.publish(state, previous, job)
 
     next = %{
@@ -318,6 +331,7 @@ defmodule Tay.Engine.Persistence do
 
     next =
       next
+      |> record_start(operation, job)
       |> record_transition(telemetry_operation(operation), previous, job)
       |> maybe_schedule_memory_reclaim(previous, job)
       |> ProjectionState.ensure_active_accounting!()
@@ -338,6 +352,20 @@ defmodule Tay.Engine.Persistence do
     if receipt != Map.put(expected, :durability, state.config.durability),
       do: exit(:invalid_writer_receipt)
   end
+
+  defp record_start(state, 3, job) do
+    limiter =
+      Tay.Execution.RateLimiter.consume(
+        state.rate_limiter,
+        job.definition["queue_key"],
+        job.definition["worker_key"],
+        Tay.Execution.Clock.monotonic(state.config.clock)
+      )
+
+    %{state | rate_limiter: limiter}
+  end
+
+  defp record_start(state, _, _), do: state
 
   defp record_transition(%{deferred_transitions: transitions} = state, operation, previous, job)
        when is_list(transitions) do

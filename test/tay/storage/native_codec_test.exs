@@ -26,7 +26,11 @@ defmodule Tay.Storage.Native.CodecTest do
       assert_receive {^port, {:data, reply}}, 5_000
       reply
     after
-      if Port.info(port), do: Port.close(port)
+      try do
+        Port.close(port)
+      rescue
+        ArgumentError -> :ok
+      end
     end
   end
 

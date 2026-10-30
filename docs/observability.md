@@ -121,3 +121,27 @@ storage paths, and worker payloads are never telemetry metadata.
 Call `Tay.Telemetry.events/0` to enumerate the stable event names. Custom
 handlers execute synchronously in the emitting process, so they must remain
 fast and must not perform blocking network I/O.
+
+## Operational gauges and alerts
+
+The catalogue also exports:
+
+- `tay.queue.oldest_ready_age.seconds`: age since the earliest eligible time of
+  an unclaimed job in each configured queue, including external-worker jobs.
+  A private ordered ready index avoids scanning the job table. Paused queues,
+  missing workers and intentional rate limits can all explain a growing age.
+- `tay.schedule.lag.seconds`: maximum overdue active schedule occurrence. A
+  `queue` overlap policy intentionally increases this while the preceding job
+  is nonterminal. Cancelled schedules are excluded.
+- `tay.storage.last_checkpoint.timestamp.seconds`: last successful checkpoint
+  Unix timestamp; zero until the first checkpoint. It survives recovery.
+- `tay.capacity.refused.count`: known capacity refusals with finite `reason`
+  labels. Only approved budget names are exported; other reasons become `other`.
+
+[Example Prometheus rules](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0-rc3/docs/alerts.yml) cover unavailability, queued work, schedule
+lag, capacity refusals and stale checkpoints. Adapt the thresholds to the
+workload and disable the stale-checkpoint rule for intentionally idle engines or
+hosts with periodic checkpoints disabled. Initial timestamp zero means no
+checkpoint yet, rather than an old checkpoint. Counter names follow
+`TelemetryMetricsPrometheus.Core` conventions without an automatic `_total`
+suffix. Exporters that rename counters require matching rule names.

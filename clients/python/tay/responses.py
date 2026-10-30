@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from .errors import (
     JobCancelled,
@@ -13,7 +13,9 @@ from .errors import (
     ServerError,
 )
 from .job_options import DURABILITY_MODES as _DURABILITY_MODES
-from .task import Durability
+
+if TYPE_CHECKING:
+    from .task import Durability
 
 
 def _server_error_from_payload(payload: Any) -> ServerError:
@@ -58,7 +60,7 @@ def _extract_job_durability(reply: Mapping[str, Any]) -> Durability | None:
     if isinstance(job, Mapping):
         durability = job.get("durability")
         if isinstance(durability, str) and durability in _DURABILITY_MODES:
-            return cast(Durability, durability)
+            return cast("Durability", durability)
     return None
 
 

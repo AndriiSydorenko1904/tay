@@ -4,8 +4,12 @@ defmodule Tay.Schedule do
   alias Tay.Protocol.V1, as: Protocol
   alias Tay.Schedule.Cron
 
+  @fields ~w(task args cron every timezone catch_up overlap declaration_id delay start_at options)
+  def valid_fields?(fields), do: is_map(fields) and Enum.all?(Map.keys(fields), &(&1 in @fields))
+
   @overlap ~w(allow skip queue)
   @catch_up ~w(latest all)
+  @max_time 9_223_372_036_854_775_807
 
   @enforce_keys [:id, :task, :args, :kind, :expression, :overlap, :catch_up, :next_at]
   defstruct [
@@ -23,7 +27,8 @@ defmodule Tay.Schedule do
     :definition,
     :revision,
     :registered_at,
-    :options
+    :options,
+    :active_job_id
   ]
 
   @type t :: %__MODULE__{}
@@ -32,14 +37,16 @@ defmodule Tay.Schedule do
   # Protocol listener and the durable event layer. `next_at` is always UTC ms.
   def new(id, fields, now)
       when is_binary(id) and is_map(fields) and is_integer(now) and now >= 0 do
-    with true <- Protocol.identifier?(id) || {:error, :invalid_schedule_id},
+    with true <- valid_fields?(fields) || {:error, :invalid_schedule},
+         true <- Protocol.identifier?(id) || {:error, :invalid_schedule_id},
          task when is_binary(task) <- Map.get(fields, "task") || {:error, :invalid_task},
          true <- Protocol.task_key?(task) || {:error, :invalid_task},
          args when is_map(args) <- Map.get(fields, "args", %{}) || {:error, :invalid_args},
          true <- Protocol.json_value?(args) || {:error, :invalid_args},
          {:ok, overlap} <- option(fields, "overlap", "skip", @overlap),
          {:ok, catch_up} <- option(fields, "catch_up", "latest", @catch_up),
-         {:ok, kind, expression, durable_expression, timezone, next_at} <- timing(fields, now) do
+         {:ok, kind, expression, durable_expression, timezone, next_at} <- timing(fields, now),
+         true <- Tay.Event.V2.time?(next_at) || {:error, :invalid_start} do
       options = Map.get(fields, "options", %{})
 
       definition = %{
@@ -89,7 +96,9 @@ defmodule Tay.Schedule do
   end
 
   def advance(%__MODULE__{kind: :every, expression: interval} = schedule, at) do
-    {:ok, %{schedule | last_at: at, next_at: at + interval}}
+    if at + interval <= @max_time,
+      do: {:ok, %{schedule | last_at: at, next_at: at + interval}},
+      else: {:error, :schedule_time_exhausted}
   end
 
   def advance_after_delivery(%__MODULE__{catch_up: "all"} = schedule, at, _now),
@@ -110,7 +119,11 @@ defmodule Tay.Schedule do
         now
       ) do
     skipped = div(max(now - at, 0), interval)
-    {:ok, %{schedule | last_at: at, next_at: at + (skipped + 1) * interval}}
+    next_at = at + (skipped + 1) * interval
+
+    if next_at <= @max_time,
+      do: {:ok, %{schedule | last_at: at, next_at: next_at}},
+      else: {:error, :schedule_time_exhausted}
   end
 
   def cancel(%__MODULE__{} = schedule, at) when is_integer(at) and at >= 0,
@@ -137,15 +150,32 @@ defmodule Tay.Schedule do
          definition: definition,
          revision: stored.revision,
          registered_at: stored.registered_at,
+         active_job_id: Map.get(stored, :active_job_id),
          options: definition["options"]
        }}
     end
+  end
+
+  @doc false
+  def occurrence_id(id, due) do
+    digest =
+      :crypto.hash(:sha256, ["tay-schedule-occurrence-v1:", id, ":", Integer.to_string(due)])
+
+    raw = binary_part(digest, 0, 16)
+    Tay.JobID.encode(if raw == <<0::128>>, do: <<0::120, 1>>, else: raw)
   end
 
   def equivalent?(%__MODULE__{} = left, %__MODULE__{} = right) do
     Map.take(left, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up]) ==
       Map.take(right, [:id, :task, :args, :kind, :expression, :timezone, :overlap, :catch_up])
   end
+
+  def public(schedule, :summary) do
+    public(schedule) |> Map.drop(["args", "expression", "options"])
+  end
+
+  def public(schedule), do: public_view(view(schedule))
+  def public_view(view), do: Map.new(view, fn {key, value} -> {Atom.to_string(key), value} end)
 
   def view(%__MODULE__{} = schedule), do: view(Map.from_struct(schedule))
 
@@ -161,6 +191,7 @@ defmodule Tay.Schedule do
       timezone: definition["timezone"],
       overlap: definition["overlap"],
       catch_up: definition["catch_up"],
+      active_job_id: Map.get(schedule, :active_job_id),
       options: definition["options"],
       next_at: schedule.next_at,
       last_at: schedule.last_at,
@@ -200,10 +231,17 @@ defmodule Tay.Schedule do
 
   defp first_at(fields, now) do
     case {Map.get(fields, "delay"), Map.get(fields, "start_at")} do
-      {nil, nil} -> {:ok, now}
-      {delay, nil} when is_number(delay) and delay >= 0 -> {:ok, now + round(delay * 1_000)}
-      {nil, start_at} when is_integer(start_at) and start_at >= 0 -> {:ok, start_at}
-      _ -> {:error, :invalid_start}
+      {nil, nil} ->
+        {:ok, now}
+
+      {delay, nil} when is_number(delay) and delay >= 0 and delay <= div(@max_time - now, 1000) ->
+        {:ok, now + round(delay * 1_000)}
+
+      {nil, start_at} when is_integer(start_at) and start_at >= 0 ->
+        {:ok, start_at}
+
+      _ ->
+        {:error, :invalid_start}
     end
   end
 
@@ -218,8 +256,15 @@ defmodule Tay.Schedule do
                "hours" => 3_600_000,
                "days" => 86_400_000
              }[unit] do
-          nil -> {:error, :invalid_interval}
-          multiplier -> {:ok, round(amount * multiplier)}
+          nil ->
+            {:error, :invalid_interval}
+
+          multiplier when amount <= div(@max_time, multiplier) ->
+            interval = round(amount * multiplier)
+            if interval > 0, do: {:ok, interval}, else: {:error, :invalid_interval}
+
+          _ ->
+            {:error, :invalid_interval}
         end
 
       _ ->

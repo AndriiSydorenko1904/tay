@@ -8,7 +8,13 @@ defmodule Tay.Dashboard.SchedulesLive do
     {:ok,
      socket
      |> Live.initialize(session)
-     |> assign(schedules: [], engine_available: false, refresh_timer: nil)
+     |> assign(
+       schedules: [],
+       cursor: nil,
+       next_cursor: nil,
+       engine_available: false,
+       refresh_timer: nil
+     )
      |> refresh()}
   end
 
@@ -19,6 +25,11 @@ defmodule Tay.Dashboard.SchedulesLive do
       {:error, error} -> {:noreply, assign(socket, flash_error: Live.error_message(error))}
     end
   end
+
+  def handle_event("next", _, socket),
+    do: {:noreply, socket |> assign(cursor: socket.assigns.next_cursor) |> refresh()}
+
+  def handle_event("first", _, socket), do: {:noreply, socket |> assign(cursor: nil) |> refresh()}
 
   @impl true
   def handle_info({:tay_dashboard_refresh, signal}, socket),
@@ -78,14 +89,23 @@ defmodule Tay.Dashboard.SchedulesLive do
           </tr>
         </tbody>
       </table>
+      <div :if={@cursor || @next_cursor}>
+        <button :if={@cursor} class="secondary" phx-click="first">First page</button>
+        <button :if={@next_cursor} class="secondary" phx-click="next">Next page</button>
+      </div>
     </Live.shell>
     """
   end
 
   defp refresh(socket) do
-    case Tay.schedules(name: socket.assigns.engine) do
-      {:ok, schedules} ->
-        assign(socket, schedules: schedules, engine_available: true, flash_error: nil)
+    case Tay.schedule_page(name: socket.assigns.engine, cursor: socket.assigns.cursor) do
+      {:ok, page} ->
+        assign(socket,
+          schedules: page.schedules,
+          next_cursor: page.next_cursor,
+          engine_available: true,
+          flash_error: nil
+        )
 
       {:error, error} ->
         assign(socket,

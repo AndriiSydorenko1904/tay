@@ -10,8 +10,49 @@ defmodule Tay.Schedule.Coordinator do
   @retry_ms 1_000
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
-  def register(server, fields), do: GenServer.call(server, {:register, fields}, @call_timeout)
-  def cancel(server, id), do: GenServer.call(server, {:cancel, id}, @call_timeout)
+
+  def register(server, fields) when is_map(fields) do
+    now = System.system_time(:millisecond)
+    id = Map.get(fields, "declaration_id") || identifier()
+    options = Map.get(fields, "options", %{})
+
+    with {:ok, schedule} <- Schedule.new(id, fields, now),
+         {:ok, _} <- JobOptions.parse(options),
+         do: request(server, {:register_prepared, schedule, options, now}),
+         else: (_ -> {:error, "invalid_schedule"})
+  end
+
+  def register(_, _), do: {:error, "invalid_schedule"}
+  def cancel(server, id), do: request(server, {:cancel, id})
+
+  defp request(server, payload) do
+    with {:ok, engine} <- GenServer.call(server, :admission_context, @call_timeout),
+         {:ok, meta} <- Tay.Engine.Admission.metadata(engine) do
+      case Tay.Engine.Admission.request(
+             engine,
+             meta,
+             {:schedule_operation, server, payload},
+             Tay.State.Memory.bytes(payload),
+             :schedule_operation,
+             nil,
+             @call_timeout
+           ) do
+        {:error, %Tay.Error{kind: :capacity, reason: reason}} ->
+          {:error, "capacity", %{"reason" => inspect(reason)}}
+
+        {:error, %Tay.Error{kind: :unknown_outcome}} ->
+          {:error, "unknown_outcome", %{"reason" => "caller_timeout_or_disconnect"}}
+
+        {:error, %Tay.Error{}} ->
+          {:error, "unavailable"}
+
+        value ->
+          value
+      end
+    else
+      _ -> {:error, "unavailable"}
+    end
+  end
 
   @impl true
   def init(%{core: core, schedules: durable}) when is_map(durable) do
@@ -28,59 +69,59 @@ defmodule Tay.Schedule.Coordinator do
         end
       end)
 
-    {:ok, %{core: core, schedules: schedules, operation: nil, operations: :queue.new()}}
+    {:ok,
+     %{
+       core: core,
+       schedules: schedules,
+       operation: nil,
+       operation_monitor: nil,
+       operations: :queue.new()
+     }}
   end
 
   @impl true
-  def handle_call({:register, fields}, from, state) do
-    id = Map.get(fields, "declaration_id") || identifier()
-    now = System.system_time(:millisecond)
+  def handle_call(:admission_context, _from, %{core: {Tay.Core.Local, engine}} = state),
+    do: {:reply, {:ok, engine}, state}
 
-    with {:ok, schedule} <- Schedule.new(id, fields, now),
-         options <- Map.get(fields, "options", %{}),
-         {:ok, _} <- JobOptions.parse(options) do
-      {:noreply, enqueue_operation(state, {:register, schedule, options, now, from})}
-    else
-      _ -> {:reply, {:error, "invalid_schedule"}, state}
-    end
-  end
+  def handle_call({:register_prepared, schedule, options, now}, from, state),
+    do: {:noreply, enqueue_operation(state, {:register, schedule, options, now, from})}
 
   def handle_call({:cancel, id}, from, state),
     do: {:noreply, enqueue_operation(state, {:cancel, id, from})}
 
   @impl true
-  def handle_info({:due, id, due}, state) do
-    case Map.get(state.schedules, id) do
-      %{schedule: %{next_at: ^due} = schedule, options: options} ->
-        enqueue_occurrence(self(), state.core, schedule, options, due)
-        entry = %{schedule: schedule, options: options, timer: nil}
-        {:noreply, put_in(state.schedules[id], entry)}
+  def handle_info({:admitted, guardian, engine, _generation, permit, payload, from}, state) do
+    admitted = {:admitted, guardian, engine, permit, from}
 
-      _ ->
-        {:noreply, state}
+    case handle_call(payload, admitted, state) do
+      {:reply, result, next} ->
+        reply(admitted, result)
+        {:noreply, next}
+
+      {:noreply, next} ->
+        {:noreply, next}
     end
   end
 
-  def handle_info({:enqueue_result, id, due, result}, state) do
+  def handle_info({:due, id, due}, state) do
     case Map.get(state.schedules, id) do
       %{schedule: %{next_at: ^due} = schedule, options: options} ->
-        case result do
-          :ok ->
-            case Schedule.advance_after_delivery(schedule, due, System.system_time(:millisecond)) do
-              {:ok, advanced} ->
-                operation =
-                  {:advance, schedule, advanced, options, due, System.system_time(:millisecond)}
+        now = System.system_time(:millisecond)
 
-                {:noreply, enqueue_operation(state, operation)}
+        if now < due do
+          {:noreply, put_in(state.schedules[id], arm(schedule, options, now))}
+        else
+          case Schedule.advance_after_delivery(schedule, due, now) do
+            {:ok, advanced} ->
+              entry = %{schedule: schedule, options: options, timer: nil}
+              state = put_in(state.schedules[id], entry)
 
-              {:error, _} ->
-                {:noreply, drop(state, id)}
-            end
+              {:noreply,
+               enqueue_operation(state, {:deliver, schedule, advanced, options, due, now})}
 
-          :retry ->
-            timer = Process.send_after(self(), {:due, id, due}, @retry_ms)
-            entry = %{schedule: schedule, options: options, timer: timer}
-            {:noreply, put_in(state.schedules[id], entry)}
+            {:error, _} ->
+              {:noreply, drop(state, id)}
+          end
         end
 
       _ ->
@@ -89,15 +130,28 @@ defmodule Tay.Schedule.Coordinator do
   end
 
   def handle_info({:operation_result, token, result}, %{operation: {token, operation}} = state) do
+    Process.demonitor(state.operation_monitor, [:flush])
     next = complete_operation(state, operation, result)
-    {:noreply, continue_operations(%{next | operation: nil})}
+    {:noreply, continue_operations(%{next | operation: nil, operation_monitor: nil})}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, _pid, _reason},
+        %{operation_monitor: monitor, operation: {_token, operation}} = state
+      ) do
+    error = {:error, Tay.Error.new(:unknown_outcome, :schedule_operation_lost)}
+    next = complete_operation(state, operation, error)
+    {:noreply, continue_operations(%{next | operation: nil, operation_monitor: nil})}
   end
 
   def handle_info(_, state), do: {:noreply, state}
 
-  defp arm(schedule, options, now) do
-    delay = max(schedule.next_at - now, 0)
-    timer = Process.send_after(self(), {:due, schedule.id, schedule.next_at}, delay)
+  defp arm(schedule, options, _now) do
+    delay = max(schedule.next_at - System.system_time(:millisecond), 0)
+
+    timer =
+      Process.send_after(self(), {:due, schedule.id, schedule.next_at}, min(delay, 4_294_967_295))
+
     %{schedule: schedule, options: options, timer: timer}
   end
 
@@ -120,7 +174,7 @@ defmodule Tay.Schedule.Coordinator do
     case Map.get(state.schedules, schedule.id) do
       %{schedule: existing, options: ^options} = entry ->
         if Schedule.equivalent?(existing, schedule) do
-          GenServer.reply(from, {:ok, public_schedule(entry.schedule)})
+          reply(from, {:ok, public_schedule(entry.schedule)})
           continue_operations(state)
         else
           launch(state, operation)
@@ -137,12 +191,12 @@ defmodule Tay.Schedule.Coordinator do
         launch(state, {:cancel, schedule, from})
 
       :error ->
-        GenServer.reply(from, {:error, "schedule_not_found"})
+        reply(from, {:error, "schedule_not_found"})
         continue_operations(state)
     end
   end
 
-  defp begin_operation(state, {:advance, schedule, _advanced, _options, due, _now} = operation) do
+  defp begin_operation(state, {:deliver, schedule, _advanced, _options, due, _now} = operation) do
     case Map.get(state.schedules, schedule.id) do
       %{schedule: %{revision: revision, next_at: ^due}} when revision == schedule.revision ->
         launch(state, operation)
@@ -155,8 +209,14 @@ defmodule Tay.Schedule.Coordinator do
   defp launch(state, operation) do
     owner = self()
     token = make_ref()
-    Task.start(fn -> send(owner, {:operation_result, token, run(operation, state.core)}) end)
-    %{state | operation: {token, operation}}
+    core = state.core
+
+    {_pid, monitor} =
+      spawn_monitor(fn ->
+        send(owner, {:operation_result, token, run(operation, core)})
+      end)
+
+    %{state | operation: {token, operation}, operation_monitor: monitor}
   end
 
   defp run({:register, schedule, _, _, _}, core),
@@ -165,49 +225,39 @@ defmodule Tay.Schedule.Coordinator do
   defp run({:cancel, schedule, _}, core),
     do: API.call(core, :cancel_schedule, [schedule.id, schedule.revision])
 
-  defp run({:advance, schedule, advanced, _, due, now}, core),
-    do:
-      API.call(core, :advance_schedule, [
-        schedule.id,
-        schedule.revision,
-        due,
-        advanced.next_at,
-        now
-      ])
+  defp run({:deliver, schedule, advanced, _, due, now}, core),
+    do: API.call(core, :deliver_schedule, [schedule, due, advanced.next_at, now])
 
   defp complete_operation(state, {:register, schedule, options, now, from}, {:ok, stored}) do
     schedule = durable(schedule, stored)
     next = drop(state, schedule.id)
-    GenServer.reply(from, {:ok, public_schedule(schedule)})
+    reply(from, {:ok, public_schedule(schedule)})
     %{next | schedules: Map.put(next.schedules, schedule.id, arm(schedule, options, now))}
   end
 
   defp complete_operation(state, {:register, schedule, _, _, from}, error) do
-    GenServer.reply(from, operation_error(error))
+    reply(from, operation_error(error))
     if unknown?(error), do: drop(state, schedule.id), else: state
   end
 
   defp complete_operation(state, {:cancel, schedule, from}, {:ok, stored}) do
-    GenServer.reply(from, {:ok, public_schedule(durable(schedule, stored))})
+    reply(from, {:ok, public_schedule(durable(schedule, stored))})
     drop(state, schedule.id)
   end
 
   defp complete_operation(state, {:cancel, schedule, from}, error) do
-    GenServer.reply(from, operation_error(error))
+    reply(from, operation_error(error))
     if unknown?(error), do: drop(state, schedule.id), else: state
   end
 
-  defp complete_operation(state, {:advance, schedule, advanced, options, _, now}, {:ok, stored}) do
+  defp complete_operation(state, {:deliver, schedule, advanced, options, _, now}, {:ok, stored}) do
     advanced = durable(advanced, stored)
     %{state | schedules: Map.put(state.schedules, schedule.id, arm(advanced, options, now))}
   end
 
-  defp complete_operation(state, {:advance, schedule, _, options, due, _}, error) do
+  defp complete_operation(state, {:deliver, schedule, _, options, due, _}, error) do
     cond do
-      unknown?(error) ->
-        drop(state, schedule.id)
-
-      retryable?(error) ->
+      retryable?(error) or unknown?(error) ->
         timer = Process.send_after(self(), {:due, schedule.id, due}, @retry_ms)
         entry = %{schedule: schedule, options: options, timer: timer}
         put_in(state.schedules[schedule.id], entry)
@@ -223,7 +273,8 @@ defmodule Tay.Schedule.Coordinator do
       | revision: stored.revision,
         next_at: stored.next_at,
         last_at: stored.last_at,
-        cancelled_at: stored.cancelled_at
+        cancelled_at: stored.cancelled_at,
+        active_job_id: Map.get(stored, :active_job_id)
     }
   end
 
@@ -256,46 +307,12 @@ defmodule Tay.Schedule.Coordinator do
     end
   end
 
-  defp enqueue_occurrence(owner, core, schedule, raw_options, due) do
-    Task.start(fn ->
-      result =
-        with {:ok, options} <- JobOptions.parse(raw_options),
-             id <- occurrence_id(schedule.id, due),
-             options <- Keyword.put(options, :id, id) do
-          case API.call(core, :enqueue, [schedule.task, schedule.args, options]) do
-            {:ok, _} -> :ok
-            _ -> if match?({:ok, _}, API.call(core, :get_job, [id])), do: :ok, else: :retry
-          end
-        else
-          _ -> :retry
-        end
+  defp reply({:admitted, guardian, engine, {slot, token}, from}, result),
+    do: send(guardian, {:completed, engine, slot, token, from, result, %{}})
 
-      send(owner, {:enqueue_result, schedule.id, due, result})
-    end)
-  end
+  defp reply(from, result), do: GenServer.reply(from, result)
 
-  defp occurrence_id(id, due) do
-    digest =
-      :crypto.hash(:sha256, ["tay-schedule-occurrence-v1:", id, ":", Integer.to_string(due)])
-
-    raw = binary_part(digest, 0, 16)
-    Tay.JobID.encode(if raw == <<0::128>>, do: <<0::120, 1>>, else: raw)
-  end
-
-  defp public_schedule(schedule) do
-    %{
-      "id" => schedule.id,
-      "task" => schedule.task,
-      "kind" => Atom.to_string(schedule.kind),
-      "timezone" => schedule.timezone,
-      "overlap" => schedule.overlap,
-      "catch_up" => schedule.catch_up,
-      "next_at" => schedule.next_at,
-      "last_at" => schedule.last_at,
-      "cancelled_at" => schedule.cancelled_at,
-      "revision" => schedule.revision
-    }
-  end
+  defp public_schedule(schedule), do: Tay.Schedule.public(schedule, :summary)
 
   defp atom_reason(reason, _) when is_atom(reason), do: Atom.to_string(reason)
   defp atom_reason(_, fallback), do: fallback

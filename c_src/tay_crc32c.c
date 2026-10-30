@@ -1,4 +1,7 @@
+#ifndef TAY_CRC32C_FUZZ
 #include <erl_nif.h>
+#endif
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -99,6 +102,7 @@ static uint32_t crc32c_update(uint32_t crc, const unsigned char *bytes, size_t s
     return crc;
 }
 
+#ifndef TAY_CRC32C_FUZZ
 /* A scheduled NIF receives the original Erlang terms. Inspect them again in
  * the dirty callback instead of retaining binary views from the first call. */
 static bool read_update_arguments(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[],
@@ -203,3 +207,5 @@ static ErlNifFunc functions[] = {
 };
 
 ERL_NIF_INIT(Elixir.Tay.Storage.CRC32C.Native, functions, load, NULL, NULL, NULL)
+
+#endif /* !TAY_CRC32C_FUZZ */

@@ -74,6 +74,9 @@ defmodule Tay.Storage.Recovery.Error do
   defp classify(%{reason: {:error, {k, _}}}) when k in [:unsupported_version, :unsupported_flags],
     do: :unsupported_physical
 
+  defp classify({:resource_limit, _}), do: :resource_limit
+  defp classify(%{reason: {:error, {:resource_limit, _}}}), do: :resource_limit
+
   defp classify(%{reason: {:error, {:resource_limit, _, _}}}), do: :resource_limit
 
   defp classify(%{reason: {:error, %{kind: k}}})
@@ -130,6 +133,11 @@ defmodule Tay.Storage.Recovery.Error do
 
   @doc false
   def callback_reason(term) when is_atom(term), do: term
+
+  def callback_reason({:resource_limit, {:max_state_bytes, required, limit}})
+      when is_integer(required) and is_integer(limit),
+      do: {:resource_limit, {:max_state_bytes, required, limit}}
+
   def callback_reason({:resource_limit, limit}) when is_atom(limit), do: {:resource_limit, limit}
   def callback_reason(_), do: :callback_reason_redacted
 end

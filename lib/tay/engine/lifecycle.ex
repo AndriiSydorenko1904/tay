@@ -19,10 +19,15 @@ defmodule Tay.Engine.Lifecycle do
 
   def init(config) do
     table = :ets.new(config.name, [:named_table, :public, :set, write_concurrency: true])
-    for slot <- 1..config.client_slots, do: :ets.insert(table, {slot, nil, nil, :free, 0})
+
+    for slot <- 1..config.client_slots,
+        key <- [slot, {:schedule, slot}],
+        do: :ets.insert(table, {key, nil, nil, :free, 0})
+
     :ets.insert(table, {:operation, nil, nil, :free, 0})
 
     meta = %{
+      memory: Tay.State.Memory.new(config.max_state_bytes),
       guardian: self(),
       generation: make_ref(),
       slots: config.client_slots,
@@ -190,16 +195,31 @@ defmodule Tay.Engine.Lifecycle do
     end
   end
 
-  def handle_call({:reserve, generation, {slot, token}}, {owner, _}, s) do
+  def handle_call({:reserve, generation, permit}, from, s),
+    do: handle_call({:reserve, generation, permit, 0}, from, s)
+
+  def handle_call({:reserve, generation, {slot, token}, bytes}, {owner, _}, s) do
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, ^owner, :claimed, expires} = old] ->
         if admission_ready?(s, generation) and System.monotonic_time(:millisecond) < expires do
-          monitor = Process.monitor(owner)
-          true = Admission.cas(s.table, old, {slot, token, owner, :reserved, expires})
-          permits = Map.put(s.permits, {slot, token}, monitor)
+          case Tay.State.Memory.reserve(s.meta.memory, bytes) do
+            :ok ->
+              monitor = Process.monitor(owner)
+              true = Admission.cas(s.table, old, {slot, token, owner, :reserved, expires})
+              permits = Map.put(s.permits, {slot, token}, monitor)
 
-          {:reply, :ok,
-           %{s | permits: permits, monitors: Map.put(s.monitors, monitor, {:owner, slot, token})}}
+              {:reply, :ok,
+               %{
+                 s
+                 | permits: permits,
+                   monitors: Map.put(s.monitors, monitor, {:owner, slot, token}),
+                   memory_permits: Map.put(s.memory_permits, {slot, token}, bytes)
+               }}
+
+            {:error, _} ->
+              Admission.cas(s.table, old, {slot, nil, nil, :free, 0})
+              {:reply, {:error, :retained_bytes}, s}
+          end
         else
           Admission.cas(s.table, old, {slot, nil, nil, :free, 0})
           {:reply, {:error, :unavailable}, s}
@@ -397,7 +417,7 @@ defmodule Tay.Engine.Lifecycle do
   def handle_info(:reap, s) do
     now = System.monotonic_time(:millisecond)
 
-    for slot <- 1..s.meta.slots do
+    for index <- 1..s.meta.slots, slot <- [index, {:schedule, index}] do
       case :ets.lookup(s.table, slot) do
         [{^slot, _, owner, :claimed, expires} = old] ->
           if expires <= now or not Process.alive?(owner),
@@ -496,6 +516,10 @@ defmodule Tay.Engine.Lifecycle do
   end
 
   defp release(s, slot, token) do
+    {bytes, memory_permits} = Map.pop(s.memory_permits, {slot, token}, 0)
+    Tay.State.Memory.release(s.meta.memory, bytes)
+    s = %{s | memory_permits: memory_permits}
+
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, _, _, _}] -> :ets.insert(s.table, {slot, nil, nil, :free, 0})
       _ -> :ok

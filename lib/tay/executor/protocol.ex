@@ -25,6 +25,8 @@ defmodule Tay.Protocol.V1 do
     heartbeat
     schedule
     cancel_schedule
+    schedules
+    schedule_status
     register_schedules
   ))
 

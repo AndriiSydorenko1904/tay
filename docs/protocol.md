@@ -126,8 +126,26 @@ idempotent. Registration and cancellation replies are sent only after the
 schedule mutation is durably committed. A lost post-commit reply is reported as
 `unknown_outcome` and is never retried automatically; reconcile it by reading
 the durable schedule state or by explicitly repeating the same stable
-declaration. Overlap enforcement, custom retry curves, multi-host leases, and
+declaration. The `allow`, `skip` (default) and `queue` overlap policies are enforced
+against the preceding nonterminal occurrence and retained through compaction and
+restart. `queue` retries the same due occurrence until admission is possible;
+`catch_up=all` delivers missed occurrences serially, while `latest` coalesces
+later missed times after delivery. `skip` advances without admitting a new job
+while the previous job is busy. Custom retry curves, multi-host leases, and
 exactly-once external effects are unsupported.
+
+Schedule reads are `schedules` (reply `schedules` with a `schedules` array) and
+`schedule_status` with `schedule_id` (reply `schedule_status` with a `schedule`
+object). Each object includes definition fields, revision, next/last due times,
+cancellation time and `active_job_id`; a missing schedule is `schedule_not_found`.
+
+HTTP exposes `POST /schedules`, `GET /schedules`, `GET /schedules/:id`, and
+`DELETE /schedules/:id`. Creation accepts the same fields as Protocol v1
+`schedule`, excluding envelope fields. Both Python transports expose `schedule`,
+`every`, `schedules`, `get_schedule`, and handle `status`/`cancel`. Missing schedules
+map to HTTP 404, invalid declarations to 400, and unknown outcomes to 503.
+List responses obey the normal response byte limit and fail without a partial
+list when it is exceeded.
 
 ## HTTP/JSON producer API
 
@@ -167,3 +185,21 @@ capacity and reconcile in-flight work through Tay's existing at-least-once
 recovery path. Workers must keep polling while tasks run. HTTP workers require
 HTTPS with mTLS when Tay listens on a non-loopback address. The token is a
 session credential; keep it secret and never log it.
+
+### Bounded schedule reads
+
+`GET /schedules` and the UDS `schedules` command return a bounded page with
+`schedules` and nullable `next_cursor`. Optional `limit` is 1..100 (default 50);
+pass the returned `cursor` to continue. Pages may be shorter to bound response
+construction. Cursors are exclusive schedule IDs in lexical order, not snapshot
+tokens; concurrent updates may appear on a subsequent read. A single declaration
+still has to fit the configured response/frame limit. Python `schedules()` and
+Elixir `Tay.schedules()` fetch pages automatically and retain their list interface;
+use `Tay.schedule_page()` to consume individual pages. The Dashboard uses pages.
+`GET /schedules/:id` / `schedule_status` use direct lookup.
+
+Changing `allow` to `skip` or `queue` checks all active occurrences, including
+older runs when the latest one already finished. Occurrence membership is
+checkpointed. Legacy allow checkpoints without complete membership cannot safely
+be tightened and return `schedule_conflict`; cancel that declaration and use a
+new declaration ID for the stricter policy.

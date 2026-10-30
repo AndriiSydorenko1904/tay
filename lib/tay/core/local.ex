@@ -71,6 +71,64 @@ defmodule Tay.Core.Local do
   end
 
   @impl true
+  def schedules(engine), do: Tay.schedules(name: engine)
+
+  @impl true
+  def schedule_page(engine, query) do
+    with {:ok, query} <- Tay.State.ScheduleIndex.query(query),
+         {:ok, meta} <- ready(engine),
+         do:
+           Admission.request(
+             engine,
+             meta,
+             {:inspect_schedules, query},
+             256,
+             :schedules,
+             nil,
+             meta.timeout
+           )
+  end
+
+  @impl true
+  def get_schedule(engine, id), do: Tay.get_schedule(id, name: engine)
+
+  @impl true
+  def deliver_schedule(engine, schedule, due, next_at, at) do
+    with {:ok, options} <- Tay.Protocol.JobOptions.parse(schedule.options),
+         options <- occurrence_options(options, schedule.id, due),
+         {:ok, job} <- Tay.Executor.Job.new(schedule.task, schedule.args, options),
+         {:ok, raw} <- JobID.decode(job.id),
+         {:ok, meta} <- ready(engine),
+         {:ok, bytes} <- Value.encode(job.definition, meta.value_limits) do
+      intent =
+        {:deliver_schedule, schedule.id, schedule.definition, due, next_at, at, raw, job.worker,
+         bytes, job.durability}
+
+      Admission.request(
+        engine,
+        meta,
+        intent,
+        byte_size(bytes) + 512,
+        :deliver_schedule,
+        schedule.id,
+        meta.timeout
+      )
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> public_error(reason, :deliver_schedule, schedule.id)
+    end
+  end
+
+  defp occurrence_options(options, id, due) do
+    options = Keyword.put(options, :id, Tay.Schedule.occurrence_id(id, due))
+
+    case Keyword.pop(options, :delay_ms) do
+      {nil, options} -> options
+      {delay, options} -> Keyword.put(options, :scheduled_at, due + delay)
+    end
+  end
+
+  @impl true
   def register_schedule(engine, schedule) do
     with {:ok, meta} <- ready(engine) do
       Admission.request(

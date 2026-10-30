@@ -16,6 +16,7 @@ from .job_options import (
     validate_execution_options,
 )
 from .protocol import normalize_json, validate_task_name
+from .schedules import validate_cron, validate_every, validate_schedule_options
 
 if TYPE_CHECKING:  # pragma: no cover
     from .client import JobHandle, ScheduleHandle, Tay
@@ -52,6 +53,15 @@ class TaskConfig:
 
     def __post_init__(self) -> None:
         validate_execution_options(self.execution_options())
+        if self.cron is not None and self.every is not None:
+            raise ValidationError("a task can declare cron or every, not both")
+        if self.cron is not None:
+            validate_cron(self.cron)
+        if self.every is not None:
+            validate_every(self.every)
+        validate_schedule_options(
+            declaration_id=self.declaration_id, overlap=self.overlap
+        )
 
     def execution_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
@@ -286,6 +296,8 @@ class Task:
             fingerprint = json.dumps(schedule, sort_keys=True, separators=(",", ":"))
             digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:24]
             declaration_id = f"python:{self.name}:{digest}"
+            if len(declaration_id.encode("utf-8")) > 128:
+                declaration_id = f"python:{digest}"
         schedule["declaration_id"] = declaration_id
         return cast(dict[str, Any], normalize_json(schedule))
 

@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import inspect
 import os
-import re
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -24,7 +23,7 @@ from .errors import (
     ValidationError,
 )
 from .execution import bounded_error, cancel_async_execution, run_task
-from .job_options import enqueue_payload, job_arguments, merge_enqueue_options
+from .job_options import enqueue_payload
 from .protocol import (
     DEFAULT_MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
@@ -40,18 +39,18 @@ from .responses import (
     extract_result,
 )
 from .results import wait_result
+from .schedules import ScheduleHandle, Scheduling, validate_every
 from .socket_path import resolve_socket_path
 from .task import Durability, Task, TaskConfig, register_task
 from .validation import identifier, positive_finite
+
+__all__ = ["JobHandle", "ScheduleHandle", "Tay"]
 
 DEFAULT_MAX_RESULT_BYTES = 65_536
 DEFAULT_MAX_ERROR_BYTES = 8_192
 _MODES = frozenset({"client", "embedded", "worker"})
 # Event-v1 freezes a single durable retry curve. Keep the SDK's accepted surface
 # aligned with the listener rather than accepting values it cannot represent.
-_OVERLAP_POLICIES = frozenset({"allow", "skip", "queue"})
-_CATCH_UP_POLICIES = frozenset({"latest", "all"})
-_TIMEZONE_OFFSET = re.compile(r"^(?:UTC|Z|[+-](?:[01]\d|2[0-3])(?::[0-5]\d)?)$")
 
 
 @dataclass(frozen=True)
@@ -87,19 +86,7 @@ class JobHandle:
         return await wait_result(self, timeout=timeout, poll_interval=poll_interval)
 
 
-@dataclass(frozen=True)
-class ScheduleHandle:
-    """A generation-local schedule reference retained by its Tay client."""
-
-    id: str
-    _tay: Tay
-
-    async def cancel(self) -> Any:
-        reply = await self._tay._cancel_schedule(self.id)
-        return reply.get("schedule", reply.get("status", reply))
-
-
-class Tay:
+class Tay(Scheduling):
     """A small, stdlib-only Tay producer and executor.
 
     ``embedded`` (the default) both submits jobs and executes tasks registered
@@ -176,6 +163,7 @@ class Tay:
         # declarations client-side so a reconnect can recreate timers before
         # the connection is advertised as ready again.
         self._schedule_declarations: dict[str, dict[str, Any]] = {}
+        self._withdrawn_schedules: set[str] = set()
         self._running = False
         self._closing = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -250,59 +238,10 @@ class Tay:
         return decorate(function)
 
     def _task_config(self, **raw: Any) -> TaskConfig:
-        retries, backoff, durability = raw["retries"], raw["backoff"], raw["durability"]
-        cron = raw["cron"]
         every = raw["every"]
-        if cron is not None and every is not None:
-            raise ValidationError("a task can declare cron or every, not both")
-        if cron is not None and (
-            type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256
-        ):
-            raise ValidationError(
-                "cron must be a non-empty string no longer than 256 bytes"
-            )
-        if every is not None:
-            every = self._validate_every_mapping(every)
-
-        overlap = raw["overlap"]
-        if overlap is not None and (
-            not isinstance(overlap, str) or overlap not in _OVERLAP_POLICIES
-        ):
-            raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
-
-        declaration_id = raw["declaration_id"]
-        if declaration_id is not None:
-            if type(declaration_id) is not str or not declaration_id:
-                raise ValidationError("declaration_id must be a non-empty string")
-            if len(declaration_id.encode("utf-8")) > 255:
-                raise ValidationError("declaration_id is too long")
-
         return TaskConfig(
-            retries=retries,
-            backoff=backoff,
-            durability=durability,
-            cron=cron,
-            every=every,
-            overlap=overlap,
-            declaration_id=declaration_id,
+            **{**raw, "every": validate_every(every) if every is not None else None}
         )
-
-    @staticmethod
-    def _validate_every_mapping(value: Mapping[str, Any]) -> dict[str, int | float]:
-        if not isinstance(value, Mapping):
-            raise ValidationError("every must be a mapping such as {'minutes': 4}")
-        allowed = {"seconds", "minutes", "hours", "days"}
-        if set(value) - allowed:
-            raise ValidationError("every only accepts seconds, minutes, hours, or days")
-        present = [(key, item) for key, item in value.items() if item is not None]
-        if len(present) != 1:
-            raise ValidationError("every requires exactly one positive time unit")
-        unit, amount = present[0]
-        if type(amount) not in {int, float} or amount <= 0:
-            raise ValidationError(f"every.{unit} must be a positive finite number")
-        if type(amount) is float and not float(amount) < float("inf"):
-            raise ValidationError(f"every.{unit} must be finite")
-        return {unit: amount}
 
     async def __aenter__(self) -> Self:
         await self.start()
@@ -477,7 +416,10 @@ class Tay:
         declarations = dict(self._schedule_declarations)
         for task in self._tasks.values():
             declaration = task.static_schedule_declaration()
-            if declaration is not None:
+            if (
+                declaration is not None
+                and declaration["declaration_id"] not in self._withdrawn_schedules
+            ):
                 declarations[declaration["declaration_id"]] = declaration
         for declaration_id in sorted(declarations):
             await self._exchange("schedule", declarations[declaration_id])
@@ -712,177 +654,21 @@ class Tay:
         job_id = _extract_identifier(reply, "job_id", "job")
         return JobHandle(job_id, self, _extract_job_durability(reply))
 
-    async def schedule(
-        self,
-        task: str | Task,
-        *,
-        cron: str,
-        kwargs: Mapping[str, Any] | None = None,
-        args: Mapping[str, Any] | None = None,
-        declaration_id: str | None = None,
-        timezone: str = "+00",
-        catch_up: str = "latest",
-        overlap: str | None = None,
-        delay: float | None = None,
-        start_at: int | None = None,
-        **options: Any,
-    ) -> ScheduleHandle:
-        """Create or reconcile a cron schedule for a task."""
+    async def _schedule_request(
+        self, operation: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._request(operation, payload)
 
-        if self.mode == "worker":
-            raise ModeError(
-                "worker mode only executes tasks; use embedded or client to schedule"
-            )
-        if kwargs is not None and args is not None:
-            raise ValidationError("pass either kwargs or args to schedule, not both")
-        if type(cron) is not str or not cron.strip() or len(cron.encode("utf-8")) > 256:
-            raise ValidationError(
-                "cron must be a non-empty string no longer than 256 bytes"
-            )
-        self._validate_schedule_options(
-            declaration_id=declaration_id,
-            timezone=timezone,
-            catch_up=catch_up,
-            overlap=overlap,
-            delay=delay,
-            start_at=start_at,
-        )
-        payload: dict[str, Any] = {
-            "task": self._task_name(task),
-            "args": job_arguments(
-                kwargs if kwargs is not None else args, operation="schedule"
-            ),
-            "cron": cron,
-            "timezone": timezone,
-            "catch_up": catch_up,
-            "options": normalize_json(merge_enqueue_options(options, {})),
-        }
-        if declaration_id is not None:
-            payload["declaration_id"] = declaration_id
-        if overlap is not None:
-            payload["overlap"] = overlap
-        if delay is not None:
-            payload["delay"] = delay
-        if start_at is not None:
-            payload["start_at"] = start_at
-        reply = await self._request("schedule", payload)
-        schedule_id = _extract_identifier(reply, "schedule_id", "schedule")
-        retained = dict(payload)
-        retained["declaration_id"] = schedule_id
-        self._schedule_declarations[schedule_id] = retained
-        return ScheduleHandle(schedule_id, self)
+    def _schedule_task_name(self, task: str | Task) -> str:
+        return self._task_name(task)
 
-    async def every(
-        self,
-        task: str | Task,
-        *,
-        seconds: float | None = None,
-        minutes: float | None = None,
-        hours: float | None = None,
-        days: float | None = None,
-        kwargs: Mapping[str, Any] | None = None,
-        args: Mapping[str, Any] | None = None,
-        declaration_id: str | None = None,
-        catch_up: str = "latest",
-        overlap: str | None = None,
-        delay: float | None = None,
-        start_at: int | None = None,
-        **options: Any,
-    ) -> ScheduleHandle:
-        """Create or reconcile an interval schedule using exactly one unit."""
-
-        every = self._validate_every_mapping(
-            {
-                "seconds": seconds,
-                "minutes": minutes,
-                "hours": hours,
-                "days": days,
-            }
-        )
-        if self.mode == "worker":
-            raise ModeError(
-                "worker mode only executes tasks; use embedded or client to schedule"
-            )
-        if kwargs is not None and args is not None:
-            raise ValidationError("pass either kwargs or args to every, not both")
-        self._validate_schedule_options(
-            declaration_id=declaration_id,
-            timezone="+00",
-            catch_up=catch_up,
-            overlap=overlap,
-            delay=delay,
-            start_at=start_at,
-        )
-        payload: dict[str, Any] = {
-            "task": self._task_name(task),
-            "args": job_arguments(
-                kwargs if kwargs is not None else args, operation="every"
-            ),
-            "every": every,
-            "catch_up": catch_up,
-            "options": normalize_json(merge_enqueue_options(options, {})),
-        }
-        if declaration_id is not None:
-            payload["declaration_id"] = declaration_id
-        if overlap is not None:
-            payload["overlap"] = overlap
-        if delay is not None:
-            payload["delay"] = delay
-        if start_at is not None:
-            payload["start_at"] = start_at
-        reply = await self._request("schedule", payload)
-        schedule_id = _extract_identifier(reply, "schedule_id", "schedule")
-        retained = dict(payload)
-        retained["declaration_id"] = schedule_id
-        self._schedule_declarations[schedule_id] = retained
-        return ScheduleHandle(schedule_id, self)
+    def _retain_schedule(self, schedule_id: str, payload: dict[str, Any]) -> None:
+        self._schedule_declarations[schedule_id] = payload
 
     async def _cancel_schedule(self, schedule_id: str) -> dict[str, Any]:
-        # Desired state is withdrawn before the RPC. An unknown transport
-        # outcome must not resurrect the timer on the next reconnect.
+        identifier(schedule_id, "schedule_id")
         self._schedule_declarations.pop(schedule_id, None)
-        return await self._request("cancel_schedule", {"schedule_id": schedule_id})
-
-    @staticmethod
-    def _validate_schedule_options(
-        *,
-        declaration_id: str | None,
-        timezone: str,
-        catch_up: str,
-        overlap: str | None,
-        delay: float | None,
-        start_at: int | None,
-    ) -> None:
-        if declaration_id is not None and (
-            type(declaration_id) is not str or not declaration_id
-        ):
-            raise ValidationError("declaration_id must be a non-empty string")
-        if type(timezone) is not str or not _TIMEZONE_OFFSET.fullmatch(timezone):
-            raise ValidationError(
-                "timezone must be UTC, Z, or an offset such as +01 or -02:30"
-            )
-        if not isinstance(catch_up, str) or catch_up not in _CATCH_UP_POLICIES:
-            raise ValidationError(
-                f"catch_up must be one of {sorted(_CATCH_UP_POLICIES)}"
-            )
-        if overlap is not None and (
-            not isinstance(overlap, str) or overlap not in _OVERLAP_POLICIES
-        ):
-            raise ValidationError(f"overlap must be one of {sorted(_OVERLAP_POLICIES)}")
-        if delay is not None and (
-            type(delay) not in {int, float}
-            or delay < 0
-            or (type(delay) is float and not float(delay) < float("inf"))
-        ):
-            raise ValidationError(
-                "delay must be a finite non-negative number of seconds"
-            )
-        if start_at is not None and (type(start_at) is not int or start_at < 0):
-            raise ValidationError(
-                "start_at must be a non-negative UTC millisecond timestamp"
-            )
-        if delay is not None and start_at is not None:
-            raise ValidationError("pass either delay or start_at, not both")
+        return await super()._cancel_schedule(schedule_id)
 
     async def _accept_execution(self, message: Mapping[str, Any]) -> None:
         if self.mode == "client":

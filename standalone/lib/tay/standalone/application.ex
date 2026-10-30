@@ -22,6 +22,7 @@ defmodule Tay.Standalone.Application do
               queues: [default: config.default_queue_concurrency],
               caller_timeout: config.caller_timeout_ms,
               max_state_bytes: config.max_state_bytes,
+              rate_limits: config.rate_limits,
               compaction: [
                 terminal_retention: config.terminal_retention,
                 checkpoint_interval: config.checkpoint_interval_ms

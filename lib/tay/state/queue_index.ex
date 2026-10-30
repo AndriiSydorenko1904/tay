@@ -13,6 +13,13 @@ defmodule Tay.State.QueueIndex do
   def ready(table, queue, now, limit) when is_integer(limit) and limit > 0,
     do: take(table, :ets.next(table, {queue, -1, -1, <<>>}), queue, now, limit, [])
 
+  def oldest_age(table, queue, now) do
+    case :ets.next(table, {queue, -1, -1, <<>>}) do
+      {^queue, due, _, _} when due <= now -> now - due
+      _ -> 0
+    end
+  end
+
   defp take(_, _, _, _, 0, acc), do: Enum.reverse(acc)
 
   defp take(table, {queue, due, _, id} = key, queue, now, n, acc) when due <= now,

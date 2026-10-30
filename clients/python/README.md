@@ -285,3 +285,37 @@ A lost HTTP session retires old async tasks and waits for old synchronous calls
 before registering again. A synchronous Python thread cannot be forcibly
 stopped; a blocked call continues to occupy its slot. Late outcomes never use
 a replacement token or socket connection, and no execution outcome is replayed.
+
+## Durable schedules over either transport
+
+`tay-client` 1.4.2 provides the same schedule API on `Tay` and `TayHTTP`:
+
+```python
+async with TayHTTP("http://127.0.0.1:4080") as tay:
+    schedule = await tay.every(
+        "reports.build.v1",
+        minutes=5,
+        declaration_id="reports-five-minutes",
+        overlap="queue",
+        catch_up="all",
+    )
+    print(await schedule.status())
+    print(await tay.schedules())
+    print(await tay.get_schedule(schedule.id))
+    await schedule.cancel()
+```
+
+`allow` admits independent occurrences. The default `skip` advances past due
+times while the preceding job is nonterminal. `queue` holds the due occurrence
+until that job finishes; `all` catches up serially and `latest` coalesces later
+missed times after delivery. Schedule state survives restart and compaction.
+Use a stable `declaration_id` to reconcile a lost registration reply. Cancellation
+withdraws a declaration before sending the request, so automatic reconnect does
+not resurrect it after an unknown outcome. Explicit registration can enable it
+again. HTTP worker decorators accept `cron`, `every`, `overlap` and
+`declaration_id`, using the same validation as Unix workers.
+
+Schedule listing keeps the `await client.schedules()` list API and automatically
+follows bounded server pages for both HTTP and Unix transports. All retained Tay
+data shares the server's `max_state_bytes`; admission may return `capacity` when
+the common budget is full. No schedule/result memory split is required.

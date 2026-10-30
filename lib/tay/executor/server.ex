@@ -185,16 +185,6 @@ defmodule Tay.Executor.Server do
   def handle_call(:schedule_coordinator, _from, s),
     do: {:reply, {:ok, s.schedule_coordinator}, s}
 
-  def handle_call({:put_schedule, fields}, from, s) do
-    reply_async(from, fn -> Coordinator.register(s.schedule_coordinator, fields) end)
-    {:noreply, s}
-  end
-
-  def handle_call({:cancel_schedule, id}, from, s) do
-    reply_async(from, fn -> Coordinator.cancel(s.schedule_coordinator, id) end)
-    {:noreply, s}
-  end
-
   def handle_call({:register_http_worker, runtime_id, tasks, capacity, queue}, _from, s) do
     valid =
       Protocol.identifier?(runtime_id) and
@@ -485,11 +475,6 @@ defmodule Tay.Executor.Server do
       {:ok, coordinator} -> {:ok, coordinator, true}
       {:error, _} = error -> error
     end
-  end
-
-  defp reply_async(from, function) do
-    Task.start(fn -> GenServer.reply(from, function.()) end)
-    :ok
   end
 
   defp reservation(s, id) do

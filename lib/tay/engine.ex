@@ -53,9 +53,11 @@ defmodule Tay.Engine do
            ),
          :ok <- GenServer.call(guardian, {:attach_writer, writer}),
          :ok <- acquire_local_fence(config, guardian, writer, generation),
+         {:ok, admission_meta} <- Admission.metadata(config.name),
          inspection = Writer.status(writer),
          {:ok, summary, candidate} <-
            Writer.activate_recovered(writer, inspection.session_ref),
+         :ok <- Tay.State.Memory.reserve(admission_meta.memory, candidate.bytes),
          config = OnlineCheckpoint.recovered_config(config, summary),
          :ok <-
            GenServer.call(
@@ -106,6 +108,10 @@ defmodule Tay.Engine do
             admission: summary.admission_ref,
             projection: projection,
             terminal_store: terminal_store,
+            memory: admission_meta.memory,
+            auxiliary_bytes: candidate.auxiliary_bytes,
+            schedule_owners: Tay.State.Auxiliary.owners(candidate.schedules),
+            schedule_index: Tay.State.ScheduleIndex.new(candidate.schedules),
             schedules: candidate.schedules,
             results: candidate.results,
             terminal_stats: ProjectionState.terminal_statistics(candidate.jobs),
@@ -125,10 +131,16 @@ defmodule Tay.Engine do
                 nil -> nil
                 captured -> max(captured, Clock.wall(config.clock))
               end,
+            last_checkpoint_at:
+              case Map.get(summary, :compaction_captured_at) do
+                captured when is_integer(captured) and captured > 0 -> captured
+                _ -> nil
+              end,
             events_since_checkpoint:
               Map.get(summary, :checkpoint_tail_events, summary.record_count),
             store_id: summary.store_id,
-            epoch_id: Map.get(summary, :epoch_id),
+            epoch_id: Map.fetch!(summary, :epoch_id),
+            rate_limiter: Tay.Execution.RateLimiter.new(config.rate_limits),
             next_availability_order: Map.get(candidate, :next_availability_order, 1),
             volatile_next_availability_order: 1,
             volatile_ids: MapSet.new(),
@@ -230,6 +242,11 @@ defmodule Tay.Engine do
       Persistence.ensure_generation_live!(s)
 
       case intent do
+        {:schedule_operation, coordinator, payload} when is_pid(coordinator) ->
+          send(coordinator, {:admitted, s.guardian, self(), generation, permit, payload, from})
+          send(s.guardian, {:command_yielded, self(), permit})
+          {:noreply, s}
+
         {:drain, deadline} when is_integer(deadline) ->
           s = flush_group_commit(s)
 

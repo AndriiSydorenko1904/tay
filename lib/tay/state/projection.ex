@@ -19,6 +19,7 @@ defmodule Tay.State.Projection do
       jobs: jobs,
       queue: queue,
       task: task,
+      ready: QueueIndex.new(),
       schedule: schedule,
       inspection: inspection,
       registry: registry,
@@ -36,7 +37,12 @@ defmodule Tay.State.Projection do
   def replace(p, previous, job) do
     if previous && available?(p, previous), do: QueueIndex.delete(p.queue, previous)
     hook(p, :queue_removed)
-    if previous && task_available?(p, previous), do: TaskIndex.delete(p.task, previous)
+
+    if previous && task_available?(p, previous) do
+      TaskIndex.delete(p.task, previous)
+      QueueIndex.delete(p.ready, previous)
+    end
+
     hook(p, :task_removed)
     if previous && scheduled?(previous), do: SchedulerIndex.delete(p.schedule, previous)
     hook(p, :schedule_removed)
@@ -45,7 +51,12 @@ defmodule Tay.State.Projection do
     hook(p, :job_written)
     if available?(p, job), do: QueueIndex.put(p.queue, job)
     hook(p, :queue_written)
-    if task_available?(p, job), do: TaskIndex.put(p.task, job)
+
+    if task_available?(p, job) do
+      TaskIndex.put(p.task, job)
+      QueueIndex.put(p.ready, job)
+    end
+
     hook(p, :task_written)
     if scheduled?(job), do: SchedulerIndex.put(p.schedule, job)
     hook(p, :schedule_written)
@@ -54,7 +65,12 @@ defmodule Tay.State.Projection do
 
   def delete(p, job) do
     if available?(p, job), do: QueueIndex.delete(p.queue, job)
-    if task_available?(p, job), do: TaskIndex.delete(p.task, job)
+
+    if task_available?(p, job) do
+      TaskIndex.delete(p.task, job)
+      QueueIndex.delete(p.ready, job)
+    end
+
     if scheduled?(job), do: SchedulerIndex.delete(p.schedule, job)
     JobIndex.delete(p.jobs, job.id)
     :ok = InspectionIndex.delete(p.inspection, job)
@@ -81,14 +97,24 @@ defmodule Tay.State.Projection do
   # Only the owner changes it; a retry must not overlap its terminating task.
   def hold(p, job) do
     if available?(p, job), do: QueueIndex.delete(p.queue, job)
-    if task_available?(p, job), do: TaskIndex.delete(p.task, job)
+
+    if task_available?(p, job) do
+      TaskIndex.delete(p.task, job)
+      QueueIndex.delete(p.ready, job)
+    end
+
     %{p | held: MapSet.put(p.held, job.id)}
   end
 
   def release(p, job) do
     p = %{p | held: MapSet.delete(p.held, job.id)}
     if available?(p, job), do: QueueIndex.put(p.queue, job)
-    if task_available?(p, job), do: TaskIndex.put(p.task, job)
+
+    if task_available?(p, job) do
+      TaskIndex.put(p.task, job)
+      QueueIndex.put(p.ready, job)
+    end
+
     p
   end
 
@@ -110,7 +136,17 @@ defmodule Tay.State.Projection do
 
     {inspection_entries, inspection_counts} = InspectionIndex.expected(jobs)
 
-    Enum.sort(queue) == Enum.sort(:ets.tab2list(p.queue)) and
+    ready =
+      JobIndex.fold(
+        p.jobs,
+        fn job, acc ->
+          if task_available?(p, job), do: [{QueueIndex.key(job), job.id} | acc], else: acc
+        end,
+        []
+      )
+
+    Enum.sort(ready) == Enum.sort(:ets.tab2list(p.ready)) and
+      Enum.sort(queue) == Enum.sort(:ets.tab2list(p.queue)) and
       Enum.sort(task) == Enum.sort(:ets.tab2list(p.task)) and
       Enum.sort(schedule) == Enum.sort(:ets.tab2list(p.schedule)) and
       Enum.sort(inspection_entries) == Enum.sort(InspectionIndex.entries(p.inspection)) and

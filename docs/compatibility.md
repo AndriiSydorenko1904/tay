@@ -35,8 +35,8 @@ Reusing an ID with different canonical definition bytes is a conflict;
 resubmitting the same ID and definition reconciles it. A new Event field needs
 an explicitly versioned schema and literal fixtures, never a silent addition
 to schema 1. The local [executor protocol](protocol.md) adds no disk schema:
-connection registrations, capacity, and successful return values are not
-restart-durable, while job completion remains durable.
+connection registrations and capacity are volatile; persistent job completion
+and successful return values are durable.
 
 ## Supported runtime and storage
 
@@ -100,3 +100,31 @@ acknowledgement. If an old binary cannot understand all written history, it
 must refuse rollback. Restoring an older backup is an explicit recovery-point
 decision: later acknowledged jobs may be absent and effects may repeat. There
 is no anti-rollback watermark or proof that a selected backup is the newest.
+
+## 1.8.0-rc3 schedule events
+
+The rc3 reader accepts all preceding Store-v2 and Event formats. Schedule delivery
+writes semantic pair `(11,2)`; registration, cancellation, explicit advancement
+and compaction write `(12,2)` and
+preserves their logical revisions and active occurrence links. Existing schedules
+start enforcing their stored overlap policy (`skip` by default) on upgrade.
+Earlier binaries reject the new pairs without writable activation. After these
+pairs have been written, downgrade requires restoring a cold backup made before
+the upgrade. Never replace only CURRENT or individual segment files.
+
+Overlap governs job admission. `skip` keeps the preceding nonterminal job link
+when several due occurrences are skipped. `queue` leaves the due time unchanged
+until the preceding job and locally tracked execution settlement finish.
+Cancellation does not cancel jobs already admitted by a schedule. Application
+side effects retain Tay's at-least-once contract.
+
+## rc3 shared budget and occurrence membership
+
+The existing `max_state_bytes` now includes in-memory auxiliary data and admitted
+payloads, with no new required configuration. Stores accepted under older job-only
+accounting may require a larger value at recovery; refusal preserves storage and
+reports the required/configured bytes. This is an operational budget, not RSS.
+New schema-2 type 13 preserves complete occurrence membership. Types 7..12 keep
+their frozen payloads. Older binaries refuse type 13; downgrade requires a cold
+backup made before writing new events. Historical allow checkpoints whose full
+membership was already lost remain readable but cannot be tightened in place.

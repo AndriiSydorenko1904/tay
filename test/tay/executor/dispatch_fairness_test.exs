@@ -47,6 +47,9 @@ defmodule Tay.Executor.DispatchFairnessTest do
                workers: %{},
                queues: [default: 10],
                client_slots: 64,
+               # The shared budget now reserves bounded successful results for
+               # accepted external jobs, including this intentional burst.
+               max_state_bytes: 512 * 1_048_576,
                executor_socket: socket,
                executor_max_connections: 2,
                executor_max_tasks_per_connection: 16,

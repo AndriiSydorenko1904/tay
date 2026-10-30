@@ -2,7 +2,12 @@
 
 `mix compile` builds `tay_storage_helper.c` with the system C compiler into the
 application's build `priv/` directory. Releases must include that executable.
-No compiler is needed on the release host. A test build
+Native compilation caches a manifest of source bytes, compiler path/version,
+flags, platform, Mix environment and OTP NIF headers. Changed inputs or missing
+outputs rebuild the corresponding artifacts; `mix compile --force` rebuilds all.
+Outputs are compiled to temporary files and renamed into place after success.
+Cached production builds still remove a fault-enabled helper left in a shared
+build directory. No compiler is needed on the release host. A test build
 also produces `tay_storage_helper_test`; only that binary accepts opcode 240.
 `TAY_NATIVE_SANITIZE=1` enables AddressSanitizer and UndefinedBehaviorSanitizer.
 
@@ -48,8 +53,10 @@ it does not establish end-to-end job throughput or storage durability.
 Run `mix tay.native.editor` in the repository root to generate
 `_build/dev/tay_compile_commands.json` with the C
 compilation flags, including the active Erlang installation's NIF include
-directory. Linker-only flags are excluded so editor preprocessing queries work
-under `-Werror`. The checked-in VS Code C/C++ configuration reads this database to
+directory. In source checkouts it also includes `tay_crc32c_fuzz.c` with the
+standalone harness defines and sanitizer flags. Linker-only flags are excluded
+so editor preprocessing queries work under `-Werror`.
+The checked-in VS Code C/C++ configuration reads this database to
 resolve `erl_nif.h` without hardcoded machine paths. Run `mix tay.native.editor` after
 changing the Erlang installation, or after cleaning the build directory.
 An explicit editor `includePath` also uses `_build/dev/tay_erl_include`, a symlink
@@ -251,3 +258,12 @@ requests in real production-helper ownership sessions. Only OS-generated
 process IDs, filesystem identities and free-space counters are normalized;
 actual identities are checked against filesystem metadata, while data, flags,
 lengths, field order and acknowledged write counts remain exact.
+
+From a source checkout, the independent `bash c_src/fuzz_crc32c.sh` harness compiles the exact production
+CRC32C core with AddressSanitizer and UndefinedBehaviorSanitizer. Its reproducible
+mutation driver needs no libFuzzer runtime (some Apple toolchains omit it). It
+compares arbitrary seeds, buffers, chunk boundaries and unaligned slices against
+a bitwise oracle. It runs outside BEAM; the NIF argument/scheduling wrappers are
+covered by ExUnit. Qualification runs 100,000 mutations on both supported OSes. The same harness
+also exposes `LLVMFuzzerTestOneInput` for coverage-guided builds with
+`-fsanitize=fuzzer,address,undefined` on a toolchain providing libFuzzer.

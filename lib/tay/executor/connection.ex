@@ -209,6 +209,8 @@ defmodule Tay.Executor.Connection do
               "heartbeat",
               "schedule",
               "cancel_schedule",
+              "schedules",
+              "schedule_status",
               "register_schedules"
             ],
        do: protocol_reply(s, message, "hello_required")
@@ -260,7 +262,7 @@ defmodule Tay.Executor.Connection do
   end
 
   defp request(%{"type" => type} = message, s)
-       when type in ["schedule", "cancel_schedule"],
+       when type in ["schedule", "cancel_schedule", "schedules", "schedule_status"],
        do: forward(s, message)
 
   defp request(%{"type" => "register_schedules"} = message, s),

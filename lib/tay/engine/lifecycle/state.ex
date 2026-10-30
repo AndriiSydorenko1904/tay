@@ -16,6 +16,7 @@ defmodule Tay.Engine.Lifecycle.State do
     :fence,
     monitors: %{},
     permits: %{},
+    memory_permits: %{},
     delivery: %CommandDelivery{}
   ]
 

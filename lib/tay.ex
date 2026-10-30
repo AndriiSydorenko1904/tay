@@ -179,8 +179,38 @@ defmodule Tay do
   @doc "Returns configured queues and their current volatile runtime state."
   def queues(options \\ []), do: inspect_request(:inspect_queues, :queues, options)
 
-  @doc "Returns all durable recurring schedules."
-  def schedules(options \\ []), do: inspect_request(:inspect_schedules, :schedules, options)
+  @doc "Returns durable recurring schedules, fetching bounded pages internally."
+  def schedules(options \\ []), do: collect_schedule_pages(options, [], nil)
+
+  defp collect_schedule_pages(options, acc, cursor) do
+    with {:ok, page} <- schedule_page(Keyword.put(options, :cursor, cursor)) do
+      acc = [page.schedules | acc]
+
+      if page.next_cursor,
+        do: collect_schedule_pages(options, acc, page.next_cursor),
+        else: {:ok, acc |> Enum.reverse() |> List.flatten()}
+    end
+  end
+
+  @doc "Returns one bounded page of schedules. Options: limit (1..100), cursor."
+  def schedule_page(options \\ []) do
+    query = %{limit: Keyword.get(options, :limit, 50), after: Keyword.get(options, :cursor)}
+
+    with {:ok, query} <- Tay.State.ScheduleIndex.query(query),
+         do:
+           inspect_request(
+             {:inspect_schedules, query},
+             :schedules,
+             Keyword.drop(options, [:limit, :cursor])
+           )
+  end
+
+  @doc "Returns a recurring schedule directly by identifier."
+  def get_schedule(id, options \\ []) do
+    if Tay.Protocol.V1.identifier?(id),
+      do: inspect_request({:get_schedule, id}, :get_schedule, options),
+      else: {:error, Error.new(:invalid, :invalid_schedule_id)}
+  end
 
   @doc false
   def register_schedule(%Schedule{} = schedule, options \\ []) do
@@ -214,8 +244,7 @@ defmodule Tay do
   def cancel_schedule(id, options \\ [])
 
   def cancel_schedule(id, options) when is_binary(id) do
-    with {:ok, schedules} <- schedules(options),
-         %{revision: revision} <- Enum.find(schedules, &(&1.id == id)) || {:error, :not_found} do
+    with {:ok, %{revision: revision}} <- get_schedule(id, options) do
       schedule_request(
         {:cancel_schedule, id, revision, System.system_time(:millisecond)},
         :cancel_schedule,

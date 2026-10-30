@@ -189,4 +189,36 @@ defmodule Tay.TelemetryTest do
 
     EngineHelpers.stop(root)
   end
+
+  test "operational gauges convert milliseconds to seconds and capacity reasons stay bounded" do
+    name = Tay.TelemetryTest.OperationalPrometheus
+
+    assert {:ok, _} =
+             start_supervised(
+               {TelemetryMetricsPrometheus.Core,
+                metrics: Tay.Telemetry.metrics(), name: name, start_async: false}
+             )
+
+    :telemetry.execute([:tay, :queue, :snapshot], %{oldest_ready_age_ms: 1500}, %{
+      engine: @name,
+      queue: "default"
+    })
+
+    :telemetry.execute(
+      [:tay, :engine, :snapshot],
+      %{schedule_lag_ms: 2500, last_checkpoint_at_ms: 1_700_000_000_000},
+      %{engine: @name}
+    )
+
+    Tay.Telemetry.capacity_refused(@name, :insert, :client_slots)
+    Tay.Telemetry.capacity_refused(@name, :insert, {:private, "sensitive"})
+    scrape = TelemetryMetricsPrometheus.Core.scrape(name)
+    assert scrape =~ ~r/tay_queue_oldest_ready_age_seconds\{[^}]+\} 1.5/
+    assert scrape =~ ~r/tay_schedule_lag_seconds\{[^}]+\} 2.5/
+    assert scrape =~ "tay_storage_last_checkpoint_timestamp_seconds"
+    assert scrape =~ "tay_capacity_refused_count"
+    assert scrape =~ ~s(reason="client_slots")
+    assert scrape =~ ~s(reason="other")
+    refute scrape =~ "sensitive"
+  end
 end

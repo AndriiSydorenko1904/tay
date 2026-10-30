@@ -81,6 +81,32 @@ defmodule Tay.Event.V2 do
       revision: :existing,
       fields: ~w(at expected_revision schedule_id)
     },
+    schedule_checkpoint: %{
+      code: 12,
+      schema: 2,
+      identity: "schedule_id",
+      encoding: :string,
+      revision: :upsert,
+      fields:
+        ~w(active_job_id at cancelled_at definition expected_revision last_at next_at registered_at revision schedule_id)
+    },
+    schedule_delivered: %{
+      code: 11,
+      schema: 2,
+      identity: "schedule_id",
+      encoding: :string,
+      revision: :existing,
+      fields: ~w(active_job_id at due_at expected_revision next_at schedule_id)
+    },
+    schedule_membership: %{
+      code: 13,
+      schema: 2,
+      identity: "schedule_id",
+      encoding: :string,
+      revision: :upsert,
+      fields:
+        ~w(active_job_id active_job_ids at cancelled_at definition expected_revision last_at membership_complete next_at registered_at revision schedule_id)
+    },
     result_recorded: %{
       code: 10,
       schema: 2,
@@ -102,6 +128,11 @@ defmodule Tay.Event.V2 do
   @schedule_advanced @types.schedule_advanced.code
   @schedule_cancelled @types.schedule_cancelled.code
   @result_recorded @types.result_recorded.code
+  @schedule_delivered @types.schedule_delivered.code
+  @schedule_membership @types.schedule_membership.code
+  @auxiliary_codes for {_name, spec} <- @types, spec.schema == 2, do: spec.code
+  defguard is_auxiliary(type) when type in @auxiliary_codes
+  @schedule_checkpoint @types.schedule_checkpoint.code
   @schedule_definition ~w(args catch_up expression kind options overlap task timezone)
   @definition ~w(args definition_version max_attempts queue_key retry_policy scheduled_at timeout_ms worker_key)
   @retry_base_ms 1_000
@@ -160,6 +191,13 @@ defmodule Tay.Event.V2 do
       key?(d["worker_key"]) and key?(d["queue_key"]) and d["retry_policy"] === @policy and
       (d["scheduled_at"] == nil or time?(d["scheduled_at"])) and
       is_integer(d["timeout_ms"]) and d["timeout_ms"] in 1..@max_timeout_ms
+  end
+
+  def identity_field(type) do
+    case Map.get(@types_by_code, type) do
+      %{identity: field} -> field
+      _ -> nil
+    end
   end
 
   def known_type?(type), do: Map.has_key?(@types_by_code, type)
@@ -230,6 +268,27 @@ defmodule Tay.Event.V2 do
     do:
       time?(d["due_at"]) and time?(d["next_at"]) and d["due_at"] <= d["at"] and
         d["next_at"] > d["due_at"]
+
+  defp fields?(@schedule_checkpoint, d) do
+    schedule_definition?(d["definition"]) and time?(d["next_at"]) and
+      (d["expected_revision"] == 0 or d["revision"] == d["expected_revision"] + 1) and
+      time?(d["registered_at"]) and sequence?(d["revision"]) and
+      (is_nil(d["last_at"]) or (time?(d["last_at"]) and d["last_at"] < d["next_at"])) and
+      (is_nil(d["cancelled_at"]) or time?(d["cancelled_at"])) and
+      (is_nil(d["active_job_id"]) or match?({:ok, _}, Tay.JobID.decode(d["active_job_id"])))
+  end
+
+  defp fields?(@schedule_membership, d) do
+    fields?(@schedule_checkpoint, d) and is_boolean(d["membership_complete"]) and
+      is_list(d["active_job_ids"]) and
+      d["active_job_ids"] == Enum.sort(Enum.uniq(d["active_job_ids"])) and
+      Enum.all?(d["active_job_ids"], &match?({:ok, _}, Tay.JobID.decode(&1)))
+  end
+
+  defp fields?(@schedule_delivered, d) do
+    fields?(@schedule_advanced, d) and d["expected_revision"] < @max_sequence and
+      (is_nil(d["active_job_id"]) or match?({:ok, _}, Tay.JobID.decode(d["active_job_id"])))
+  end
 
   defp fields?(@schedule_cancelled, _d), do: true
   defp fields?(@result_recorded, d), do: args?(d["result"])

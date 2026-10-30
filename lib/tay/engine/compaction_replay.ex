@@ -1,11 +1,11 @@
 defmodule Tay.Engine.CompactionReplay do
-  @moduledoc "Derives volatile V1 terminal times during the existing locked startup replay."
+  @moduledoc "Shared pure lifecycle and auxiliary replay for startup and checkpoints."
   alias Tay.State.Transition
   alias Tay.State.Auxiliary
   alias Tay.Engine.CompactionEstimate
 
   def reduce(event, position, candidate) do
-    if event.record_type in 7..10 do
+    if Tay.Event.V2.v2_type?(event.record_type) do
       Auxiliary.reduce(event, position, candidate)
     else
       reduce_job(event, position, candidate)

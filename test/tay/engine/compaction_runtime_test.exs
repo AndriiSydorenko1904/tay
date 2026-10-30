@@ -748,14 +748,16 @@ defmodule Tay.Engine.CompactionRuntimeTest do
         {output, 0} = System.cmd("df", ["-B1", "--output=avail", path])
         free = output |> String.split() |> List.last() |> String.to_integer()
         assert free > 100_000_000
-        {_, 0} = System.cmd("fallocate", ["-l", Integer.to_string(free - 32_000_000), reserve])
         on_exit(fn -> File.rm(reserve) end)
+        {_, 0} = System.cmd("fallocate", ["-l", Integer.to_string(free - 32_000_000), reserve])
         evaluate(p)
 
-        assert EngineHelpers.eventually(
-                 fn -> :sys.get_state(p).last_result == {:deferred, :insufficient_headroom} end,
-                 60_000
-               )
+        # Wait for this evaluation to finish, then report its actual outcome.
+        # A different completed result cannot turn into the expected deferral
+        # without another evaluation and must not consume the whole deadline.
+        _ = :sys.get_state(p)
+        assert EngineHelpers.eventually(fn -> is_nil(:sys.get_state(p).pending) end, 60_000)
+        assert :sys.get_state(p).last_result == {:deferred, :insufficient_headroom}
 
         assert File.exists?(Path.join(path, "CURRENT"))
         assert Tay.status(name: @name).jobs == 10_000

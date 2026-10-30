@@ -3,14 +3,8 @@ defmodule Tay.Schedule.ViaExecutor do
   @behaviour Tay.Schedule.API
 
   @impl true
-  def register(server, fields) do
-    with {:ok, coordinator} <- GenServer.call(server, :schedule_coordinator, 5_000),
-         do: Tay.Schedule.Local.register(coordinator, fields)
-  end
+  def register(server, fields), do: Tay.Executor.Server.register_schedule(server, fields)
 
   @impl true
-  def cancel(server, id) do
-    with {:ok, coordinator} <- GenServer.call(server, :schedule_coordinator, 5_000),
-         do: Tay.Schedule.Local.cancel(coordinator, id)
-  end
+  def cancel(server, id), do: Tay.Executor.Server.cancel_schedule(server, id)
 end

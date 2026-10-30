@@ -8,7 +8,7 @@ defmodule Tay.Engine.Execution do
   alias Tay.Engine.{Persistence, ProjectionState}
   alias Tay.Execution.{Clock, ControlPlane, Dispatcher, Outcome, Relay}
   alias Tay.Gateway.Runtime, as: GatewayRuntime
-  alias Tay.State.{JobIndex, Projection, SchedulerIndex, TaskIndex, Transition}
+  alias Tay.State.{JobIndex, Projection, SchedulerIndex, TaskIndex}
   alias Tay.Storage.V2.{Codec, Mutation}
   alias Tay.Storage.V2.Reducer, as: V2Reducer
 
@@ -139,6 +139,14 @@ defmodule Tay.Engine.Execution do
     candidates =
       (local ++ external)
       |> Enum.uniq()
+      |> Enum.filter(
+        &Tay.Execution.RateLimiter.allowed?(
+          s.rate_limiter,
+          queue,
+          &1,
+          Clock.monotonic(s.config.clock)
+        )
+      )
       |> Enum.flat_map(fn task ->
         case TaskIndex.ready(s.projection.task, queue, task, now, 1) do
           [id] ->
@@ -223,23 +231,15 @@ defmodule Tay.Engine.Execution do
     end)
   end
 
-  defp predict_execution(%{epoch_id: epoch} = s, job, event) when is_binary(epoch),
-    do: prepare_settlement(s, job, event)
+  defp predict_execution(s, job, event), do: prepare_settlement(s, job, event)
 
-  defp predict_execution(s, job, event) do
-    with {:ok, prepared} <- Transition.prepare(job, event, s.config.value_limits),
-         do: Transition.apply(prepared, %{sequence: s.next_sequence})
-  end
-
-  defp execution_encoding(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
+  defp execution_encoding(s, job, event) do
     with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
          {:ok, payload} <- Codec.encode_mutation(mutation, s.config.value_limits),
          do: {:ok, {8, 1, payload}}
   end
 
-  defp execution_encoding(s, _job, event), do: Persistence.encoded_event(s, event, nil)
-
-  defp prepare_settlement(%{epoch_id: epoch} = s, job, event) when is_binary(epoch) do
+  defp prepare_settlement(s, job, event) do
     with {:ok, mutation} <- Mutation.from_event(event, job, s.next_availability_order),
          {:ok, predicted, _} <-
            V2Reducer.apply_one(
@@ -252,15 +252,13 @@ defmodule Tay.Engine.Execution do
          do: {:ok, predicted}
   end
 
-  defp prepare_settlement(s, job, event),
-    do: Transition.prepare(job, event, s.config.value_limits)
-
   defp start_waiting(s, job, queue, identity) do
     monitor = Process.monitor(identity.relay)
 
     entry =
       Map.merge(identity, %{
         id: job.id,
+        schedule_id: Map.get(s.schedule_owners, job.id),
         queue: queue,
         eligible_at: job.eligible_at,
         execution: nil,

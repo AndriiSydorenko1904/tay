@@ -54,6 +54,7 @@ from .responses import (
     extract_result,
 )
 from .results import wait_result
+from .schedules import Scheduling
 from .task import Durability, Task, TaskConfig, register_task
 from .validation import identifier, positive_finite
 
@@ -106,7 +107,7 @@ class HTTPJobHandle:
         return await wait_result(self, timeout=timeout, poll_interval=poll_interval)
 
 
-class TayHTTP:
+class TayHTTP(Scheduling):
     """HTTP/JSON producer client for a local or mTLS-protected Tay listener."""
 
     def __init__(
@@ -172,6 +173,7 @@ class TayHTTP:
                 context.load_cert_chain(str(tls_cert_file), str(tls_key_file))
             if tls_pkcs12_file is not None:
                 _load_pkcs12(context, tls_pkcs12_file, tls_pkcs12_password)
+        self._withdrawn_schedules: set[str] = set()
         self.base_url = base_url.rstrip("/")
         self.request_timeout = request_timeout
         self._context = context
@@ -211,6 +213,20 @@ class TayHTTP:
             self,
             _extract_job_durability(reply),
         )
+
+    async def _schedule_request(
+        self, operation: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if operation == "schedule":
+            return await self._request("POST", "/schedules", payload)
+        if operation == "schedules":
+            from urllib.parse import urlencode
+
+            suffix = "?" + urlencode(payload) if payload else ""
+            return await self._request("GET", "/schedules" + suffix)
+        schedule_id = urllib.parse.quote(payload["schedule_id"], safe="")
+        method = "DELETE" if operation == "cancel_schedule" else "GET"
+        return await self._request(method, f"/schedules/{schedule_id}")
 
     async def _request(
         self,
@@ -314,10 +330,21 @@ class TayHTTPWorker(TayHTTP):
         retries: int | None = None,
         backoff: str | None = None,
         durability: Durability | None = None,
+        cron: str | None = None,
+        every: Mapping[str, Any] | None = None,
+        overlap: str | None = None,
+        declaration_id: str | None = None,
     ) -> Task | Callable[[Callable[..., Any]], Task]:
-        """Register a callable, either as ``@worker.task`` or ``@worker.task(...)``."""
-
-        config = TaskConfig(retries=retries, backoff=backoff, durability=durability)
+        """Register a callable and an optional durable startup schedule."""
+        config = TaskConfig(
+            retries=retries,
+            backoff=backoff,
+            durability=durability,
+            cron=cron,
+            every=every,
+            overlap=overlap,
+            declaration_id=declaration_id,
+        )
 
         def register(fn: Callable[..., Any]) -> Task:
             return register_task(self, self._tasks, fn, name=name, config=config)
@@ -361,6 +388,24 @@ class TayHTTPWorker(TayHTTP):
         token = reply.get("worker_token")
         if type(token) is not str or len(token) != _WORKER_TOKEN_LENGTH:
             raise ProtocolError("Tay did not return a valid worker token")
+        try:
+            for task in self._tasks.values():
+                declaration = task.static_schedule_declaration()
+                if (
+                    declaration is not None
+                    and declaration["declaration_id"] not in self._withdrawn_schedules
+                ):
+                    await self._schedule_request("schedule", declaration)
+            if self._closing:
+                raise ConnectionLost(
+                    "HTTP worker was closed during schedule reconciliation"
+                )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await self._request(
+                    "DELETE", "/workers", headers={"Authorization": f"Bearer {token}"}
+                )
+            raise
         self._token = token
 
     async def start(self) -> None:
