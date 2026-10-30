@@ -540,6 +540,21 @@ defmodule Tay.HTTP.APITest do
     key = Path.join(directory, "server.key")
     client_cert = Path.join(directory, "client.pem")
     client_key = Path.join(directory, "client.key")
+    ca_config = Path.join(directory, "ca.cnf")
+
+    # OpenSSL 1.1.1 can append -addext values to machine-default extensions,
+    # producing duplicate CA extensions that make the issuer unusable.
+    File.write!(ca_config, """
+    [req]
+    distinguished_name = dn
+    x509_extensions = ca
+    [dn]
+    [ca]
+    basicConstraints = critical,CA:TRUE
+    keyUsage = critical,keyCertSign,cRLSign
+    subjectKeyIdentifier = hash
+    authorityKeyIdentifier = keyid:always
+    """)
 
     {_, 0} =
       System.cmd(
@@ -554,12 +569,8 @@ defmodule Tay.HTTP.APITest do
           "1",
           "-subj",
           "/CN=Tay test CA",
-          "-addext",
-          "basicConstraints=critical,CA:TRUE",
-          "-addext",
-          "keyUsage=critical,keyCertSign,cRLSign",
-          "-addext",
-          "subjectKeyIdentifier=hash",
+          "-config",
+          ca_config,
           "-keyout",
           ca_key,
           "-out",
@@ -585,6 +596,8 @@ defmodule Tay.HTTP.APITest do
             "-nodes",
             "-subj",
             subject,
+            "-config",
+            ca_config,
             "-keyout",
             leaf_key,
             "-out",
@@ -630,6 +643,13 @@ defmodule Tay.HTTP.APITest do
           stderr_to_stdout: true
         )
     end
+
+    {verification, verification_status} =
+      System.cmd("openssl", ["verify", "-CAfile", ca, ca, cert, client_cert],
+        stderr_to_stdout: true
+      )
+
+    assert verification_status == 0, verification
 
     {:ok, socket} = :gen_tcp.listen(0, [:binary, {:ip, {127, 0, 0, 1}}])
     {:ok, port} = :inet.port(socket)
@@ -677,8 +697,7 @@ defmodule Tay.HTTP.APITest do
         stderr_to_stdout: true
       )
 
-    # Use an explicit OpenSSL-backed CA context on both platforms. System curl's
-    # TLS backend and native trust store differ between macOS runner images.
+    # Explicit CA contexts exercise the same trust boundaries on both platforms.
     {output, status} =
       System.cmd(
         NativeHelpers.python!(),

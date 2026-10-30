@@ -48,7 +48,9 @@
 - Use an explicit CA-verifying Python TLS probe for HTTPS qualification on
   macOS and Linux. Check trusted-client acceptance, missing/untrusted-client
   rejection, server CA trust and hostname validation independently of curl's
-  platform TLS backend.
+  platform TLS backend. Generate fixture CA extensions from a private config
+  and verify the chain offline, avoiding duplicate extensions from OpenSSL
+  1.1.1 machine defaults.
 - Share `max_state_bytes` between jobs, schedules, retained results and admitted
   operations. Reserve result and lifecycle headroom before accepting work; keep
   cancellation and settlement available at capacity and preserve recovery limits.
