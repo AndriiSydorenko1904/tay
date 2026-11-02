@@ -93,8 +93,8 @@ class Tay(Scheduling):
     with :meth:`task`.  ``client`` never accepts ``execute`` messages.  ``worker``
     advertises task capacity but deliberately cannot submit jobs.
 
-    A client reconnects after a local Tay restart and replays only ephemeral
-    registration/declaration messages.  It never automatically replays an RPC:
+    A client reconnects after a local Tay restart and reconciles its task
+    registrations and desired durable schedules. It never automatically replays an RPC:
     a lost enqueue reply is an intentionally visible unknown outcome.
     """
 
@@ -159,9 +159,8 @@ class Tay(Scheduling):
         # separate lets an executor withdraw a task without losing its Python
         # wrapper, and makes reconnect replay deterministic.
         self._registered_task_names: set[str] = set()
-        # Schedule storage in the listener is generation-local. Keep desired
-        # declarations client-side so a reconnect can recreate timers before
-        # the connection is advertised as ready again.
+        # Keep desired durable declarations client-side so reconnect can
+        # reconcile startup schedules before advertising the connection as ready.
         self._schedule_declarations: dict[str, dict[str, Any]] = {}
         self._withdrawn_schedules: set[str] = set()
         self._running = False

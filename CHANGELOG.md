@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 1.8.0 — 2026-11-02
+
+### Changed
+
+- Promote the 1.8 release-candidate feature set to the stable version: durable
+  schedules over both transports, overlap policies, execution rate limits,
+  shared state-memory accounting, bounded results and worker diagnostics.
+  See the rc1–rc3 entries below for implementation and compatibility details.
+- Release `tay-client` 1.4.3 with updated scheduling and transport documentation.
+
+### Added
+
+- Add a disposable Docker soak with Python HTTP/Unix workers, retries,
+  persistent/volatile jobs, durable schedules, alternating crash/graceful
+  restarts, catalogued cold backup/restore and terminal-history compaction.
+  Preserve resource measurements and run status for long operational trials.
+- Add a cross-version public-API upgrade fixture covering completed/delayed
+  jobs, durable schedules, compaction and restart after cold restore.
+
+### Fixed
+
+- Align SDK, protocol and operations documentation with durable schedules over
+  HTTP and Unix sockets, persistent results, remote HTTP workers and automatic
+  retention/compaction.
+
 ## 1.8.0-rc3 — 2026-10-29
 
 ### Added

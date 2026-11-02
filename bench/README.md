@@ -1,5 +1,84 @@
 # Qualification benchmark harness
 
+## Operational soak
+
+`soak.py` exercises a disposable standalone container with separate Python HTTP
+and Unix-socket workers. It submits persistent and volatile jobs, deliberately
+fails tasks to exercise retries, and registers durable one-second schedules.
+Every maintenance cycle alternates SIGKILL and graceful container stop, makes a
+catalogued cold backup, restores into a new store, and starts the Engine on that
+restored store. It verifies interrupted persistent work, retained successful
+results, volatile-job loss, and schedule advancement without redeclaration,
+then purges terminal history through the public compaction API.
+
+Build the engine from the checkout being measured. The worker image supplies
+Python; the runner snapshots and mounts this checkout's SDK and harness, and
+pins both image IDs for the entire run:
+
+```sh
+docker build --tag tay:soak .
+docker build --file examples/standalone/worker.Dockerfile --tag tay-worker:soak .
+python3 bench/soak.py --image tay:soak --worker-image tay-worker:soak \
+  --output "$PWD/tmp/soak-smoke" --seconds 120 --interval 1 --maintenance-every 2
+# Optional extended run; not a release requirement.
+python3 bench/soak.py --image tay:soak --worker-image tay-worker:soak \
+  --output "$PWD/tmp/soak-24h" --seconds 86400
+```
+
+Output directories must be new and absolute. `report.json` is updated atomically;
+`events.jsonl` retains cycle timing, completion latency, BEAM/container memory,
+disk usage, copy evidence and recovery checks. `status: running` is not a pass.
+The runner samples a 5 GiB data budget, caps Engine memory at 512 MiB and each
+worker at 128 MiB, and stops on any unexpected operation or verification failure.
+Maintenance defaults to every 30 cycles, with 30 seconds between batches.
+Schedules run between batches, including across several automatic checkpoints.
+
+Docker-VM measurements are synthetic functional evidence, not validation of a
+production device, real application workload or hardware power-loss behavior.
+The standalone image uses its normal Linux sync contract. Network namespaces
+are isolated; HTTP traffic uses container-local loopback. No host port is opened.
+
+SIGINT/SIGTERM to the controller stops the containers and records interruption.
+Containers, volumes, logs, failed runs and intermediate stores are preserved.
+Their exact names and the current restored store are in `report.json`. To stop
+a background run, signal its `controller_pid`; after it stops, remove only the
+container and volume names recorded in that report when the evidence is no
+longer needed. Host sleep, Docker shutdown, or machine restart can interrupt a
+long run; keep the host awake for the intended duration.
+
+## Upgrade and cold-restore drill
+
+`upgrade-drill.exs` uses the same public API fixture against an older checkout
+and the candidate. Compile each checkout with its own build and dependency
+directories; do not share mutable dependency checkouts between versions.
+`seed` refuses an existing store and creates completed and delayed jobs plus a
+durable schedule. `verify` checks their definitions/state, compacts, cancels the
+schedule and restarts to verify that the new events recover.
+
+```sh
+# Run in the compiled v1.7.0 checkout, using the candidate's absolute script.
+mix run --no-start /absolute/candidate/bench/upgrade-drill.exs \
+  --action seed --path /absolute/drill/source
+# Run these commands in the candidate checkout after the old Engine stopped.
+mix tay.storage.backup --source /absolute/drill/source \
+  --destination /absolute/drill/backup --catalog /absolute/drill/backup.json \
+  --durability development
+mix tay.storage.restore --source /absolute/drill/backup \
+  --destination /absolute/drill/restored --verify-catalog /absolute/drill/backup.json \
+  --catalog /absolute/drill/restored.json --durability development
+mix tay.storage.inspect --data-dir /absolute/drill/restored --durability write
+mix run --no-start bench/upgrade-drill.exs \
+  --action verify --path /absolute/drill/restored
+```
+
+The parent directory must exist and all output store/catalog paths must be new.
+These commands use macOS-compatible development durability. On an independently
+validated Linux target, use `--mode sync --validated-filesystem` for both script
+actions, `--durability sync --validated-filesystem` for copy/inspection, and
+retain the target filesystem and architecture with the output. Keep the
+pre-upgrade backup unchanged: downgrade after new schedule events requires
+restoring it, not opening the upgraded store with the old binary.
+
 For an isolated comparison of native CRC32C against the original Elixir
 implementation, run `mix run --no-start bench/crc32c.exs`. It checks matching
 checksums and reports median throughput for buffers from 20 bytes to 16 MiB,

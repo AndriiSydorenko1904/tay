@@ -3,7 +3,7 @@ Code.require_file("mix_helpers/tay_native_editor.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.8.0-rc3"
+  @version "1.8.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do

@@ -312,7 +312,8 @@ storage operation, stop admission and preserve the entire store and namespace.
 Do not truncate, pad, delete, rename-aside, skip records, or reuse sequence
 space. Distinguish ownership contention and operational budget refusal from
 bad bytes. Increase a budget only for a new full inspection of unchanged data.
-There is no automatic repair, retention/compaction, or live backup. Protect
+There is no automatic corruption repair or live backup. Automatic retention and
+compaction operate only on validated history; they do not repair corruption. Protect
 plaintext args, stores, catalogs, and backups with deployment access controls.
 
 ## Execution rate limits

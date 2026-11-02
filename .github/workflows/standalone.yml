@@ -6,6 +6,7 @@ on:
       - Dockerfile
       - .dockerignore
       - .github/workflows/standalone.yml
+      - bench/soak.py
       - config/**
       - c_src/**
       - standalone/**
@@ -79,3 +80,22 @@ jobs:
         run: standalone/test/dashboard_container_smoke.sh tay-standalone:test
       - name: Exercise HTTP-only mode without a Unix socket
         run: standalone/test/http_only_container_smoke.sh tay-standalone:test
+
+      - name: Exercise Python workers through crash, cold restore and compaction
+        run: >-
+          python3 bench/soak.py --image tay-standalone:test
+          --worker-image tay-standalone-worker:test
+          --output "$RUNNER_TEMP/tay-soak" --seconds 120
+          --interval 1 --maintenance-every 2
+
+      - name: Preserve operational soak evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-soak-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/tay-soak/report.json
+            ${{ runner.temp }}/tay-soak/events.jsonl
+            ${{ runner.temp }}/tay-soak/*.log
+          if-no-files-found: ignore
+          retention-days: 30

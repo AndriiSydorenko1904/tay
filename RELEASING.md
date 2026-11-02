@@ -15,6 +15,20 @@ public.
 
 ## Prepare
 
+Before promoting the 1.8 release candidate, complete the operational smoke run and
+the previous-stable-version upgrade/cold-restore drill described in
+[`bench/README.md`](bench/README.md). Retain the final reports, including failed
+attempts. Extended soaks are optional and do not impose a 24-hour release wait.
+An interrupted run remains partial evidence, not a completed soak. The smoke
+run does not replace exact-commit qualification.
+
+The prepared 1.8.0 checkout uses engine/container version `1.8.0` and Python
+package `1.4.3`. Include SDK README and comment-only changes when detecting a
+changed client. Keep historical rc
+changelog entries and format-introduction versions intact. Mark GitHub release
+candidates as prereleases; promote only the final stable tag after the checks
+below. Preparing local files does not publish Hex, PyPI, or containers.
+
 1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.

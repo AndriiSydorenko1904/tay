@@ -67,8 +67,9 @@ may withdraw them with `unregister_tasks`:
 {"version":1,"type":"register_tasks","request_id":"tasks-1","tasks":["billing.capture.v1"]}
 ```
 
-Registrations, capacity, reservations, and successful return values belong to
-the current live connection or listener generation. They are not persisted.
+Worker registrations, capacity, and reservations belong to the current live
+connection or listener generation. They are not persisted. Successful results
+for persistent jobs are durable, as described below.
 Disconnect immediately removes the runtime's capacity. Jobs without a capable
 executor remain ready without consuming an attempt, and later compatible work
 in the same queue may still run.

@@ -1,7 +1,9 @@
 # Tay Python SDK
 
-`tay` is the stdlib-only Protocol v1 producer and worker client for a local Tay
-Unix-domain socket. `Tay()` needs no socket setting: it uses the same discovery
+`tay` provides producer and worker clients for Tay's local Unix-domain socket
+and HTTP/JSON API. Both transports use only the Python standard library;
+encrypted PKCS#12 credentials are an optional extra. `Tay()` needs no socket
+setting: it uses the same discovery
 contract as the Elixir Engine (explicit path, `TAY_SOCKET_PATH`, an existing
 shared `/run/tay` directory, XDG runtime,
 `TMPDIR`, then `/tmp/tay-<uid>`). It is intentionally a separately installable
@@ -15,9 +17,9 @@ python -m pip install tay-client
 
 Enable the Bandit listener with `TAY_HTTP_PORT=8080` for a local deployment.
 `TayHTTP` is an async producer client for enqueue, status, cancellation,
-and result retrieval. `TayHTTPWorker` runs remote workers over the same HTTP
-listener; schedules still use the local socket. To use schedules alongside
-HTTP, explicitly enable a socket on the server as well.
+result retrieval, and durable schedules. `TayHTTPWorker` runs remote workers
+over the same HTTP listener. HTTP-only deployments support the complete
+schedule API without a shared socket.
 
 ```python
 from tay import TayHTTP
@@ -163,7 +165,7 @@ For payments and other external effects, pass the same stable business
 operation identifier as Tay's `submission_id` and the provider's idempotency
 key. A Tay retry can then repeat delivery without repeating the external
 effect. See the repository's
-[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.4.8/docs/idempotency.md)
+[idempotency guide](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0/docs/idempotency.md)
 for crash cases and a complete financial-operation example.
 
 For a long-running worker that adds or removes capabilities later, explicitly
@@ -206,12 +208,13 @@ await tay.every("reports.rebuild.v1", minutes=15, delay=600)
 
 Use `start_at=<UTC milliseconds>` instead of `delay` when the first occurrence
 has an absolute timestamp. The two options are mutually exclusive. Schedule
-creation, execution, and cancellation work against the current listener
-generation. The client retains successful declarations in memory and replays
-them during every reconnect, so compaction and Engine restart do not remove
-schedules while the client remains alive. Application startup must declare
-them again after a client-process restart. Missed-time catch-up and enforced
-overlap policies are still pending.
+registration, advancement, and cancellation are durable: declarations survive
+Engine restart, compaction, and client-process exit. Startup declarations may
+be repeated with the same stable `declaration_id` to reconcile registration.
+`catch_up="all"` delivers missed occurrences serially; `"latest"` coalesces
+later missed times after delivery. `overlap="allow"`, `"skip"`, and `"queue"`
+are enforced by the Engine. See [durable schedules over either transport](#durable-schedules-over-either-transport)
+for inspection, cancellation, and policy details.
 
 Run a dedicated worker module with:
 

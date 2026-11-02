@@ -56,7 +56,9 @@ and successful return values are durable.
   Batches preserve record order and acknowledge a batch only after its fsync;
   they do not change the on-disk format or recovery compatibility.
 - External effects are at-least-once, not exactly-once. There is no live
-  backup, automatic torn-tail repair, or multi-host executor protocol. Durable
+  backup, automatic torn-tail repair, or distributed store ownership. Remote
+  producers and workers connect through the mTLS HTTP/JSON API; the Engine and
+  its store remain single-node and single-writer. Durable
   successful results are bounded JSON values retained with completed jobs, not
   an authoritative business ledger. Store-v2 compaction is online during candidate
   preparation and uses a fenced publication switch. The local Unix socket is a
