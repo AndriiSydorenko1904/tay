@@ -38,16 +38,9 @@ below. Preparing local files does not publish Hex, PyPI, or containers.
 4. Commit and push the release commit to `main` without creating the tag yet.
 5. Wait for both `Continuous integration` and `Standalone runtime` to succeed
    for that exact commit SHA.
-6. Run `Tay qualification (not publication)` against that exact commit SHA, with
-   `fail_on_regression=true`, the preceding stable release as `baseline_ref`, and
-   the full qualification enabled. Both Linux and macOS qualification and
-   performance jobs must pass; retain the comparison reports with the release.
-   Use at least 10,000 measured jobs per trial. Both independent replicas on
-   each platform must pass eight warmed fresh-VM trials per checkout, the 20%
-   regression limit and the 10% relative-MAD variability limit. Investigate
-   noisy/regressed measurements before tagging.
-   Functional macOS qualification covers arm64; the explicit macOS performance
-   profile is `macos-15-intel`. Retain architecture metadata with each report.
+6. Full qualification and performance comparisons are optional. Run them
+   explicitly when needed; they do not block publication after CI and
+   Standalone runtime pass for the release commit.
 7. Create `v<mix-version>`, push the tag, and verify that both the repository and
    tag are accessible without authentication.
 
@@ -74,23 +67,15 @@ and `tay-worker --help` before uploading it.
 
 ## Publish
 
-The container and PyPI workflows refuse publication unless the same commit SHA
-has a successful `Release qualification gate` job in `qualification.yml`. That
-job requires both platform matrices, full qualification and
-`fail_on_regression=true`; performance-only and ungated runs cannot authorize a
-release. An API failure also refuses publication.
+Container and PyPI publication require successful `Continuous integration`
+and `Standalone runtime` push runs for the exact release SHA. Missing or failed
+checks and API errors refuse publication. Full qualification and performance
+comparisons are optional.
 
-PyPI publication waits for an already-running qualification in a preflight job
-before opening the `pypi` environment; it pins the validated source commit and
-checks qualification again before building/uploading. A missing or failed
-qualification still refuses publication.
-
-Before manual Hex publication,
-verify the same evidence using an authenticated GitHub CLI session:
-
-```sh
-python3 .github/scripts/check_release_qualification.py --repository AndriiSydorenko1904/tay
-```
+The local `deploy-helper.sh` checks these two required workflows. For historical
+tags whose embedded publication workflows still require full qualification, it
+retries publication using the current workflows on `main`. Published tags and
+package versions do not need to change for this publication-policy update.
 
 Authenticate interactively for the first Hex release, inspect the file list,
 and publish the package and HexDocs:

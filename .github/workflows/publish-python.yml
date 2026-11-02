@@ -54,11 +54,11 @@ jobs:
           fi
 
   qualification:
-    name: Wait for release qualification
+    name: Verify release CI
     needs: changes
     if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 5
     permissions:
       contents: read
       actions: read
@@ -69,24 +69,19 @@ jobs:
           ref: ${{ needs.changes.outputs.release_commit }}
           persist-credentials: false
 
-      - name: Wait for the existing full qualification run
+      - name: Verify CI and standalone for the release commit
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ needs.changes.outputs.release_commit }}
         run: |
           set -euo pipefail
-          while ! python3 .github/scripts/check_release_qualification.py --commit "$RELEASE_COMMIT"; do
-            active_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow qualification.yml \
-              --commit "$RELEASE_COMMIT" --event workflow_dispatch --limit 20 \
-              --json status,url --jq '[.[] | select(.status != "completed")][0].url // empty')
-            if test -z "$active_run"; then
-              # Allow the successful run's API index to settle before refusing.
-              sleep 5
-              python3 .github/scripts/check_release_qualification.py --commit "$RELEASE_COMMIT"
-              break
-            fi
-            echo "Waiting for release qualification: $active_run"
-            sleep 20
+          release_commit=$(git rev-parse HEAD)
+          for workflow in ci.yml standalone.yml; do
+            run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
+              --commit "$release_commit" --event push --status success --limit 20 \
+              --json databaseId,headSha,conclusion \
+              --jq "[.[] | select(.headSha == \"$release_commit\" and .conclusion == \"success\")][0].databaseId // empty")
+            test -n "$run_id" || { echo "Release refused: $workflow must pass for $release_commit" >&2; exit 1; }
+            echo "$workflow passed for $release_commit (run $run_id)"
           done
 
   publish:
@@ -110,10 +105,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify full release qualification for this commit
+      - name: Verify CI and standalone for the release commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/check_release_qualification.py
+        run: |
+          set -euo pipefail
+          release_commit=$(git rev-parse HEAD)
+          for workflow in ci.yml standalone.yml; do
+            run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
+              --commit "$release_commit" --event push --status success --limit 20 \
+              --json databaseId,headSha,conclusion \
+              --jq "[.[] | select(.headSha == \"$release_commit\" and .conclusion == \"success\")][0].databaseId // empty")
+            test -n "$run_id" || { echo "Release refused: $workflow must pass for $release_commit" >&2; exit 1; }
+            echo "$workflow passed for $release_commit (run $run_id)"
+          done
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, node24

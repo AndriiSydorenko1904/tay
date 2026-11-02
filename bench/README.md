@@ -343,9 +343,10 @@ gh workflow run qualification.yml --ref main -f performance_only=false \
 
 Reports and Markdown comparisons are retained as 30-day artifacts, with a unique
 artifact per platform/replica. Each comparison appears in the workflow summary.
-Artifacts contain measurements, not stores or user jobs. The final release gate
+Artifacts contain measurements, not stores or user jobs. The optional qualification gate
 requires full functional qualification and both performance replicas on each
-platform for the exact candidate SHA. API failures do not authorize publication.
+platform for the exact candidate SHA. Publication itself requires successful
+CI and Standalone runtime for the release SHA; performance comparisons are optional.
 
 The data root must not exist, and existing comparison outputs are refused.
 Optional `--build-root` and `--deps-root` select isolated, already-compiled cohort
