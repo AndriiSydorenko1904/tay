@@ -23,6 +23,8 @@
 
 ### Fixed
 
+- Require Phoenix.HTML 4.4 or later to address the attribute-name injection
+  advisory CVE-2026-117645.
 - Align SDK, protocol and operations documentation with durable schedules over
   HTTP and Unix sockets, persistent results, remote HTTP workers and automatic
   retention/compaction.

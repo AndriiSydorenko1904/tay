@@ -30,7 +30,7 @@ defmodule Tay.MixProject do
         {:bandit, "~> 1.14.1"},
         {:phoenix, "~> 1.8.14"},
         {:phoenix_live_view, "~> 1.2.11"},
-        {:phoenix_html, "~> 4.3"},
+        {:phoenix_html, "~> 4.4"},
         {:jason, "~> 1.4"},
         {:floki, ">= 0.38.0", only: :test},
         {:lazy_html, ">= 0.1.0", only: :test},
