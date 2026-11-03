@@ -27,9 +27,9 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_CALLER_TIMEOUT_MS` | `5000` | Maximum time an admitted Engine call may wait for its reply. A timeout after submission is reported as `unknown_outcome`; reconcile with the same job ID. |
 | `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | Durable enqueue group-commit window in milliseconds (`0..1000`). `0` preserves immediate fsync behavior. Invalid values stop startup. |
 | `TAY_RATE_LIMITS` | `{}` | JSON queue/task execution limits; see [operations](operations.md#execution-rate-limits). Monotonic fixed windows reset on Engine restart. |
-| `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Automatic checkpoints run after new durable events even with active jobs, capture live state at a durable frontier without replaying old journal segments, and recovery replays the snapshot plus its tail. |
-| `TAY_MAX_STATE_BYTES` | `268435456` | Conservative in-memory byte budget for active jobs. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`. These suffixes use binary multiples. |
-| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. The Dashboard/API may use zero as a one-shot full terminal-history purge, after which the persisted retention is `1h`. After a successful Dashboard compaction, the persisted Dashboard value takes priority on restart. |
+| `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Checkpoints reconstruct a candidate from sealed on-disk history at a durable frontier while execution continues, then catch up concurrent mutations. They do not copy Engine ETS state. Recovery replays the resulting snapshot plus its tail. |
+| `TAY_MAX_STATE_BYTES` | `268435456` | Shared operational memory budget for active jobs, schedules, retained results and admitted payloads, including reserved headroom. It is not a process/container RSS ceiling. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`; suffixes use binary multiples. |
+| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. Manual compaction may use zero as a one-shot terminal-history purge, after which the persisted retention is `1h`. After any successful compaction, its persisted retention takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
 | `TAY_DASHBOARD_PORT` | `4000` | Dashboard listener port. |
@@ -38,9 +38,10 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_DASHBOARD_SECRET_KEY_BASE` | unset | At least 64 random bytes; required when dashboard is enabled. |
 
 `TAY_DURABILITY` is intentionally not an environment setting. The standalone
-runtime pins `durability: :sync` and validates the filesystem before writing;
+runtime pins `durability: :sync` and checks for a supported filesystem type before writing;
 an unnoticed override to `:write` would weaken the production durability
-contract. Embedded Elixir applications can configure their Engines explicitly,
+contract. This type check does not certify the storage device's power-loss
+behavior; operators still need to validate their deployment. Embedded Elixir applications can configure their Engines explicitly,
 subject to Tay's production validation.
 
 An unset or empty `TAY_SOCKET_PATH` uses automatic transport selection.
@@ -70,9 +71,9 @@ A value without a suffix is interpreted as bytes for backward compatibility.
 
 Active-job and terminal-history counts are informational and have no configured
 maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are
-ignored. Active payloads use one `TAY_MAX_STATE_BYTES` budget; structural
-complexity is included through the retained job's flat BEAM heap size rather
-than a separate item limit. The former `TAY_MAX_STATE_NODES` variable is ignored.
+ignored. Active jobs, schedules, retained results and admitted payloads share
+one `TAY_MAX_STATE_BYTES` budget, with conservative accounting for their BEAM
+representation and reserved headroom. The former `TAY_MAX_STATE_NODES` variable is ignored.
 Terminal history is removed only by time-based compaction.
 
 Python HTTP producers and workers need only the HTTP(S) address. Set

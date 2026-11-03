@@ -121,8 +121,9 @@ job; compaction removes it when that job expires under terminal retention.
 Volatile jobs and results remain in the current in-memory generation. Cron and interval
 schedules created through `schedule` are also durable and can be cancelled
 through `cancel_schedule`. Due occurrences retry temporary admission failure
-with a stable job ID, and schedule advancement is recorded only after durable
-job admission. Client redeclaration with the same stable declaration ID remains
+with a stable job ID. A delivered occurrence advances only after durable job
+admission; the `skip` policy can instead advance a due time without admitting a
+job while an earlier occurrence is busy. Client redeclaration with the same stable declaration ID remains
 idempotent. Registration and cancellation replies are sent only after the
 schedule mutation is durably committed. A lost post-commit reply is reported as
 `unknown_outcome` and is never retried automatically; reconcile it by reading
@@ -145,8 +146,9 @@ HTTP exposes `POST /schedules`, `GET /schedules`, `GET /schedules/:id`, and
 `schedule`, excluding envelope fields. Both Python transports expose `schedule`,
 `every`, `schedules`, `get_schedule`, and handle `status`/`cancel`. Missing schedules
 map to HTTP 404, invalid declarations to 400, and unknown outcomes to 503.
-List responses obey the normal response byte limit and fail without a partial
-list when it is exceeded.
+List responses use bounded pages with `next_cursor`, as described below.
+A declaration that cannot fit within the response byte limit returns an error;
+ordinary lists can return a shorter page to stay within that limit.
 
 ## HTTP/JSON producer API
 

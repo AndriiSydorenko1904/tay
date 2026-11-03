@@ -21,12 +21,12 @@ MIX_ENV=prod mix tay.storage.init --data-dir /srv/tay/jobs --durability sync --v
 MIX_ENV=prod mix tay.storage.inspect --data-dir /srv/tay/jobs --durability sync --validated-filesystem
 ```
 
-Initialization is not an idempotent “ensure” or repair command. Normal startup
+Initialization is not an idempotent "ensure" or repair command. Normal startup
 is existing-only; missing V2 authority metadata or required history is an error.
 Only an explicitly intended empty pre-existing root permits
 `--bootstrap-existing`. Never delete or replace a lock to bypass contention.
 Offline inspection acquires the existing lock and performs complete physical
-and Event-v1 semantic validation without activation. It returns aggregate
+and supported Event-v1/Event-v2 semantic validation without activation. It returns aggregate
 diagnostics, not jobs or a reusable recovery ticket. Use `mix help
 tay.storage.inspect` for independent replay budgets.
 
@@ -150,7 +150,7 @@ that cannot converge within the bounded round limit behaves the same way.
 The new `CURRENT` is published only after the candidate and its incremental tail
 are validated and synced. The post-publication authority check is bounded;
 restart still performs the full replay of the canonical snapshot followed by
-its tail. The durable sequence frontier—not a wall-clock timestamp—decides which
+its tail. The durable sequence frontier, rather than a wall-clock timestamp, decides which
 mutations are already covered.
 All checkpoints operate on Store-v2 generations and prepare online.
 
@@ -294,7 +294,7 @@ and exhausted file/byte budgets. Defaults are 100,000 inventory entries
 qualified workload.
 
 The destination is a new private `0700` sibling staging directory with `0600`
-files. STORE is copied last. In strict mode every copied file is fsynced,
+files. In strict mode every copied file is fsynced,
 followed by the segments and store directories, exclusive no-replace
 publication, ancestor syncs, then exclusive external catalog creation and its
 syncs. A failure preserves the source and any partial staging or published

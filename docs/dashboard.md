@@ -127,7 +127,7 @@ It adds no dashboard storage. Manual compaction rewrites the durable store and
 permanently removes terminal jobs that have expired under the configured
 retention policy, so the UI requires an explicit confirmation. Store-v2
 candidate preparation keeps admission and execution live and is shown as
-storage maintenance; only the short fenced epoch switch is unavailable. The
+storage maintenance; the short fenced epoch switch temporarily holds new admission. The
 short publication fence is shown as `compacting / switching`. Cursor pages are
 weakly consistent under concurrent job changes; refresh to reconcile a changing
 result set.

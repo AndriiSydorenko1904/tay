@@ -13,7 +13,11 @@ It never scans retained history.
 
 ```elixir
 children = [
-  {Tay, name: MyApp.Tay, data_dir: "/var/lib/my_app/tay"},
+  {Tay,
+   name: MyApp.Tay,
+   data_dir: "/var/lib/my_app/tay",
+   durability: :sync,
+   validated_filesystem: true},
   Tay.Telemetry.poller_child_spec(
     id: MyApp.TayMetricsPoller,
     engines: [MyApp.Tay],
@@ -22,6 +26,10 @@ children = [
   )
 ]
 ```
+
+This example assumes an initialized store on a validated supported local Linux
+filesystem; follow [operations](operations.md#initialize-and-inspect) first.
+For macOS development, use `durability: :write` instead.
 
 Use distinct poller `:id` values when a supervision tree starts more than one
 poller. A single poller can probe multiple atom-named engines.

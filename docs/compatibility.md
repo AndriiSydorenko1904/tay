@@ -1,9 +1,9 @@
 # Compatibility and limits
 
-Store v2 supports two schema-1 MANIFEST representations for the existing
-`terminal_retention` key: the original `"infinity"` value and the canonical
-one-key Value map `{"hours" => N}`, where `N` is in
-`0..2_562_047_788_015`. Readers accept zero as a full-purge marker and normalize
+Store v2 supports the original `"infinity"` MANIFEST retention value and
+canonical one-key Value maps for bounded retention: `{"hours" => N}`, with
+`N` in `0..2_562_047_788_015`, or `{"minutes" => N}`, with `N` in
+`0..153_722_867_280_912`. Readers accept zero as a full-purge marker and normalize
 the runtime policy to the one-hour minimum; new full-purge compactions persist
 one hour directly. Framing versions, keys, CRC32C, and CURRENT's manifest
 digest are unchanged. Readers that predate bounded retention may fail closed on
@@ -64,15 +64,16 @@ and successful return values are durable.
   preparation and uses a fenced publication switch. The local Unix socket is a
   same-host trust boundary.
 
-## Finite reference profile
+## Historical finite reference profile
 
 The measured reference was Elixir 1.20.2 / OTP 29 on a validated local Linux
 Btrfs test volume: 10,000 retained jobs with small encoded arguments, eight
 offered callers, two queues with two credits each, 30,000 Events, and
 19,385,044 canonical history bytes. This is a finite example, not a throughput,
 recovery-time, arbitrary-device, or power-loss guarantee. Validate the actual
-target and workload before deployment. The conservative operational policy
-is:
+target and workload before deployment. That historical run used the following
+workload values and limits. Legacy job/node counts are not enforced as limits
+by Tay 1.8:
 
 | Boundary | Value |
 | --- | ---: |
