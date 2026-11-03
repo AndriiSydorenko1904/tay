@@ -1,5 +1,9 @@
 # Storage and recovery contract
 
+This is the persistent-format reference for Tay 1.8. For setup, configuration,
+backup and restore, start with [operations](operations.md). For supported
+platforms and upgrade restrictions, see [compatibility](compatibility.md).
+
 Tay has one authoritative append-only Store-v2 generation per Engine. Runtime ETS
 indexes and the disk-backed terminal inspection index are disposable
 projections, not a second source of truth. Record v1, Segment v1, and Event v1
@@ -12,9 +16,20 @@ anchors. Tests use those fixtures directly and never parse this page.
 ## Physical formats
 
 All multibyte fields are unsigned big-endian. A Record v1 has a 24-byte header:
-`TAY\0` magic (4), format version (1), type (1), flags (1), payload schema (1),
-sequence (8), payload length (4), and header CRC32C (4). It is followed by the
-opaque payload and a four-byte record CRC32C. The header CRC covers header
+
+| Byte offset | Field | Size in bytes |
+| --- | --- | ---: |
+| 0 | Magic `TAY\0` | 4 |
+| 4 | Format version | 1 |
+| 5 | Record type | 1 |
+| 6 | Flags | 1 |
+| 7 | Payload schema | 1 |
+| 8 | Sequence | 8 |
+| 16 | Payload length | 4 |
+| 20 | Header CRC32C | 4 |
+
+The header is followed by the opaque payload and a four-byte record CRC32C.
+The header CRC covers header
 bytes `0..19`; the record CRC covers those same bytes followed by the payload.
 The hard payload maximum is 16,777,216 bytes, so complete record size is
 `28 + payload_length`. Type `1..254` and schema `1..255` are physically
@@ -28,8 +43,9 @@ creates `data_dir/STORE` or `data_dir/segments`. The STORE_ID is carried by the
 V2 marker, manifest, CURRENT pointer, and every segment header/footer.
 
 Store-v1 roots with `data_dir/STORE` and a root `segments` directory are not
-supported by Tay 1.5.0. They must be opened and migrated by Tay 1.4.x before
-upgrading. Tay 1.5.0 never creates, imports, adopts, or repairs Store v1.
+supported by Tay 1.5 and later, including 1.8. They must be opened and migrated
+by Tay 1.4.x before upgrading. Current versions never create, import, adopt, or
+repair Store v1.
 
 Store-v2 canonical segments live below the CURRENT epoch's `segments/`
 directory and are named exactly 20

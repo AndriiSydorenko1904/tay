@@ -103,12 +103,13 @@ must refuse rollback. Restoring an older backup is an explicit recovery-point
 decision: later acknowledged jobs may be absent and effects may repeat. There
 is no anti-rollback watermark or proof that a selected backup is the newest.
 
-## 1.8.0-rc3 schedule events
+## Tay 1.8 schedule events
 
-The rc3 reader accepts all preceding Store-v2 and Event formats. Schedule delivery
-writes semantic pair `(11,2)`; registration, cancellation, explicit advancement
-and compaction write `(12,2)` and
-preserves their logical revisions and active occurrence links. Existing schedules
+The 1.8 reader accepts all preceding Store-v2 and Event formats. The new schedule
+events were introduced in 1.8.0-rc3. Schedule delivery writes semantic pair
+`(11,2)`; current registration, cancellation, explicit advancement and compaction
+write `(13,2)`. Historical `(12,2)` checkpoints remain readable. These events
+preserve logical revisions and active occurrence membership. Existing schedules
 start enforcing their stored overlap policy (`skip` by default) on upgrade.
 Earlier binaries reject the new pairs without writable activation. After these
 pairs have been written, downgrade requires restoring a cold backup made before
@@ -120,7 +121,7 @@ until the preceding job and locally tracked execution settlement finish.
 Cancellation does not cancel jobs already admitted by a schedule. Application
 side effects retain Tay's at-least-once contract.
 
-## rc3 shared budget and occurrence membership
+## Shared budget and occurrence membership
 
 The existing `max_state_bytes` now includes in-memory auxiliary data and admitted
 payloads, with no new required configuration. Stores accepted under older job-only

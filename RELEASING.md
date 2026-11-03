@@ -20,7 +20,7 @@ the previous-stable-version upgrade/cold-restore drill described in
 [`bench/README.md`](bench/README.md). Retain the final reports, including failed
 attempts. Extended soaks are optional and do not impose a 24-hour release wait.
 An interrupted run remains partial evidence, not a completed soak. The smoke
-run does not replace exact-commit qualification.
+run does not replace the required CI and Standalone checks for the release commit.
 
 The prepared 1.8.0 checkout uses engine/container version `1.8.0` and Python
 package `1.4.3`. Include SDK README and comment-only changes when detecting a
@@ -32,7 +32,8 @@ below. Preparing local files does not publish Hex, PyPI, or containers.
 1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
 2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
-3. Update versioned GitHub documentation links in package metadata, the pinned
+3. Update versioned HexDocs links in the README and package metadata, versioned
+   GitHub documentation links, the pinned
    container tags in `compose.yml` and deployment guides, and keep the README
    quick-start pull commands on the stable `latest` tag.
 4. Commit and push the release commit to `main` without creating the tag yet.
@@ -112,3 +113,23 @@ uvx twine upload clients/python/dist/*
 Never store Hex or PyPI credentials in this repository. After publishing,
 create clean consumer projects and install `{:tay, "~> <version>"}` from Hex
 and the independently released `tay-client==<python-version>` from PyPI.
+
+## Update documentation only
+
+To update the rendered HexDocs pages for the version in `mix.exs`:
+
+```sh
+mix docs --warnings-as-errors
+mix hex.publish docs
+```
+
+This updates documentation without replacing the Hex package or publishing
+containers/Python packages. HexDocs documentation can be updated after the
+package replacement window has closed.
+
+The README shown on the Hex.pm package page is extracted from the package
+archive. Updating HexDocs does not change that README. Ship its updated links
+and the package's Documentation metadata with the next package release; do not
+replace an immutable package version just to update its README. Use absolute
+HexDocs HTML URLs in README guide links so Hex.pm does not send readers to raw
+Markdown files under `repo.hex.pm/preview`.

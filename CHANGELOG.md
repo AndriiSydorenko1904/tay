@@ -188,7 +188,8 @@
   checksum values, incremental registers and storage formats are unchanged.
 - Compute Record header and full-record CRC32C in one NIF call during encoding,
   continuing the payload checksum from the header register without concatenation.
-- Generate native editor metadata with `mix tay.native.editor`, independently
+- Generate native editor metadata with
+  [`mix tay.native.editor`](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0/mix_helpers/tay_native_editor.exs), independently
   from native compilation and production builds.
 
 ## 1.7.0 — 2026-10-20

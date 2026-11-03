@@ -84,7 +84,7 @@ defmodule Tay.MixProject do
       build_tools: ["mix"],
       links: %{
         "Source" => @source_url,
-        "Documentation" => @source_url <> "/tree/v#{@version}/docs"
+        "Documentation" => "https://hexdocs.pm/tay/#{@version}/readme.html"
       },
       licenses: ["Elastic-2.0"]
     ]
@@ -94,6 +94,13 @@ defmodule Tay.MixProject do
     [
       main: "readme",
       source_ref: "v#{@version}",
+      groups_for_extras: [
+        "Start here": ["README.md"],
+        Integration: ["docs/standalone.md", "docs/dashboard.md", "docs/dashboard-container.md"],
+        Operations: ["docs/operations.md", "docs/observability.md", "docs/idempotency.md"],
+        Reference: ["docs/protocol.md", "docs/storage.md", "docs/compatibility.md"],
+        Project: ["CHANGELOG.md", "COMMERCIAL-LICENSING.md"]
+      ],
       extras: [
         "README.md",
         "CHANGELOG.md",

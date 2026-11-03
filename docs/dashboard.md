@@ -22,7 +22,7 @@ Add Tay to the host Phoenix application's dependencies:
 ```elixir
 def deps do
   [
-    {:tay, "~> 1.0"}
+    {:tay, "~> 1.8"}
   ]
 end
 ```
@@ -128,7 +128,7 @@ permanently removes terminal jobs that have expired under the configured
 retention policy, so the UI requires an explicit confirmation. Store-v2
 candidate preparation keeps admission and execution live and is shown as
 storage maintenance; only the short fenced epoch switch is unavailable. The
-the short publication fence is shown as `compacting / switching`. Cursor pages are
+short publication fence is shown as `compacting / switching`. Cursor pages are
 weakly consistent under concurrent job changes; refresh to reconcile a changing
 result set.
 
