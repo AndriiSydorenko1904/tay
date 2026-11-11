@@ -207,7 +207,7 @@ defmodule Tay.Schedule do
 
         with {:ok, parsed} <- Cron.parse(cron, timezone),
              {:ok, first} <- first_at(fields, now),
-             {:ok, next_at} <- Cron.next(parsed, first - 60_000) do
+             {:ok, next_at} <- Cron.at_or_after(parsed, first) do
           {:ok, :cron, parsed, cron, timezone, next_at}
         end
 

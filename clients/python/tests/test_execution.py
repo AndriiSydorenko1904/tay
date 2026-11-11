@@ -21,6 +21,64 @@ class TaskExecutionTests(unittest.IsolatedAsyncioTestCase):
     def declare(self, function):
         return Tay(socket_path="/tmp/tay-runner-test.sock").task(function)
 
+    async def test_varargs_preserve_preceding_parameters_on_sync_and_async_tasks(self):
+        def sync(head, /, first, *values, scale=1, **metadata):
+            return [head, first, list(values), scale, metadata]
+
+        async def async_task(head, /, first, *values, scale=1, **metadata):
+            return sync(head, first, *values, scale=scale, **metadata)
+
+        for function, synchronous in [(sync, True), (async_task, False)]:
+            for args, kwargs, expected in [
+                (
+                    (1, 2, 3, 4),
+                    {"scale": 5, "label": "test"},
+                    [1, 2, [3, 4], 5, {"label": "test"}],
+                ),
+                ((1,), {"first": 2}, [1, 2, [], 1, {}]),
+            ]:
+                with self.subTest(function=function.__name__, args=args):
+                    task = self.declare(function)
+                    arguments = task._arguments_from_call(args, kwargs)
+                    self.assertEqual(
+                        await run_task(
+                            task,
+                            arguments,
+                            synchronous=synchronous,
+                            max_result_bytes=1024,
+                        ),
+                        expected,
+                    )
+
+    async def test_varargs_fill_omitted_defaults_without_shifting_values(self):
+        def defaults(head=1, first=2, *values):
+            return [head, first, *values]
+
+        task = self.declare(defaults)
+        self.assertEqual(
+            await run_task(
+                task,
+                {"first": 3, "values": [4, 5]},
+                synchronous=True,
+                max_result_bytes=1024,
+            ),
+            [1, 3, 4, 5],
+        )
+
+    async def test_varargs_do_not_replace_a_missing_required_parameter(self):
+        def required(first, *values):
+            return [first, *values]
+
+        with self.assertRaisesRegex(
+            ValidationError, "missing required argument 'first'"
+        ):
+            await run_task(
+                self.declare(required),
+                {"values": [2, 3]},
+                synchronous=True,
+                max_result_bytes=1024,
+            )
+
     async def test_sync_calls_run_in_a_thread_and_async_calls_on_the_loop(self):
         loop_thread = threading.get_ident()
 

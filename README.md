@@ -8,7 +8,7 @@ infrastructure in a production OCI container.
 
 Tay owns its durable job state without a separate database, Redis, or RabbitMQ.
 
-Read the [formatted documentation](https://hexdocs.pm/tay/1.8.0/readme.html)
+Read the [formatted documentation](https://hexdocs.pm/tay/1.8.1/readme.html)
 for installation, configuration, API reference, and operations.
 
 | What you want to do | Start here |
@@ -16,8 +16,8 @@ for installation, configuration, API reference, and operations.
 | Run Tay with Docker | [Docker quick start](#quick-start-with-docker) |
 | Embed Tay in Elixir | [Elixir integration](#elixir-integration) |
 | Execute Python tasks | [Python integration](#python-integration) |
-| Add the dashboard | [Dashboard guide](https://hexdocs.pm/tay/1.8.0/dashboard.html) |
-| Configure, back up, or upgrade a store | [Operations guide](https://hexdocs.pm/tay/1.8.0/operations.html) |
+| Add the dashboard | [Dashboard guide](https://hexdocs.pm/tay/1.8.1/dashboard.html) |
+| Configure, back up, or upgrade a store | [Operations guide](https://hexdocs.pm/tay/1.8.1/operations.html) |
 
 ```text
 Application / Worker
@@ -70,7 +70,7 @@ Download the versioned Compose example into a new directory:
 ```sh
 mkdir tay-example
 cd tay-example
-curl -fsSL https://raw.githubusercontent.com/AndriiSydorenko1904/tay/v1.8.0/compose.yml -o compose.yml
+curl -fsSL https://raw.githubusercontent.com/AndriiSydorenko1904/tay/v1.8.1/compose.yml -o compose.yml
 ```
 
 Start Tay with that file:
@@ -172,7 +172,7 @@ component:
 Tay remains a single-node durable engine, while producers and workers may
 connect through Bandit HTTP/JSON from another host. Local workers can still use
 the Unix-domain socket. See
-[worker protocol guide](https://hexdocs.pm/tay/1.8.0/protocol.html).
+[worker protocol guide](https://hexdocs.pm/tay/1.8.1/protocol.html).
 
 This keeps the single-node trust and failure model explicit while allowing the
 Engine to be packaged and operated independently from application workers.
@@ -325,10 +325,10 @@ List and summarize jobs through the bounded public inspection API:
 
 The `tay` package includes a Phoenix LiveView dashboard for these APIs.
 Its modules live under `lib/tay/dashboard/`; see the
-[dashboard guide](https://hexdocs.pm/tay/1.8.0/dashboard.html) for router mounting and access control.
+[dashboard guide](https://hexdocs.pm/tay/1.8.1/dashboard.html) for router mounting and access control.
 For Prometheus metrics, OpenTelemetry command spans, gauge polling, event names,
 and label-cardinality guarantees, see the
-[observability guide](https://hexdocs.pm/tay/1.8.0/observability.html).
+[observability guide](https://hexdocs.pm/tay/1.8.1/observability.html).
 
 Keep the original intent until an insertion outcome is known. A lost reply may
 follow a durable write; reconcile by job ID or resubmit the *same* intent,
@@ -360,7 +360,7 @@ Tay, and another eligible task may run while one task is rate-limited. Every
 committed execution attempt consumes credit, including retries. Limits use local
 monotonic time and reset on Engine restart; configure the service owning a strict
 cross-restart external quota separately. Standalone hosts use `TAY_RATE_LIMITS`;
-see [operations](https://hexdocs.pm/tay/1.8.0/operations.html).
+see [operations](https://hexdocs.pm/tay/1.8.1/operations.html).
 
 ## Python integration
 
@@ -502,7 +502,7 @@ disabled by default; plaintext binds only to loopback and remote access
 requires mTLS. Tay's storage remains single-node; remote workers do not turn
 the engine into a distributed Store.
 
-See the [protocol contract](https://hexdocs.pm/tay/1.8.0/protocol.html) for discovery, security, request
+See the [protocol contract](https://hexdocs.pm/tay/1.8.1/protocol.html) for discovery, security, request
 types, and durable result retention.
 
 ## Standalone container
@@ -511,7 +511,7 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:1.8.0
+ghcr.io/andriisydorenko1904/tay:1.8.1
 ghcr.io/andriisydorenko1904/tay:latest
 ```
 
@@ -575,7 +575,7 @@ Deleting its data volume deletes Tay's durable state.
 
 Deleting its socket volume does not.
 
-See the [standalone runtime guide](https://hexdocs.pm/tay/1.8.0/standalone.html) for volumes,
+See the [standalone runtime guide](https://hexdocs.pm/tay/1.8.1/standalone.html) for volumes,
 permissions, configuration, health checks, restart behavior, and deployment
 details.
 
@@ -608,7 +608,7 @@ authentication disabled.
 The single Tay container owns the Store and optionally serves the dashboard.
 
 See the
-[complete dashboard container guide](https://hexdocs.pm/tay/1.8.0/dashboard-container.html)
+[complete dashboard container guide](https://hexdocs.pm/tay/1.8.1/dashboard-container.html)
 for configuration, optional Basic authentication, reverse-proxy guidance,
 persistence, and upgrade rules.
 
@@ -619,15 +619,15 @@ API reference. Markdown files in the Hex package preview are source files.
 
 | Guide | Covers |
 | --- | --- |
-| [Standalone runtime](https://hexdocs.pm/tay/1.8.0/standalone.html) | Docker, configuration, networking, workers, and health checks |
-| [Dashboard](https://hexdocs.pm/tay/1.8.0/dashboard.html) | Mounting the UI in a Phoenix application |
-| [Dashboard container](https://hexdocs.pm/tay/1.8.0/dashboard-container.html) | Enabling and protecting the bundled UI |
-| [Operations](https://hexdocs.pm/tay/1.8.0/operations.html) | Initialization, capacity, retention, checkpoints, and cold backups |
-| [Metrics and OpenTelemetry](https://hexdocs.pm/tay/1.8.0/observability.html) | Monitoring, telemetry events, and alerts |
-| [Worker protocol](https://hexdocs.pm/tay/1.8.0/protocol.html) | Unix socket, HTTP/JSON, mTLS, schedules, and durable results |
-| [Storage contract](https://hexdocs.pm/tay/1.8.0/storage.html) | Persistent formats and crash recovery |
-| [Compatibility](https://hexdocs.pm/tay/1.8.0/compatibility.html) | Supported platforms, resource limits, and upgrade boundaries |
-| [Idempotency](https://hexdocs.pm/tay/1.8.0/idempotency.html) | Making repeated external effects safe |
+| [Standalone runtime](https://hexdocs.pm/tay/1.8.1/standalone.html) | Docker, configuration, networking, workers, and health checks |
+| [Dashboard](https://hexdocs.pm/tay/1.8.1/dashboard.html) | Mounting the UI in a Phoenix application |
+| [Dashboard container](https://hexdocs.pm/tay/1.8.1/dashboard-container.html) | Enabling and protecting the bundled UI |
+| [Operations](https://hexdocs.pm/tay/1.8.1/operations.html) | Initialization, capacity, retention, checkpoints, and cold backups |
+| [Metrics and OpenTelemetry](https://hexdocs.pm/tay/1.8.1/observability.html) | Monitoring, telemetry events, and alerts |
+| [Worker protocol](https://hexdocs.pm/tay/1.8.1/protocol.html) | Unix socket, HTTP/JSON, mTLS, schedules, and durable results |
+| [Storage contract](https://hexdocs.pm/tay/1.8.1/storage.html) | Persistent formats and crash recovery |
+| [Compatibility](https://hexdocs.pm/tay/1.8.1/compatibility.html) | Supported platforms, resource limits, and upgrade boundaries |
+| [Idempotency](https://hexdocs.pm/tay/1.8.1/idempotency.html) | Making repeated external effects safe |
 
 ## Production and upgrades
 
@@ -645,14 +645,14 @@ The standalone Linux image uses `:sync`.
 Automatic compaction expires eligible terminal history and keeps active jobs.
 Periodic checkpoints are configured with `compaction: [checkpoint_interval: 60_000]`
 or standalone `TAY_CHECKPOINT_INTERVAL_MS`. See the
-[operations guide](https://hexdocs.pm/tay/1.8.0/operations.html) for journal batching,
+[operations guide](https://hexdocs.pm/tay/1.8.1/operations.html) for journal batching,
 checkpoint settings, memory/disk budgets, and backup/restore commands.
 
 Before upgrading, stop the Engine and make a complete cold backup. Tay 1.8
 reads preceding supported Store-v2 history, but older binaries cannot read new
 1.8 schedule events. Downgrade requires restoring a pre-upgrade backup.
 Store-v1 installations must migrate with Tay 1.4.x before using Tay 1.5 or later.
-See the [upgrade boundaries](https://hexdocs.pm/tay/1.8.0/compatibility.html#upgrade-and-restore).
+See the [upgrade boundaries](https://hexdocs.pm/tay/1.8.1/compatibility.html#upgrade-and-restore).
 
 Execution is at-least-once: worker effects must be idempotent or reconciled.
 Tay has no live backup or automatic corruption repair. Preserve a refused
@@ -669,6 +669,6 @@ The license does not permit offering Tay itself, or a substantial set of its
 functionality, to third parties as a hosted or managed service.
 
 Commercial terms for that use are available separately; see
-[commercial licensing](https://hexdocs.pm/tay/1.8.0/commercial-licensing.html).
+[commercial licensing](https://hexdocs.pm/tay/1.8.1/commercial-licensing.html).
 
 The separately distributed Python client is licensed under MIT.

@@ -482,7 +482,7 @@ class TayHTTPWorker(TayHTTP):
             try:
                 await self.register()
                 message = await self._worker_request(
-                    "POST", f"/queues/{self.queue}/claim"
+                    "POST", f"/queues/{urllib.parse.quote(self.queue, safe='')}/claim"
                 )
             except ConnectionLost:
                 if self._closing:

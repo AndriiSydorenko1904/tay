@@ -22,8 +22,8 @@ attempts. Extended soaks are optional and do not impose a 24-hour release wait.
 An interrupted run remains partial evidence, not a completed soak. The smoke
 run does not replace the required CI and Standalone checks for the release commit.
 
-The prepared 1.8.0 checkout uses engine/container version `1.8.0` and Python
-package `1.4.3`. Include SDK README and comment-only changes when detecting a
+The prepared 1.8.1 checkout uses engine/container version `1.8.1` and Python
+package `1.4.4`. Include SDK README and comment-only changes when detecting a
 changed client. Keep historical rc
 changelog entries and format-introduction versions intact. Mark GitHub release
 candidates as prereleases; promote only the final stable tag after the checks

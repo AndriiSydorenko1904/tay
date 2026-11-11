@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 1.8.1 — 2026-11-12
+
+### Fixed
+
+- Respect the first allowed cron time for `delay` and `start_at`, including exact
+  minute boundaries and the Unix epoch.
+- Reconcile repeated schedule declarations against durable Engine state after
+  cancellation through the Dashboard or Elixir API. Preserve the existing timer
+  when the durable declaration is unchanged.
+- Restore Python task arguments correctly when ordinary parameters precede
+  `*args`, including defaults, positional-only and keyword-only parameters.
+- Encode HTTP worker queue names as URL path segments and decode them on the
+  server, supporting slashes, spaces, reserved characters and Unicode.
+
+### Changed
+
+- Release `tay-client` 1.4.4 with the argument-binding and HTTP queue fixes.
+
 ## 1.8.0 — 2026-11-02
 
 ### Changed

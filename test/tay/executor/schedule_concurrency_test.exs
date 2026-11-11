@@ -101,6 +101,11 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
 
     send(durable_engine, {:release_durable_reply, register_token})
     assert {:ok, registered} = Task.await(registration, 1_000)
+
+    assert_receive {:durable_reply_blocked, ^durable_engine, duplicate_token}, 1_000
+    refute Task.yield(duplicate, 0)
+    assert [] == Server.available_tasks(server)
+    send(durable_engine, {:release_durable_reply, duplicate_token})
     assert {:ok, ^registered} = Task.await(duplicate, 1_000)
 
     assert_receive {:durable_reply_blocked, ^durable_engine, cancel_token}, 1_000
@@ -118,6 +123,46 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
              Tay.schedules(name: @name)
 
     assert is_integer(cancelled_at)
+  end
+
+  test "redeclaring after Elixir cancellation reads durable state instead of the cached entry", %{
+    path: path,
+    socket: socket
+  } do
+    assert {:ok, root} = EngineHelpers.start(path, @name)
+    stop_on_exit(root)
+    assert {:ok, server} = Server.start_link(server_options(socket, @name))
+    stop_on_exit(server)
+    assert_receive {:executor_server_ready, ^server}
+
+    fields = %{
+      "declaration_id" => "elixir-cancellation",
+      "task" => "executor.schedule.v1",
+      "every" => %{"hours" => 24},
+      "delay" => 60
+    }
+
+    assert {:ok, registered} = Server.register_schedule(server, fields)
+    assert {:ok, cancelled} = Tay.cancel_schedule("elixir-cancellation", name: @name)
+    assert cancelled.revision == registered["revision"] + 1
+    assert is_integer(cancelled.cancelled_at)
+
+    assert {:ok, redeclared} = Server.register_schedule(server, fields)
+    assert redeclared["revision"] == cancelled.revision + 1
+    assert redeclared["cancelled_at"] == nil
+
+    assert {:ok, stored} = Tay.get_schedule("elixir-cancellation", name: @name)
+    assert stored.revision == redeclared["revision"]
+    assert stored.cancelled_at == nil
+    assert {:ok, ^redeclared} = Server.register_schedule(server, fields)
+
+    GenServer.stop(server)
+    EngineHelpers.stop(root)
+    assert {:ok, root} = EngineHelpers.restart(path, @name)
+    stop_on_exit(root)
+    assert {:ok, recovered} = Tay.get_schedule("elixir-cancellation", name: @name)
+    assert recovered.revision == stored.revision
+    assert recovered.cancelled_at == nil
   end
 
   test "an unknown cancellation outcome is reported and never retried", %{
@@ -177,6 +222,16 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
            end)
 
     GenServer.stop(server)
+  end
+
+  defp stop_on_exit(pid) do
+    on_exit(fn ->
+      try do
+        if Process.alive?(pid), do: GenServer.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
   end
 
   defp server_options(socket, engine_name) do

@@ -146,7 +146,7 @@ The catalogue also exports:
 - `tay.capacity.refused.count`: known capacity refusals with finite `reason`
   labels. Only approved budget names are exported; other reasons become `other`.
 
-[Example Prometheus rules](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0/docs/alerts.yml) cover unavailability, queued work, schedule
+[Example Prometheus rules](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.1/docs/alerts.yml) cover unavailability, queued work, schedule
 lag, capacity refusals and stale checkpoints. Adapt the thresholds to the
 workload and disable the stale-checkpoint rule for intentionally idle engines or
 hosts with periodic checkpoints disabled. Initial timestamp zero means no

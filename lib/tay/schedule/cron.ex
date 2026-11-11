@@ -52,11 +52,19 @@ defmodule Tay.Schedule.Cron do
   # Returns the first UTC millisecond strictly later than `after_ms` whose
   # local wall-clock minute matches the cron expression.
   def next(%{} = cron, after_ms) when is_integer(after_ms) and after_ms >= 0 do
-    first = div(after_ms, 60_000) * 60_000 + 60_000
-    seek(cron, first, @max_search_minutes)
+    at_or_after(cron, after_ms + 1)
   end
 
   def next(_, _), do: {:error, :invalid_time}
+
+  # First declarations include an exact minute boundary but must never round
+  # an explicit start time down into the preceding part of that minute.
+  def at_or_after(%{} = cron, at_ms) when is_integer(at_ms) and at_ms >= 0 do
+    first = div(at_ms + 59_999, 60_000) * 60_000
+    seek(cron, first, @max_search_minutes)
+  end
+
+  def at_or_after(_, _), do: {:error, :invalid_time}
 
   def timezone_offset("UTC"), do: {:ok, 0}
   def timezone_offset("Z"), do: {:ok, 0}

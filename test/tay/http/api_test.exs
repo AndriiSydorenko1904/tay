@@ -18,6 +18,7 @@ defmodule Tay.HTTP.APITest do
                workers: %{},
                executor_socket: nil,
                http_port: port,
+               queues: [{:default, 1}, {:"billing/high ?#%ї", 1}],
                execution_wake_ms: 5
              )
 
@@ -99,7 +100,7 @@ defmodule Tay.HTTP.APITest do
     from tay import TayHTTP, TayHTTPWorker
 
     async def main():
-        worker = TayHTTPWorker(sys.argv[1])
+        worker = TayHTTPWorker(sys.argv[1], queue=sys.argv[2])
         @worker.task(name="tests.python.remote.v1")
         def double(value):
             return {"answer": value * 2}
@@ -107,7 +108,9 @@ defmodule Tay.HTTP.APITest do
         runner = asyncio.create_task(worker.serve_forever())
         try:
             async with TayHTTP(sys.argv[1]) as producer:
-                job = await producer.enqueue("tests.python.remote.v1", {"value": 4})
+                job = await producer.enqueue(
+                    "tests.python.remote.v1", {"value": 4}, queue=sys.argv[2]
+                )
                 for _ in range(100):
                     if await job.status() == "completed":
                         assert await job.result() == {"answer": 8}
@@ -123,7 +126,8 @@ defmodule Tay.HTTP.APITest do
     asyncio.run(main())
     """
 
-    assert {"", 0} = System.cmd(python, ["-c", script, base], stderr_to_stdout: true)
+    assert {"", 0} =
+             System.cmd(python, ["-c", script, base, "billing/high ?#%ї"], stderr_to_stdout: true)
 
     assert {201, %{"worker_token" => lost_token}} =
              request(:post, base <> "/workers", %{

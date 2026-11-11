@@ -170,20 +170,10 @@ defmodule Tay.Schedule.Coordinator do
 
   defp continue_operations(state), do: state
 
-  defp begin_operation(state, {:register, schedule, options, _now, from} = operation) do
-    case Map.get(state.schedules, schedule.id) do
-      %{schedule: existing, options: ^options} = entry ->
-        if Schedule.equivalent?(existing, schedule) do
-          reply(from, {:ok, public_schedule(entry.schedule)})
-          continue_operations(state)
-        else
-          launch(state, operation)
-        end
-
-      _ ->
-        launch(state, operation)
-    end
-  end
+  # The Engine owns declaration idempotency. A cached entry may have been
+  # cancelled or changed through the public Elixir API since it was armed.
+  defp begin_operation(state, {:register, _, _, _, _} = operation),
+    do: launch(state, operation)
 
   defp begin_operation(state, {:cancel, id, from}) do
     case Map.fetch(state.schedules, id) do
@@ -230,9 +220,17 @@ defmodule Tay.Schedule.Coordinator do
 
   defp complete_operation(state, {:register, schedule, options, now, from}, {:ok, stored}) do
     schedule = durable(schedule, stored)
-    next = drop(state, schedule.id)
     reply(from, {:ok, public_schedule(schedule)})
-    %{next | schedules: Map.put(next.schedules, schedule.id, arm(schedule, options, now))}
+    existing = Map.get(state.schedules, schedule.id)
+
+    # Keep an unchanged timer only after the Engine confirms the durable state.
+    if existing && existing.options == options &&
+         Schedule.view(existing.schedule) == Schedule.view(schedule) do
+      state
+    else
+      next = drop(state, schedule.id)
+      %{next | schedules: Map.put(next.schedules, schedule.id, arm(schedule, options, now))}
+    end
   end
 
   defp complete_operation(state, {:register, schedule, _, _, from}, error) do

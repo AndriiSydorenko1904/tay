@@ -93,7 +93,7 @@ Tay deliberately does not interpret a pre-existing empty directory as a
 missing Store. Docker creates a named-volume mount root before the process
 starts, so mount the volume at `/var/lib/tay` and set
 `TAY_DATA_DIR=/var/lib/tay/store`, as in
-[`compose.yml`](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0/compose.yml).
+[`compose.yml`](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.1/compose.yml).
 The image creates both directory targets with ownership `10001:10001`; an empty
 Docker named volume inherits that ownership and does not need a root init
 container. Bind mounts and volume drivers that preserve different ownership
@@ -148,7 +148,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.8.0
+  ghcr.io/andriisydorenko1904/tay:1.8.1
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -156,7 +156,7 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.8.0/clients/python).
+[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.8.1/clients/python).
 
 The health check succeeds when the Engine reports `ready` or is performing a
 normal online checkpoint in `compacting/preparing` or `compacting/switching`,

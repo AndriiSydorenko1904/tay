@@ -3,6 +3,39 @@ defmodule Tay.ScheduleTest do
 
   alias Tay.Schedule
 
+  test "cron declarations never precede their first allowed time" do
+    now = DateTime.to_unix(~U[2026-11-11 12:34:10.000Z], :millisecond)
+    next_minute = DateTime.to_unix(~U[2026-11-11 12:35:00.000Z], :millisecond)
+    fields = %{"task" => "reports.rebuild.v1", "cron" => "* * * * *"}
+
+    for timing <- [
+          %{},
+          %{"delay" => 30},
+          %{"start_at" => now + 30_000},
+          %{"start_at" => next_minute}
+        ] do
+      assert {:ok, schedule} = Schedule.new("cron-start", Map.merge(fields, timing), now)
+      assert schedule.next_at == next_minute
+    end
+  end
+
+  test "cron declarations include matching minute boundaries, including the Unix epoch" do
+    for start_at <- [0, 60_000] do
+      assert {:ok, schedule} =
+               Schedule.new(
+                 "cron-boundary",
+                 %{
+                   "task" => "reports.rebuild.v1",
+                   "cron" => "* * * * *",
+                   "start_at" => start_at
+                 },
+                 0
+               )
+
+      assert schedule.next_at == start_at
+    end
+  end
+
   test "builds an interval schedule with delayed first run and skip default" do
     assert {:ok, schedule} =
              Schedule.new(

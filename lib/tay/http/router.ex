@@ -105,6 +105,8 @@ defmodule Tay.HTTP.Router do
   end
 
   defp dispatch(%Plug.Conn{method: "POST", path_info: ["queues", queue, "claim"]} = conn, options) do
+    queue = URI.decode(queue)
+
     with {:ok, worker, ^queue} <- authenticated_worker(conn, options),
          result <- Tay.HTTP.WorkerSession.claim(worker) do
       case result do

@@ -178,13 +178,28 @@ class Task:
 
         positional: list[Any] = []
         keyword: dict[str, Any] = {}
+        has_varargs = any(
+            parameter.kind is inspect.Parameter.VAR_POSITIONAL
+            for parameter in self.signature.parameters.values()
+        )
         for parameter in self.signature.parameters.values():
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY or (
+                has_varargs
+                and parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            ):
+                if parameter.name in arguments:
+                    positional.append(arguments[parameter.name])
+                elif parameter.default is not inspect.Parameter.empty:
+                    positional.append(parameter.default)
+                else:
+                    raise ValidationError(
+                        f"missing required argument {parameter.name!r}"
+                    )
+                continue
             if parameter.name not in arguments:
                 continue
             value = arguments[parameter.name]
-            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
-                positional.append(value)
-            elif parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
                 if not isinstance(value, list):
                     raise ValidationError("serialized varargs must be a list")
                 positional.extend(value)
