@@ -239,7 +239,7 @@ defmodule Tay.System.IndependentCrashMatrixTest do
     {:ok, _root} = Tay.Test.EngineHelpers.restart(path, Tay.CrashMatrixEngine,
       workers: %{"worker.v1" => Tay.CrashMatrixWorker}, queues: [default: 1],
       durability: mode, validated_filesystem: mode == :sync,
-      test_execution: true, test_hook: hook, execution_wake_ms: 10)
+      test_execution: true, test_hook: hook)
 
     if operation != :activation do
       schedule = if operation == :insert, do: Tay.Event.V2.max_time(), else: nil

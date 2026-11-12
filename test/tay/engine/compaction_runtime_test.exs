@@ -269,8 +269,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       test_hook: hook,
       test_execution: true,
       workers: %{"execution.test.v1" => Tay.Test.ExecutionWorker},
-      queues: [default: 1],
-      execution_wake_ms: 10
+      queues: [default: 1]
     )
 
     {intent, token} = ExecutionHelpers.job()
@@ -345,8 +344,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
       compaction: false,
       writer_hook: hook,
       client_slots: 32,
-      max_insert_payload_bytes: 2_097_152,
-      max_insert_args_bytes: 2_097_152
+      max_insert_payload_bytes: 2_097_152
     )
 
     insert(%{"seed" => true}, scheduled_at: 100_000)
@@ -447,8 +445,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
         "worker.v1" => EngineWorker,
         "execution.test.v1" => Tay.Test.ExecutionWorker
       },
-      queues: [default: 1],
-      execution_wake_ms: 10
+      queues: [default: 1]
     )
 
     insert(%{"snapshot_anchor" => true}, scheduled_at: 100_000)

@@ -18,8 +18,7 @@ defmodule Tay.HTTP.SessionRestartTest do
              ExecutionHelpers.start(path, __MODULE__,
                workers: %{},
                executor_socket: nil,
-               http_port: port,
-               execution_wake_ms: 5
+               http_port: port
              )
 
     Process.unlink(root)

@@ -95,15 +95,35 @@ defmodule Tay.Storage.V2NativeTest do
       codec: Tay.Event,
       initial_acc: Tay.State.Transition.candidate(%{}, Tay.Event.Value.defaults()),
       reducer: &Tay.State.Transition.reduce/3,
-      options: []
+      options: [deadline_ms: 120_000]
     }
 
     assert {:ok, writer} =
-             Writer.start_recovered_link([data_dir: path, durability: :write], spec)
+             Writer.start_recovered_link(
+               [
+                 data_dir: path,
+                 durability: :write,
+                 timeout: 1_234,
+                 on_transition: fn
+                   :recovery_revalidating, native ->
+                     assert native.timeout == 1_234
+                     remaining = native.deadline - System.monotonic_time(:millisecond)
+                     assert remaining > 0 and remaining <= 120_000
+                     :ok
+
+                   _, _ ->
+                     :ok
+                 end
+               ],
+               spec
+             )
 
     status = Writer.status(writer)
     assert status.summary.epoch_id == epoch_id
+    assert :sys.get_state(writer).native.timeout == 1_234
     assert {:ok, summary, candidate} = Writer.activate_recovered(writer, status.session_ref)
+    native = :sys.get_state(writer).native
+    assert native.timeout == 1_234
     assert summary.epoch_id == epoch_id
     assert candidate.jobs == %{}
     assert Writer.status(writer).state == :ready
@@ -144,6 +164,29 @@ defmodule Tay.Storage.V2NativeTest do
     assert job.revision == 1
     assert job.availability_order == 1
     assert :ok = Native.shutdown(reopened)
+  end
+
+  test "an expired recovery session refuses activation without changing the Store", %{path: path} do
+    spec = %{
+      codec: Tay.Event,
+      initial_acc: Tay.State.Transition.candidate(),
+      reducer: &Tay.State.Transition.reduce/3,
+      options: []
+    }
+
+    before = snapshot(path)
+    assert {:ok, writer} = Writer.start_recovered_link([data_dir: path, durability: :write], spec)
+    reference = Writer.status(writer).session_ref
+
+    :sys.replace_state(writer, fn state ->
+      put_in(state.recovery.expires_at, System.monotonic_time(:millisecond) - 1)
+    end)
+
+    assert {:error, %Tay.Storage.Recovery.Error{reason: :activation_window_expired}} =
+             Writer.activate_recovered(writer, reference)
+
+    assert snapshot(path) == before
+    if Process.alive?(writer), do: GenServer.stop(writer)
   end
 
   test "sole Writer owner compacts an activated V2 store and fences old admission", %{

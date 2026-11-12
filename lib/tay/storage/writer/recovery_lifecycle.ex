@@ -9,6 +9,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
   alias Tay.Storage.Writer.SegmentOps
 
   @test Mix.env() == :test
+  @session_lifetime_ms 30_000
   @max_timer_ms 4_294_967_295
 
   defmodule Session do
@@ -46,7 +47,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
       durability: options.durability,
       validated_filesystem: options.validated_filesystem,
       test_helper: options.test_helper,
-      timeout: budgets.io_timeout_ms,
+      timeout: options.timeout,
       max_directory_entries: budgets.max_directory_entries,
       deadline: deadline
     ]
@@ -91,7 +92,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
 
     native = %{
       state.native
-      | deadline: System.monotonic_time(:millisecond) + recovery.options.activation_deadline_ms
+      | deadline: System.monotonic_time(:millisecond) + recovery.options.deadline_ms
     }
 
     state = %{state | native: native}
@@ -181,7 +182,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
       caller: caller,
       monitor: Process.monitor(caller),
       options: budgets,
-      expires_at: System.monotonic_time(:millisecond) + budgets.activation_window_ms
+      expires_at: System.monotonic_time(:millisecond) + @session_lifetime_ms
     }
   end
 
@@ -208,7 +209,10 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
         with {:ok, view} <-
                V2Reader.recover(
                  native,
-                 V2Reducer.candidate(initial.limits, initial.value_limits)
+                 V2Reducer.candidate(
+                   initial.limits,
+                   initial.value_limits
+                 )
                ) do
           store = view.store
           count = Enum.reduce(store.segments, 0, &(&1.count + &2))

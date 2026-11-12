@@ -102,11 +102,11 @@ defmodule Tay.Engine.ProjectionState do
       storage_segments_truncated: state.segment_count > length(state.segment_catalog),
       compaction_terminal_retention: state.config.compaction.terminal_retention,
       retained_definition_bytes: state.compaction_estimate.definition_bytes,
-      reserved_outcome_bytes: outcome_reserve(state.persistent_settlement_reserve),
+      reserved_outcome_bytes:
+        outcome_reserve(state.persistent_settlement_reserve) + state.persistent_result_reserve,
       remaining_sequence_coordinates: max(Storage.Segment.max_id() - state.next_sequence + 1, 0),
       remaining_segment_coordinates: Storage.Segment.max_id() - state.segment.id,
       max_history_bytes: state.config.max_history_bytes,
-      max_segments: state.config.max_segments,
       schedule_stats: Tay.State.ScheduleIndex.stats(state.schedule_index),
       insertion_space:
         if(state.next_sequence > Storage.Segment.max_id(), do: :exhausted, else: :available)

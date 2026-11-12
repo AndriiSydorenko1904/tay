@@ -4,6 +4,9 @@ defmodule Tay.State.Auxiliary do
 
   alias Tay.Event
 
+  def reduce(%Event{record_type: 14} = event, position, candidate),
+    do: Tay.Storage.V2.Completion.reduce(candidate, event, position)
+
   def reduce(%Event{record_type: type, data: data} = event, %{sequence: sequence}, candidate)
       when Tay.Event.V2.is_auxiliary(type) do
     with {:ok, _} <- Event.encode(event, candidate.value_limits),

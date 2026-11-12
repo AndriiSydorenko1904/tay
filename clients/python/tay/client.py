@@ -178,6 +178,7 @@ class Tay(Scheduling):
         self._write_lock = asyncio.Lock()
         self._execution_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._expired_requests: dict[str, None] = {}
         self._event_request_ids: set[str] = set()
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
@@ -444,6 +445,7 @@ class Tay(Scheduling):
         finally:
             if self._writer is writer:
                 self._event_request_ids.clear()
+                self._expired_requests.clear()
                 self._connected.clear()
                 self._connection_lost.set()
                 await self._fail_pending(ConnectionLost("connection to Tay was lost"))
@@ -462,6 +464,9 @@ class Tay(Scheduling):
 
         request_id = message.get("request_id")
         if request_id is not None:
+            if request_id in self._expired_requests:
+                del self._expired_requests[request_id]
+                return
             if (
                 message_type in {"accepted", "heartbeat_ok"}
                 and request_id in self._event_request_ids
@@ -564,6 +569,11 @@ class Tay(Scheduling):
             async with self._pending_lock:
                 self._pending.pop(request_id, None)
             if not future.done():
+                # A cancelled/timed-out caller does not cancel the server's
+                # command. Keep bounded tombstones for its eventual reply.
+                self._expired_requests[request_id] = None
+                if len(self._expired_requests) > 1024:
+                    del self._expired_requests[next(iter(self._expired_requests))]
                 future.cancel()
             elif not future.cancelled():
                 future.exception()

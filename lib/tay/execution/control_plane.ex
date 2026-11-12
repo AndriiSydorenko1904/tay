@@ -4,7 +4,7 @@ defmodule Tay.Execution.ControlPlane do
   @spec start(Supervisor.supervisor(), pid(), non_neg_integer(), map()) ::
           {:ok, map()} | {:error, term()}
   def start(supervisor, engine, generation, config) do
-    options = %{engine: engine, generation: generation, wake_ms: config.execution_wake_ms}
+    options = %{engine: engine, generation: generation}
 
     with {:ok, scheduler} <-
            start_child(supervisor, {Tay.Execution.Scheduler, options}),

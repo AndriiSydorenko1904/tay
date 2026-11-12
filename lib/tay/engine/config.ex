@@ -5,49 +5,35 @@ defmodule Tay.Engine.Config do
   alias Tay.Storage.Recovery
   @environment Mix.env()
   @bytes_per_mebibyte 1_048_576
-  @bytes_per_kibibyte 1_024
   @default_rotation_target_bytes 64 * @bytes_per_mebibyte
   @default_insert_payload_bytes 1 * @bytes_per_mebibyte
-  @default_insert_args_bytes 256 * @bytes_per_kibibyte
   @default_client_bytes 64 * @bytes_per_mebibyte
   # Shared hard ceiling for bounded Event values and public protocol bodies.
   @max_protocol_payload_bytes 16 * @bytes_per_mebibyte
   @max_rotation_target_bytes 1_024 * @bytes_per_mebibyte
   @default_max_state_bytes 256 * @bytes_per_mebibyte
-  # The canonical encoding of an empty arguments object occupies five bytes.
-  @minimum_encoded_args_bytes 5
   @minimum_client_slot_bytes 256
   # Admission deadlines are carried as unsigned 32-bit millisecond values.
   @max_caller_timeout_ms 4_294_967_295
   @max_client_slots 65_536
-  @group_commit_interval_range 0..1_000
-  @execution_batch_range 1..1_024
-  @execution_wake_range_ms 1..1_000
   @defaults Map.merge(
               %{
                 name: Tay.Engine,
                 workers: %{},
                 durability: :sync,
-                group_commit_interval_ms: 0,
                 initialize: :never,
                 validated_filesystem: false,
                 rotation_target_bytes: @default_rotation_target_bytes,
                 storage_timeout: 10_000,
                 recovery: [],
                 max_insert_payload_bytes: @default_insert_payload_bytes,
-                max_insert_args_bytes: @default_insert_args_bytes,
-                insert_value_depth: 32,
-                insert_value_nodes: 10_000,
                 max_state_bytes: @default_max_state_bytes,
                 client_slots: 64,
                 client_bytes: @default_client_bytes,
                 caller_timeout: 5_000,
-                execution_batch: 32,
-                execution_wake_ms: 1_000,
                 start_paused: false,
                 rate_limits: [],
                 max_history_bytes: :infinity,
-                max_segments: :infinity,
                 compaction: []
               },
               GatewayConfig.defaults()
@@ -56,28 +42,22 @@ defmodule Tay.Engine.Config do
   def new(options) do
     allowed =
       Map.keys(@defaults) ++
-        [:data_dir, :queues, :max_jobs, :max_state_nodes] ++ test_option_keys()
+        [:data_dir, :queues, :journal] ++ test_option_keys()
 
     with true <- keyword?(options, allowed) || {:error, :invalid_engine_options},
-         true <-
-           legacy_job_limit?(Keyword.get(options, :max_jobs, 0)) ||
-             {:error, :invalid_engine_options},
-         true <-
-           legacy_state_node_limit?(Keyword.get(options, :max_state_nodes, 0)) ||
-             {:error, :invalid_engine_options},
          {:ok, base} <- Tay.Config.load(),
          {:ok, base} <-
            Tay.Config.new(
              Keyword.merge(
                Map.to_list(base) |> Keyword.drop([:__struct__]),
-               Keyword.take(options, [:data_dir, :queues])
+               Keyword.take(options, [:data_dir, :queues, :journal])
              )
            ),
          true <- base.data_dir != nil || {:error, :data_dir_required},
          config =
            Map.merge(
              @defaults,
-             options |> Keyword.drop([:max_jobs, :max_state_nodes]) |> Map.new()
+             options |> Keyword.delete(:journal) |> Map.new()
            ),
          {:ok, config} <- GatewayConfig.resolve(config, base.data_dir),
          {:ok, recovery} <- Recovery.options(config.recovery),
@@ -87,7 +67,7 @@ defmodule Tay.Engine.Config do
              config.rate_limits,
              Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
            ),
-         :ok <- validate(Map.put(config, :data_dir, base.data_dir), recovery) do
+         :ok <- validate(Map.put(config, :data_dir, base.data_dir)) do
       queues = Map.new(base.queues, fn {name, _} -> {Atom.to_string(name), name} end)
       queue_limits = Map.new(base.queues, fn {name, limit} -> {Atom.to_string(name), limit} end)
       {:ok, rate_limits} = Tay.Execution.RateLimiter.normalize(config.rate_limits, queues)
@@ -96,7 +76,7 @@ defmodule Tay.Engine.Config do
        Map.merge(config, %{
          data_dir: base.data_dir,
          job_durability: base.durability,
-         journal_batch: journal_batch(base.journal, options, config),
+         journal_batch: Map.new(Keyword.fetch!(base.journal, :batch)),
          queues: queues,
          queue_limits: queue_limits,
          rate_limits: rate_limits,
@@ -104,7 +84,7 @@ defmodule Tay.Engine.Config do
          clock: execution_clock(config),
          recovery: Map.to_list(recovery),
          compaction: compaction,
-         value_limits: recovery.event_limits,
+         value_limits: Tay.Event.Value.defaults(),
          slot_bytes: div(config.client_bytes, config.client_slots),
          candidate_limits: %{
            max_bytes: config.max_state_bytes,
@@ -119,21 +99,6 @@ defmodule Tay.Engine.Config do
        })}
     else
       {:error, _} -> {:error, Tay.Error.new(:invalid, :engine_configuration)}
-    end
-  end
-
-  defp legacy_job_limit?(value), do: is_integer(value) and value >= 0
-  defp legacy_state_node_limit?(value), do: is_integer(value) and value >= 0
-
-  defp journal_batch(journal, options, config) do
-    if Keyword.has_key?(options, :group_commit_interval_ms) do
-      %{
-        max_events: config.client_slots,
-        interval_ms: config.group_commit_interval_ms
-      }
-    else
-      batch = Keyword.fetch!(journal, :batch)
-      %{max_events: batch[:max_events], interval_ms: batch[:interval_ms]}
     end
   end
 
@@ -153,13 +118,13 @@ defmodule Tay.Engine.Config do
         length(options) == length(Enum.uniq(Keyword.keys(options))) and
         Enum.all?(Keyword.keys(options), &(&1 in allowed))
 
-  defp validate(c, r) do
+  defp validate(c) do
     with :ok <- validate_identity(c),
          :ok <- validate_numeric_limits(c),
          :ok <- validate_execution(c),
          :ok <- validate_transport(c),
          :ok <- validate_storage(c),
-         :ok <- validate_payloads(c, r),
+         :ok <- validate_payloads(c),
          :ok <- validate_test_options(c),
          do: :ok
   end
@@ -182,21 +147,17 @@ defmodule Tay.Engine.Config do
       :rotation_target_bytes,
       :client_slots,
       :client_bytes,
-      :caller_timeout,
-      :insert_value_depth,
-      :insert_value_nodes
+      :caller_timeout
     ]
 
     nonnegative_fields = [
       :max_insert_payload_bytes,
-      :max_insert_args_bytes,
       :max_state_bytes
     ]
 
     validate_all([
       Enum.all?(positive_fields, &positive_integer?(c[&1])),
       Enum.all?(nonnegative_fields, &nonnegative_integer?(c[&1])),
-      integer_in?(c.group_commit_interval_ms, @group_commit_interval_range),
       c.caller_timeout <= @max_caller_timeout_ms,
       c.client_slots <= @max_client_slots,
       c.client_bytes >= c.client_slots * @minimum_client_slot_bytes
@@ -205,8 +166,6 @@ defmodule Tay.Engine.Config do
 
   defp validate_execution(c) do
     validate_all([
-      integer_in?(c.execution_batch, @execution_batch_range),
-      integer_in?(c.execution_wake_ms, @execution_wake_range_ms),
       is_boolean(c.start_paused)
     ])
   end
@@ -218,7 +177,6 @@ defmodule Tay.Engine.Config do
   defp validate_storage(c) do
     validate_all([
       limit?(c.max_history_bytes),
-      limit?(c.max_segments),
       c.rotation_target_bytes >= Tay.Storage.Segment.min_rotation_bytes(),
       c.rotation_target_bytes <= @max_rotation_target_bytes,
       is_boolean(c.validated_filesystem),
@@ -229,16 +187,11 @@ defmodule Tay.Engine.Config do
     ])
   end
 
-  defp validate_payloads(c, recovery) do
-    validate_all([
-      c.max_insert_payload_bytes >= 1,
-      c.max_insert_payload_bytes <= recovery.max_decode_payload_bytes,
-      c.max_insert_payload_bytes <= recovery.event_limits.binary_bytes,
-      c.max_insert_args_bytes >= @minimum_encoded_args_bytes,
-      c.max_insert_args_bytes <= @max_protocol_payload_bytes,
-      c.insert_value_depth <= recovery.event_limits.depth,
-      c.insert_value_nodes <= recovery.event_limits.output_nodes
-    ])
+  defp validate_payloads(c) do
+    valid(
+      c.max_insert_payload_bytes >= 1 and
+        c.max_insert_payload_bytes <= @max_protocol_payload_bytes
+    )
   end
 
   defp validate_test_options(c) do
@@ -257,7 +210,6 @@ defmodule Tay.Engine.Config do
 
   defp positive_integer?(value), do: is_integer(value) and value > 0
   defp nonnegative_integer?(value), do: is_integer(value) and value >= 0
-  defp integer_in?(value, range), do: is_integer(value) and value in range
   defp limit?(:infinity), do: true
   defp limit?(value), do: nonnegative_integer?(value)
   defp optional_function?(nil, _arity), do: true

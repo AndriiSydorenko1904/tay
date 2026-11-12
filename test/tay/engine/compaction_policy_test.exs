@@ -56,8 +56,6 @@ defmodule Tay.Engine.CompactionPolicyTest do
     assert defaults.checkpoint_interval == 0
     assert {:ok, %{enabled: false}} = CompactionConfig.new(false)
     assert {:ok, _} = CompactionConfig.new(terminal_retention: {:hours, Retention.max_hours()})
-    assert {:ok, legacy} = CompactionConfig.new(max_terminal_jobs: 5_000)
-    refute Map.has_key?(legacy, :max_terminal_jobs)
 
     for options <- [
           nil,
@@ -69,8 +67,7 @@ defmodule Tay.Engine.CompactionPolicyTest do
           [terminal_retention: :infinity],
           [terminal_retention: {:hours, 0}],
           [terminal_retention: {:hours, Retention.max_hours() + 1}],
-          [max_terminal_jobs: -1],
-          [max_terminal_jobs: 4_294_967_296],
+          [max_terminal_jobs: 5_000],
           [check_interval: :infinity],
           [check_interval: 0],
           [check_interval: 4_294_967_296],

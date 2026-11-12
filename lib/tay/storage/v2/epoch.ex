@@ -1,4 +1,6 @@
 defmodule Tay.Storage.V2.Epoch do
+  require Tay.Event.V2
+
   @moduledoc """
   Pure Store-v2 epoch construction and semantic replay over supplied bytes.
   Filesystem ownership, digest pinning and CURRENT publication are deliberately
@@ -223,6 +225,19 @@ defmodule Tay.Storage.V2.Epoch do
   defp replay_record(%{record_type: 8, payload: payload}, false, candidate, previous_id) do
     with {:ok, mutation} <- Codec.decode_mutation(payload),
          {:ok, next} <- Reducer.apply(candidate, mutation) do
+      {:ok, next, previous_id}
+    end
+  end
+
+  defp replay_record(
+         %{record_type: type, payload_schema_version: 2, payload: payload} = record,
+         false,
+         candidate,
+         previous_id
+       )
+       when Tay.Event.V2.is_auxiliary(type) do
+    with {:ok, event, _} <- Tay.Event.decode_payload(type, 2, payload, candidate.value_limits),
+         {:ok, next} <- Reducer.apply_event(candidate, event, %{sequence: record.sequence}) do
       {:ok, next, previous_id}
     end
   end

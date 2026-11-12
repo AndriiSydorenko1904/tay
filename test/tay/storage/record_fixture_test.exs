@@ -9,7 +9,7 @@ defmodule Tay.Storage.RecordFixtureTest do
       bytes = H.bytes(@fixture.id)
       assert bytes == Base.decode16!(@fixture.hex)
       assert Record.decode(bytes) == H.expected(@fixture)
-      assert Record.decode(bytes, []) == H.expected(@fixture)
+      assert Record.decode(bytes) == H.expected(@fixture)
     end
   end
 end

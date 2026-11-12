@@ -16,7 +16,7 @@ defmodule Tay.Diagnostics do
     with {:ok, config} <- options(options) do
       isolated(
         fn -> inspect_store(config) end,
-        config.recovery.deadline_ms + config.recovery.io_timeout_ms + 1_000,
+        config.recovery.deadline_ms + config.storage_timeout + 1_000,
         failure(:inspection_failed)
       )
     end
@@ -107,7 +107,7 @@ defmodule Tay.Diagnostics do
     native_options = [
       durability: config.durability,
       validated_filesystem: config.validated_filesystem,
-      timeout: config.recovery.io_timeout_ms,
+      timeout: config.storage_timeout,
       max_directory_entries: config.recovery.max_directory_entries,
       deadline: System.monotonic_time(:millisecond) + config.recovery.deadline_ms
     ]
@@ -141,7 +141,7 @@ defmodule Tay.Diagnostics do
                }}
 
             {:error, error} ->
-              diagnostic(error)
+              diagnostic(Error.wrap(error, :replay))
           end
         after
           Native.shutdown(native)
@@ -157,7 +157,7 @@ defmodule Tay.Diagnostics do
          true <-
            Enum.any?(root, &(&1.name in ["CURRENT", "STORE-V2"])) ||
              {:error, Error.new(:discovery, :store_v2_required, :preflight)},
-         candidate = V2Reducer.candidate(config.candidate, config.recovery.event_limits),
+         candidate = V2Reducer.candidate(config.candidate),
          {:ok, recovered} <- V2Reader.recover(native, candidate) do
       store = recovered.store
 
@@ -181,7 +181,7 @@ defmodule Tay.Diagnostics do
       :validated_filesystem,
       :recovery,
       :max_state_bytes,
-      :max_state_nodes
+      :storage_timeout
     ]
 
     with true <- Tay.Engine.Config.keyword?(input, allowed),
@@ -191,20 +191,26 @@ defmodule Tay.Diagnostics do
          true <- mode in [:write, :sync],
          validated = Keyword.get(input, :validated_filesystem, false),
          true <- is_boolean(validated),
+         {:ok, storage} <-
+           Tay.Storage.Writer.Config.new(
+             [data_dir: foundation.data_dir, durability: mode, validated_filesystem: validated] ++
+               if(Keyword.has_key?(input, :storage_timeout),
+                 do: [timeout: input[:storage_timeout]],
+                 else: []
+               )
+           ),
          {:ok, recovery} <- Recovery.options(Keyword.get(input, :recovery, [])),
          candidate = %{
            max_bytes: Keyword.get(input, :max_state_bytes, 268_435_456)
          },
-         true <- Enum.all?(candidate, fn {_, n} -> is_integer(n) and n >= 0 end),
-         true <-
-           is_integer(Keyword.get(input, :max_state_nodes, 0)) and
-             Keyword.get(input, :max_state_nodes, 0) >= 0 do
+         true <- Enum.all?(candidate, fn {_, n} -> is_integer(n) and n >= 0 end) do
       {:ok,
        %{
          data_dir: foundation.data_dir,
          durability: mode,
          validated_filesystem: validated,
          recovery: recovery,
+         storage_timeout: storage.timeout,
          candidate: candidate
        }}
     else
@@ -248,9 +254,6 @@ defmodule Tay.Diagnostics do
           do: [bootstrap_existing: :boolean],
           else: [
             max_state_bytes: :integer,
-            max_state_nodes: :integer,
-            max_records: :integer,
-            max_bytes: :integer,
             deadline_ms: :integer
           ]
         )
@@ -269,14 +272,7 @@ defmodule Tay.Diagnostics do
       if operation == :init do
         {:ok, base ++ [bootstrap: Keyword.get(options, :bootstrap_existing, false)]}
       else
-        recovery =
-          for {from, to} <- [
-                max_records: :max_replay_records,
-                max_bytes: :max_total_segment_bytes,
-                deadline_ms: :deadline_ms
-              ],
-              Keyword.has_key?(options, from),
-              do: {to, options[from]}
+        recovery = Keyword.take(options, [:deadline_ms])
 
         {:ok,
          base ++

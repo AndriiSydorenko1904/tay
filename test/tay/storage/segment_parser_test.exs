@@ -68,12 +68,7 @@ defmodule Tay.Storage.SegmentParserTest do
              Segment.parse(bytes)
   end
 
-  test "size and decoder budgets are distinct and bounded before allocation" do
-    bytes = header() <> R.frame(payload: "abc")
-
-    assert {:error, %{kind: :io_or_resource_error, reason: {:error, {:resource_limit, 3, 2}}}} =
-             Segment.parse(bytes, max_decode_payload_bytes: 2)
-
+  test "segment size is bounded before allocation" do
     read = fn offset, length ->
       assert {offset, length} == {0, 44}
       {:ok, header()}

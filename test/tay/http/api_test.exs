@@ -18,8 +18,7 @@ defmodule Tay.HTTP.APITest do
                workers: %{},
                executor_socket: nil,
                http_port: port,
-               queues: [{:default, 1}, {:"billing/high ?#%ї", 1}],
-               execution_wake_ms: 5
+               queues: [{:default, 1}, {:"billing/high ?#%ї", 1}]
              )
 
     on_exit(fn ->
@@ -192,8 +191,7 @@ defmodule Tay.HTTP.APITest do
              ExecutionHelpers.start(path, __MODULE__,
                workers: %{},
                executor_socket: nil,
-               http_port: port,
-               execution_wake_ms: 5
+               http_port: port
              )
 
     assert ExecutionHelpers.eventually(fn -> Tay.status(name: __MODULE__).state == :ready end)
@@ -261,8 +259,7 @@ defmodule Tay.HTTP.APITest do
              ExecutionHelpers.start(path, __MODULE__,
                workers: %{},
                executor_socket: socket,
-               http_port: port,
-               execution_wake_ms: 5
+               http_port: port
              )
 
     on_exit(fn ->
@@ -405,7 +402,6 @@ defmodule Tay.HTTP.APITest do
                workers: %{},
                executor_socket: nil,
                http_port: port,
-               execution_wake_ms: 5,
                max_state_bytes: 8_000_000
              )
 

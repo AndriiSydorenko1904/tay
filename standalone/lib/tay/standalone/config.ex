@@ -9,8 +9,8 @@ defmodule Tay.Standalone.Config do
   @default_caller_timeout_ms 5_000
   @caller_timeout_range 1..4_294_967_295
   @default_max_state_bytes 256 * 1_024 * 1_024
-  @default_group_commit_interval_ms 0
-  @group_commit_interval_range 0..1_000
+  @default_journal [batch: [max_events: 64, interval_ms: 0]]
+  @journal_interval_range 0..1_000
   @default_checkpoint_interval_ms 60_000
   @checkpoint_interval_range 0..4_294_967_295
   @max_tcp_port 65_535
@@ -26,7 +26,7 @@ defmodule Tay.Standalone.Config do
             initialize: :never,
             default_queue_concurrency: @default_queue_concurrency,
             caller_timeout_ms: @default_caller_timeout_ms,
-            group_commit_interval_ms: @default_group_commit_interval_ms,
+            journal: @default_journal,
             checkpoint_interval_ms: @default_checkpoint_interval_ms,
             max_state_bytes: @default_max_state_bytes,
             rate_limits: [],
@@ -44,7 +44,7 @@ defmodule Tay.Standalone.Config do
           initialize: :never | :if_missing,
           default_queue_concurrency: pos_integer(),
           caller_timeout_ms: pos_integer(),
-          group_commit_interval_ms: 0..1_000,
+          journal: keyword(),
           checkpoint_interval_ms: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
@@ -70,7 +70,7 @@ defmodule Tay.Standalone.Config do
          {:ok, initialize} <- initialize(environment),
          {:ok, default_queue_concurrency} <- default_queue_concurrency(environment),
          {:ok, caller_timeout_ms} <- caller_timeout(environment),
-         {:ok, group_commit_interval_ms} <- group_commit_interval(environment),
+         {:ok, journal} <- journal(environment),
          {:ok, checkpoint_interval_ms} <- checkpoint_interval(environment),
          {:ok, max_state_bytes} <-
            byte_size(environment, "TAY_MAX_STATE_BYTES", @default_max_state_bytes),
@@ -89,7 +89,7 @@ defmodule Tay.Standalone.Config do
          initialize: initialize,
          default_queue_concurrency: default_queue_concurrency,
          caller_timeout_ms: caller_timeout_ms,
-         group_commit_interval_ms: group_commit_interval_ms,
+         journal: journal,
          checkpoint_interval_ms: checkpoint_interval_ms,
          max_state_bytes: max_state_bytes,
          rate_limits: rate_limits,
@@ -265,13 +265,16 @@ defmodule Tay.Standalone.Config do
     end
   end
 
-  defp group_commit_interval(environment) do
-    integer_in_range(
-      environment,
-      "TAY_GROUP_COMMIT_INTERVAL_MS",
-      @default_group_commit_interval_ms,
-      @group_commit_interval_range
-    )
+  defp journal(environment) do
+    with {:ok, interval} <-
+           integer_in_range(
+             environment,
+             "TAY_GROUP_COMMIT_INTERVAL_MS",
+             @default_journal[:batch][:interval_ms],
+             @journal_interval_range
+           ) do
+      {:ok, put_in(@default_journal, [:batch, :interval_ms], interval)}
+    end
   end
 
   defp checkpoint_interval(environment) do

@@ -77,8 +77,6 @@ defmodule Tay.Storage.Recovery.Error do
   defp classify({:resource_limit, _}), do: :resource_limit
   defp classify(%{reason: {:error, {:resource_limit, _}}}), do: :resource_limit
 
-  defp classify(%{reason: {:error, {:resource_limit, _, _}}}), do: :resource_limit
-
   defp classify(%{reason: {:error, %{kind: k}}})
        when k in [:resource_limit, :native_io, :uncertain],
        do: if(k == :resource_limit, do: :resource_limit, else: :io)

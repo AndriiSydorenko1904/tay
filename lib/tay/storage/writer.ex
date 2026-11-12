@@ -82,7 +82,7 @@ defmodule Tay.Storage.Writer do
         __MODULE__,
         {:recovered, storage, replay_spec, budgets, deadline, self()},
         Keyword.take(storage_options, [:name]) ++
-          [timeout: budgets.deadline_ms + budgets.io_timeout_ms + 1_000]
+          [timeout: budgets.deadline_ms + storage.timeout + 1_000]
       )
     else
       {:error, reason} -> {:error, Error.wrap(reason, :validation)}

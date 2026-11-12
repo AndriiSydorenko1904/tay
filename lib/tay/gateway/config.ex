@@ -15,8 +15,6 @@ defmodule Tay.Gateway.Config do
     executor_max_tasks_per_connection: 256,
     executor_result_bytes: 64 * @kib,
     executor_error_bytes: 8 * @kib,
-    # Compatibility-only: gateway result caching was removed in favour of Core.
-    executor_max_results: 10_000,
     http_port: nil,
     http_ip: "127.0.0.1",
     http_max_body_bytes: 1 * @mib,
@@ -69,7 +67,6 @@ defmodule Tay.Gateway.Config do
       :executor_max_tasks_per_connection,
       :executor_result_bytes,
       :executor_error_bytes,
-      :executor_max_results,
       :http_max_body_bytes
     ]
 
@@ -82,7 +79,6 @@ defmodule Tay.Gateway.Config do
       c.executor_max_frame_bytes <= @max_payload,
       c.executor_result_bytes <= c.executor_max_frame_bytes,
       c.executor_error_bytes <= c.executor_max_frame_bytes,
-      c.executor_max_results <= 100_000,
       c.http_max_body_bytes <= @max_payload
     ]
 

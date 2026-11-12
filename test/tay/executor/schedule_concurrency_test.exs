@@ -48,7 +48,6 @@ defmodule Tay.Executor.ScheduleConcurrencyTest do
                workers: %{},
                executor_socket: socket,
                executor_max_connections: 2,
-               execution_wake_ms: 5,
                test_hook: hook
              )
 

@@ -121,7 +121,7 @@ defmodule Tay.Execution.IndependentVMTest do
     {:ok, root} = Tay.Test.EngineHelpers.restart(path, Tay.IndependentVMEngine,
       workers: %{"independent.execution.v1" => Tay.IndependentVMWorker},
       queues: [default: 1], durability: mode, validated_filesystem: mode == :sync,
-      test_execution: true, execution_wake_ms: 10)
+      test_execution: true)
     #{action}
     """
   end

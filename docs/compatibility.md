@@ -38,6 +38,18 @@ to schema 1. The local [executor protocol](protocol.md) adds no disk schema:
 connection registrations and capacity are volatile; persistent job completion
 and successful return values are durable.
 
+Unreleased builds write `(14,2)` for successful external completion and its
+result as one atomic record. They continue reading older completion/result
+records. Released binaries through Tay 1.8.1 refuse the new pair; restore a
+pre-upgrade backup to downgrade. No existing schema-1 fields are changed.
+
+Unreleased builds reject the removed Engine options `max_jobs`,
+`max_state_nodes`, `executor_max_results`, `group_commit_interval_ms`, and
+`compaction.max_terminal_jobs`, along with inspection's `--max-state-nodes`.
+Remove the unused count limits from configuration. Replace the old Engine
+batching option with `journal: [batch: [max_events: n, interval_ms: milliseconds]]`.
+The standalone `TAY_GROUP_COMMIT_INTERVAL_MS` environment setting remains active.
+
 ## Supported runtime and storage
 
 - Build with Elixir 1.20, Erlang/OTP 29, and a C11 compiler. The consuming
@@ -132,3 +144,19 @@ New schema-2 type 13 preserves complete occurrence membership. Types 7..12 keep
 their frozen payloads. Older binaries refuse type 13; downgrade requires a cold
 backup made before writing new events. Historical allow checkpoints whose full
 membership was already lost remain readable but cannot be tightened in place.
+
+Unreleased builds also remove `recovery.max_decode_payload_bytes`,
+`recovery.event_limits`, `max_insert_args_bytes`, `insert_value_depth`,
+`insert_value_nodes`, and `max_segments`. These options now fail configuration
+validation. Record payloads retain the fixed 16 MiB format ceiling and common
+Value checks. Insertions use `max_insert_payload_bytes` for the complete event;
+there is no additional arguments-only byte/depth/node budget.
+
+The physical record decoder exposes only `Tay.Storage.Record.decode/1`.
+Its payload ceiling is fixed at 16 MiB; neither the decoder nor the segment
+parser accepts a configurable decode payload limit.
+
+The Engine options `execution_batch`, `execution_wake_ms` and recovery options
+`activation_window_ms`, `activation_deadline_ms`, `io_timeout_ms` are removed.
+Use `recovery.deadline_ms` for replay/activation and `storage_timeout` for I/O.
+Batching, wakeups and recovery session expiry remain internal mechanisms.

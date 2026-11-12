@@ -107,6 +107,14 @@ defmodule Tay.Event.V2 do
       fields:
         ~w(active_job_id active_job_ids at cancelled_at definition expected_revision last_at membership_complete next_at registered_at revision schedule_id)
     },
+    job_succeeded: %{
+      code: 14,
+      schema: 2,
+      identity: "job_id",
+      encoding: :bytes,
+      revision: :existing,
+      fields: ~w(at execution_token expected_revision job_id result)
+    },
     result_recorded: %{
       code: 10,
       schema: 2,
@@ -292,6 +300,11 @@ defmodule Tay.Event.V2 do
 
   defp fields?(@schedule_cancelled, _d), do: true
   defp fields?(@result_recorded, d), do: args?(d["result"])
+
+  defp fields?(14, d),
+    do:
+      sequence?(d["execution_token"]) and d["expected_revision"] < @max_sequence and
+        args?(d["result"])
 
   defp schedule_definition?(definition) do
     exact?(definition, @schedule_definition) and key?(definition["task"]) and

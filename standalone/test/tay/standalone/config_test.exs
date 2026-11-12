@@ -13,7 +13,7 @@ defmodule Tay.Standalone.ConfigTest do
     assert config.initialize == :never
     assert config.default_queue_concurrency == 10
     assert config.caller_timeout_ms == 5_000
-    assert config.group_commit_interval_ms == 0
+    assert config.journal == [batch: [max_events: 64, interval_ms: 0]]
     assert config.checkpoint_interval_ms == 60_000
   end
 
@@ -53,7 +53,8 @@ defmodule Tay.Standalone.ConfigTest do
       assert {:ok, config} =
                Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => Integer.to_string(interval)})
 
-      assert config.group_commit_interval_ms == interval
+      assert config.journal[:batch][:interval_ms] == interval
+      assert config.journal[:batch][:max_events] == 64
     end
 
     for value <- ["-1", "1001", "1.0", " 5", "", "five"] do
@@ -74,6 +75,25 @@ defmodule Tay.Standalone.ConfigTest do
       assert {:error, message} = Config.load(%{"TAY_CHECKPOINT_INTERVAL_MS" => value})
       assert message =~ "TAY_CHECKPOINT_INTERVAL_MS"
     end
+  end
+
+  if :os.type() != {:unix, :linux} do
+    @tag skip: "production Engine configuration requires Linux sync durability"
+  end
+
+  test "journal configuration reaches the Engine without the removed interval option" do
+    assert {:ok, config} = Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => "25"})
+
+    assert {:ok, engine} =
+             Tay.Engine.Config.new(
+               data_dir: config.data_dir,
+               durability: :sync,
+               validated_filesystem: true,
+               journal: config.journal,
+               client_slots: 2
+             )
+
+    assert engine.journal_batch == %{max_events: 64, interval_ms: 25}
   end
 
   test "HTTP configuration disables the implicit socket but permits an explicit socket" do
@@ -127,16 +147,13 @@ defmodule Tay.Standalone.ConfigTest do
     assert message =~ "must not be blank"
   end
 
-  test "loads one active-state byte budget and ignores the legacy node setting" do
+  test "loads one active-state byte budget" do
     assert {:ok, config} =
              Config.load(%{
-               "TAY_MAX_STATE_BYTES" => "4294967296",
-               "TAY_MAX_STATE_NODES" => "100000000"
+               "TAY_MAX_STATE_BYTES" => "4294967296"
              })
 
     assert config.max_state_bytes == 4_294_967_296
-    refute Map.has_key?(config, :max_state_nodes)
-    assert {:ok, _} = Config.load(%{"TAY_MAX_STATE_NODES" => "not-used"})
 
     assert {:error, message} = Config.load(%{"TAY_MAX_STATE_BYTES" => "-1"})
     assert message =~ "TAY_MAX_STATE_BYTES"
@@ -159,14 +176,6 @@ defmodule Tay.Standalone.ConfigTest do
       assert {:error, message} = Config.load(%{"TAY_MAX_STATE_BYTES" => value})
       assert message =~ "KB, MB, or GB"
     end
-  end
-
-  test "legacy job-count environment variables do not impose limits" do
-    assert {:ok, config} =
-             Config.load(%{"TAY_MAX_JOBS" => "0", "TAY_MAX_TERMINAL_JOBS" => "0"})
-
-    refute Map.has_key?(config, :max_jobs)
-    refute Map.has_key?(config, :max_terminal_jobs)
   end
 
   test "requires the runtime socket to remain outside durable storage" do

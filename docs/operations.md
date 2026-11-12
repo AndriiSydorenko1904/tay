@@ -28,7 +28,7 @@ Only an explicitly intended empty pre-existing root permits
 Offline inspection acquires the existing lock and performs complete physical
 and supported Event-v1/Event-v2 semantic validation without activation. It returns aggregate
 diagnostics, not jobs or a reusable recovery ticket. Use `mix help
-tay.storage.inspect` for independent replay budgets.
+tay.storage.inspect` for state-memory and deadline options.
 
 Explicit initialization is the default operational model (`initialize: :never`).
 Embedding applications that need first-start creation, such as containerized
@@ -192,8 +192,7 @@ retains its permit until its actual outcome, preventing abandoned payloads from
 escaping the budget. Recovery uses the same data accounting; a smaller limit
 refuses activation with `max_state_bytes`, the bytes required at the refusal
 point and the configured limit. Increase the same setting and retry; no stored
-data is silently discarded. The former `max_state_nodes` option remains an
-ignored 1.x compatibility setting.
+data is silently discarded.
 
 Aggregate terminal state and queue counters remain in memory. The append-only
 Store remains authoritative for both projections and rebuilds them on restart.
@@ -201,9 +200,6 @@ When the last active job becomes terminal, Tay schedules an idle full collection
 for the Engine and Writer. This releases transient heaps and binary references
 grown by a burst; allocator/VM baseline memory is not forcibly returned below
 what the Erlang runtime still needs.
-
-For release-candidate compatibility, the former `max_jobs` and
-`max_terminal_jobs` options are accepted when valid but ignored.
 
 Time retention is eligibility, not an exact-time deletion guarantee: terminal jobs
 expire at `terminal_at <= captured_at - duration`, but actual work waits for
@@ -339,3 +335,38 @@ monotonic time and reset on Engine restart, independently of persistent job
 recovery and wall-clock corrections. They are local operational controls, not a
 durable or multi-host lease. Observe queued work with oldest ready-job age and
 schedule lag; see [metrics and alerts](observability.md).
+
+### Gateway process failure
+
+The scheduler coordinator, executor server and HTTP listener retain generation-local
+PID references. An unexpected gateway child exit now fails the execution generation
+closed instead of restarting that child with stale references. Status becomes
+`failed`; use the existing explicit `Tay.restart(name: engine, force: true)` recovery
+path (or restart the host) to recover current durable schedules and replace all
+connections together. In-flight external work remains at-least-once.
+
+External execution also reserves journal headroom for the maximum configured
+successful result before START. If that headroom is unavailable, the job remains
+available and worker capacity is not consumed.
+The status field `reserved_outcome_bytes` includes both the fixed finish-record
+allowance and reserved external-result journal bytes. Atomic completion encoding uses the fixed record-format ceiling and common Value checks.
+Transports reject results exceeding their JSON byte limit as `result_too_large`.
+The Engine checks the actual completion envelope against its existing storage
+byte/depth/node limits before changing job state. A result that cannot be encoded
+fails only that execution attempt with the standard invalid-result diagnostic
+(code 6), following the job's configured retry/discard policy. The Engine remains
+ready, the worker reservation is released and no successful result is recorded.
+This applies to persistent and volatile jobs. Executor.Server has no separate
+storage or Value-limit configuration.
+
+Recovery, activation revalidation and offline inspection use the same fixed
+record-format and Value checks. There are no separate recovery payload, Value,
+insertion argument/depth/node or segment-count settings. New insertions retain
+one configurable whole-event limit, `max_insert_payload_bytes` (default 1 MiB).
+Journal byte admission remains controlled by `max_history_bytes`.
+
+Execution batch size and scheduler polling are internal implementation choices.
+Recovery sessions expire internally if not activated. `recovery.deadline_ms`
+controls each replay and activation/revalidation phase; `storage_timeout` controls
+storage I/O during recovery and normal operation. Offline inspection accepts the
+same `storage_timeout` option.

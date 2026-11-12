@@ -51,11 +51,10 @@ defmodule Tay.Storage.RecordPropertyTest do
   property "arbitrary binary and checksummed adversarial inputs stay in the exact physical result union" do
     check all(
             bytes <- one_of([binary(max_length: 2048), prefixed_bytes(), adversarial_frames()]),
-            limit <- one_of([constant(16_777_216), integer(0..2048)]),
             max_runs: 1000
           ) do
-      result = Record.decode(bytes, max_decode_payload_bytes: limit)
-      assert_physical_result(result, bytes, limit)
+      result = Record.decode(bytes)
+      assert_physical_result(result, bytes)
     end
   end
 
@@ -85,22 +84,6 @@ defmodule Tay.Storage.RecordPropertyTest do
 
       assert actual == CRC32C.checksum(bytes)
       assert actual == ReferenceCRC32C.checksum(bytes)
-    end
-  end
-
-  property "resource errors never become incompleteness and retry preserves the same bytes" do
-    check all(
-            record <- records(binary(min_length: 1, max_length: 1024)),
-            limit <- integer(0..(byte_size(record.payload) - 1)),
-            k <- integer(24..(28 + byte_size(record.payload))),
-            max_runs: 250
-          ) do
-      assert {:ok, bytes} = Record.encode(record)
-
-      assert Record.decode(binary_part(bytes, 0, k), max_decode_payload_bytes: limit) ==
-               {:error, {:resource_limit, byte_size(record.payload), limit}}
-
-      assert Record.decode(bytes) == {:ok, record, <<>>}
     end
   end
 
@@ -161,19 +144,19 @@ defmodule Tay.Storage.RecordPropertyTest do
     end
   end
 
-  defp assert_physical_result({:ok, record, rest}, bytes, limit) do
+  defp assert_physical_result({:ok, record, rest}, bytes) do
     assert record.record_type in 1..254
     assert record.payload_schema_version in 1..255
     assert record.sequence in 1..@max_sequence
     assert record.format_version == 1 and record.flags == 0
-    assert byte_size(record.payload) <= min(limit, 16_777_216)
+    assert byte_size(record.payload) <= 16_777_216
     assert H.frame(Map.to_list(Map.from_struct(record))) <> rest == bytes
   end
 
-  defp assert_physical_result({:incomplete, :header}, bytes, _limit),
+  defp assert_physical_result({:incomplete, :header}, bytes),
     do: assert(byte_size(bytes) < 24)
 
-  defp assert_physical_result({:incomplete, stage, metadata}, bytes, limit)
+  defp assert_physical_result({:incomplete, stage, metadata}, bytes)
        when stage in [:payload, :checksum] do
     assert Map.keys(metadata) |> Enum.sort() ==
              Enum.sort([
@@ -192,7 +175,6 @@ defmodule Tay.Storage.RecordPropertyTest do
     assert metadata.sequence in 1..@max_sequence
     assert metadata.format_version == 1 and metadata.flags == 0
     assert metadata.payload_length in 0..16_777_216
-    assert metadata.payload_length <= limit
     assert metadata.available_bytes == byte_size(bytes)
     assert metadata.record_bytes == 28 + metadata.payload_length
     assert metadata.missing_bytes == metadata.record_bytes - byte_size(bytes)
@@ -202,7 +184,7 @@ defmodule Tay.Storage.RecordPropertyTest do
              if(byte_size(bytes) < 24 + metadata.payload_length, do: :payload, else: :checksum)
   end
 
-  defp assert_physical_result({:error, {:corrupt, reason}}, _bytes, _limit) do
+  defp assert_physical_result({:error, {:corrupt, reason}}, _bytes) do
     case reason do
       atom when atom in [:invalid_magic, :header_checksum, :record_checksum] ->
         :ok
@@ -227,17 +209,12 @@ defmodule Tay.Storage.RecordPropertyTest do
     end
   end
 
-  defp assert_physical_result({:error, {:unsupported, {:format, version}}}, _bytes, _limit),
+  defp assert_physical_result({:error, {:unsupported, {:format, version}}}, _bytes),
     do: assert(version in 2..255)
 
-  defp assert_physical_result({:error, {:unsupported, {:flags, flags}}}, _bytes, _limit),
+  defp assert_physical_result({:error, {:unsupported, {:flags, flags}}}, _bytes),
     do: assert(flags in 1..255)
 
-  defp assert_physical_result({:error, {:resource_limit, n, l}}, _bytes, limit) do
-    assert l == limit
-    assert n > l and n <= 16_777_216
-  end
-
-  defp assert_physical_result(other, _bytes, _limit),
+  defp assert_physical_result(other, _bytes),
     do: flunk("out-of-contract result: #{inspect(other)}")
 end

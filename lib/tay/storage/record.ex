@@ -4,7 +4,7 @@ defmodule Tay.Storage.Record do
 
   The public contract is `docs/storage.md`: a 24-byte
   header, 28-byte overhead, big-endian integers, CRC32C over header bytes 0..19
-  and over those bytes followed by the opaque payload, and a 16 MB hard limit.
+  and over those bytes followed by the opaque payload, and a 16 MiB hard limit.
 
   Every type in 1..254 and schema in 1..255 is physically valid. Success does
   not establish sequence continuity, semantic acceptance, or an applied event.
@@ -51,8 +51,6 @@ defmodule Tay.Storage.Record do
   @type primitive_field ::
           :format_version | :record_type | :flags | :payload_schema_version | :sequence | :payload
   @type unsupported_reason :: {:format, 2..255} | {:flags, 1..255}
-  @type option_error ::
-          :not_keyword | :duplicate_keys | :unknown_keys | :invalid_max_decode_payload_bytes
   @type metadata :: %{
           format_version: 1,
           record_type: 1..254,
@@ -70,9 +68,7 @@ defmodule Tay.Storage.Record do
           | {:incomplete, :payload | :checksum, metadata()}
           | {:error, {:corrupt, corrupt_reason()}}
           | {:error, {:unsupported, unsupported_reason()}}
-          | {:error, {:resource_limit, non_neg_integer(), non_neg_integer()}}
           | {:error, {:invalid_argument, :input}}
-          | {:error, {:invalid_options, option_error()}}
   @type encode_result ::
           {:ok, binary()}
           | {:error, {:invalid_argument, :record}}
@@ -112,51 +108,12 @@ defmodule Tay.Storage.Record do
 
   def encode(_record), do: {:error, {:invalid_argument, :record}}
 
-  @doc """
-  Decodes one physical record, leaving all trailing bytes unchanged.
-
-  The only option is `:max_decode_payload_bytes` (0..16_777_216, default
-  16_777_216). This is a resource budget, not an insertion or format limit.
-  A resource error permits retry with adequate resources at the same position.
-  """
-  @spec decode(term(), term()) :: decode_result()
+  @doc "Decodes one physical record with the fixed 16 MiB payload format ceiling."
   @spec decode(term()) :: decode_result()
-  def decode(input, options \\ [])
+  def decode(input) when is_binary(input), do: decode_prefix(input)
+  def decode(_input), do: {:error, {:invalid_argument, :input}}
 
-  def decode(input, options) when is_binary(input) do
-    with {:ok, limit} <- validate_options(options) do
-      decode_prefix(input, limit)
-    end
-  end
-
-  def decode(_input, _options), do: {:error, {:invalid_argument, :input}}
-
-  defp validate_options(options) do
-    if Keyword.keyword?(options) do
-      keys = Keyword.keys(options)
-      limit = Keyword.get(options, :max_decode_payload_bytes, @hard_payload_max)
-
-      cond do
-        length(keys) != length(Enum.uniq(keys)) ->
-          option_error(:duplicate_keys)
-
-        Enum.any?(keys, &(&1 != :max_decode_payload_bytes)) ->
-          option_error(:unknown_keys)
-
-        not is_integer(limit) or limit < 0 or limit > @hard_payload_max ->
-          option_error(:invalid_max_decode_payload_bytes)
-
-        true ->
-          {:ok, limit}
-      end
-    else
-      option_error(:not_keyword)
-    end
-  end
-
-  defp option_error(reason), do: {:error, {:invalid_options, reason}}
-
-  defp decode_prefix(input, limit) do
+  defp decode_prefix(input) do
     prefix_length = min(byte_size(input), 4)
 
     cond do
@@ -168,7 +125,7 @@ defmodule Tay.Storage.Record do
 
       true ->
         with :ok <- validate_version(:binary.at(input, 4)) do
-          decode_header(input, limit)
+          decode_header(input)
         end
     end
   end
@@ -177,9 +134,9 @@ defmodule Tay.Storage.Record do
   defp validate_version(0), do: {:error, {:corrupt, {:invalid_format, 0}}}
   defp validate_version(version), do: {:error, {:unsupported, {:format, version}}}
 
-  defp decode_header(input, _limit) when byte_size(input) < 24, do: {:incomplete, :header}
+  defp decode_header(input) when byte_size(input) < 24, do: {:incomplete, :header}
 
-  defp decode_header(input, limit) do
+  defp decode_header(input) do
     <<header::binary-size(20), stored_crc::unsigned-big-32, _::binary>> = input
     header_state = CRC32C.update(CRC32C.initial(), header)
 
@@ -189,7 +146,7 @@ defmodule Tay.Storage.Record do
       <<@magic, 1, type, flags, schema, sequence::unsigned-big-64, n::unsigned-big-32>> = header
 
       with :ok <- validate_metadata(type, flags, schema, sequence, n) do
-        decode_body(input, limit, type, schema, sequence, n, header_state)
+        decode_body(input, type, schema, sequence, n, header_state)
       end
     else
       {:error, {:corrupt, :header_checksum}}
@@ -218,11 +175,8 @@ defmodule Tay.Storage.Record do
     end
   end
 
-  defp decode_body(input, limit, type, schema, sequence, n, header_state) do
+  defp decode_body(input, type, schema, sequence, n, header_state) do
     cond do
-      n > limit ->
-        {:error, {:resource_limit, n, limit}}
-
       byte_size(input) < 28 + n ->
         stage = if byte_size(input) < 24 + n, do: :payload, else: :checksum
 

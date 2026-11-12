@@ -70,6 +70,9 @@ defmodule Tay.DiagnosticsTest do
           ["--force"],
           ["--repair"],
           ["--offset", "0"],
+          ["--data-dir", "/store", "--max-records", "1"],
+          ["--data-dir", "/store", "--max-bytes", "1"],
+          ["--data-dir", "/store", "--max-state-nodes", "1"],
           ["--data-dir", "/somewhere", "--durability", "fast"]
         ] do
       assert {:error, _} = Tay.Diagnostics.cli_options(flags, operation)
@@ -82,6 +85,18 @@ defmodule Tay.DiagnosticsTest do
              )
 
     assert init[:bootstrap] == true and init[:durability] == :write
+
+    assert {:ok, inspect_options} =
+             Tay.Diagnostics.cli_options(
+               ["--data-dir", "/store", "--max-state-bytes", "4096", "--deadline-ms", "1000"],
+               :inspect
+             )
+
+    assert inspect_options[:max_state_bytes] == 4096
+    assert inspect_options[:recovery] == [deadline_ms: 1000]
+
+    assert {:error, %{kind: :invalid_options}} =
+             Tay.Diagnostics.inspect(data_dir: "/store", max_state_nodes: 1)
 
     assert {:error, _} =
              Tay.Diagnostics.cli_options(

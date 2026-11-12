@@ -1,6 +1,21 @@
 defmodule Mix.Tasks.Tay.Storage.Inspect do
   use Mix.Task
   @shortdoc "Inspect an existing locked Tay store physically and semantically, without activation"
+  @moduledoc """
+  Inspects the complete retained history of an existing store without activation.
+
+      mix tay.storage.inspect --data-dir PATH --durability sync --validated-filesystem
+
+  Options:
+
+    * `--data-dir PATH` — existing storage root (required)
+    * `--durability sync|write` — inspection mode, defaults to `sync`
+    * `--validated-filesystem` — required for strict `sync` mode
+    * `--max-state-bytes N` — retained state-memory budget
+    * `--deadline-ms N` — inspection time budget
+
+  Inspection never repairs, truncates or skips records.
+  """
   def run(arguments) do
     with {:ok, options} <- Tay.Diagnostics.cli_options(arguments, :inspect) do
       Mix.Task.run("compile")
@@ -13,7 +28,7 @@ defmodule Mix.Tasks.Tay.Storage.Inspect do
     else
       _ ->
         Mix.raise(
-          "Use --data-dir PATH --durability sync|write [--validated-filesystem] and explicit resource budgets; no force, repair or mutation options exist"
+          "Use --data-dir PATH --durability sync|write [--validated-filesystem] [--max-state-bytes N] [--deadline-ms N]; no force, repair or mutation options exist"
         )
     end
   end

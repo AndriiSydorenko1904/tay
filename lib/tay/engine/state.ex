@@ -49,6 +49,7 @@ defmodule Tay.Engine.State do
     :snapshot_dirty,
     :settlement_reserve,
     :persistent_settlement_reserve,
+    :persistent_result_reserve,
     :mode,
     :paused,
     :drainers,

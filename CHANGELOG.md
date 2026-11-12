@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Removed
+
+- Remove execution batch/wakeup and recovery activation/I/O timing settings.
+  Execution scheduling and recovery session expiry are internal; activation uses
+  `recovery.deadline_ms` and recovery I/O uses `storage_timeout`.
+
+- Remove the low-level `Record.decode/2` options API and the segment parser's
+  decode-payload option. Physical decoding uses the fixed 16 MiB format ceiling.
+
+- Remove configurable recovery payload/Value budgets, separate insertion argument
+  byte/depth/node budgets, and the segment-count quota. Retain the fixed record
+  format and common Value checks, whole-event insertion and journal-byte limits.
+
+- Remove the unused recovery record-count and total-segment-byte limits
+  (`max_replay_records`, `max_total_segment_bytes`), their inspection CLI flags
+  (`--max-records`, `--max-bytes`), and the unused aggregate-budget helper.
+  Recovery and inspection process the complete retained history.
+- Remove ignored Engine limits `max_jobs`, `max_state_nodes`,
+  `executor_max_results`, and `compaction.max_terminal_jobs`, including
+  inspection's unused `--max-state-nodes` flag.
+- Remove the legacy Engine `group_commit_interval_ms` option. Use the shared
+  `journal.batch` configuration, including Engine overrides. Standalone keeps
+  `TAY_GROUP_COMMIT_INTERVAL_MS` and maps it directly to the journal configuration.
+
+### Fixed
+
+- Commit successful external completion and its result atomically as `(14,2)`;
+  reserve result journal headroom before START. Older readers through 1.8.1
+  refuse the new record; downgrade requires restoring a pre-upgrade backup.
+- Include reserved result journal bytes in `reserved_outcome_bytes` status accounting.
+- Use the fixed format/Value checks for Store-v2 replay and validate actual result
+  envelopes in the Engine before changing job state, using its existing limits
+  without copying storage configuration into the executor server. Unencodable
+  results fail only the attempt under the normal retry/discard policy, for both
+  persistent and volatile jobs, without recording success or failing the Engine.
+- Avoid leaking external worker reservations when execution preflight fails,
+  and filter available external capabilities by queue to prevent starvation.
+- Decode HTTP schedule IDs once before lookup/cancellation, including literal
+  percent signs and encoded slashes.
+- Fail the execution generation closed on gateway child failure; explicit
+  restart restores current durable schedules and all dependent PID references.
+- Ignore bounded, known late socket-command replies after caller timeout or
+  cancellation without disconnecting unrelated active Python executions.
+
 ## 1.8.1 — 2026-11-12
 
 ### Fixed

@@ -136,7 +136,6 @@ defmodule Tay.Storage.Segment.Parser do
         {:id, id} -> is_integer(id) and id in 1..18_446_744_073_709_551_615
         {:store_id, id} -> is_binary(id) and byte_size(id) == 16 and id != <<0::128>>
         {:highest, highest} -> is_boolean(highest)
-        {:max_decode_payload_bytes, n} -> is_integer(n) and n in 0..16_777_216
         {:sha256, enabled} -> is_boolean(enabled)
         _ -> false
       end)
@@ -208,14 +207,12 @@ defmodule Tay.Storage.Segment.Parser do
   end
 
   defp record(ctx, segment, accumulator) do
-    options = Keyword.take(ctx.options, [:max_decode_payload_bytes])
-
     with {:ok, header, ctx} <- read_at(ctx, segment.bytes, 24) do
-      case Record.decode(header, options) do
+      case Record.decode(header) do
         {:incomplete, stage, metadata} when stage in [:payload, :checksum] ->
           case read_at(ctx, segment.bytes, metadata.record_bytes) do
             {:ok, bytes, ctx} ->
-              accept_record(ctx, segment, accumulator, bytes, Record.decode(bytes, options))
+              accept_record(ctx, segment, accumulator, bytes, Record.decode(bytes))
 
             {:error, reason} ->
               fail(ctx, :io_or_resource_error, segment.bytes, reason)
@@ -288,9 +285,6 @@ defmodule Tay.Storage.Segment.Parser do
 
   defp record_failure(ctx, offset, available, {:incomplete, _, metadata} = result),
     do: incomplete(ctx, :incomplete_record, offset, available, metadata.record_bytes, result)
-
-  defp record_failure(ctx, offset, _available, {:error, {:resource_limit, _, _}} = result),
-    do: fail(ctx, :io_or_resource_error, offset, result)
 
   defp record_failure(ctx, offset, _available, result),
     do: fail(ctx, :record_or_sequence_error, offset, result)

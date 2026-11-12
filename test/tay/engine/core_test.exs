@@ -60,7 +60,6 @@ defmodule Tay.Engine.CoreTest do
 
     {:ok, root} =
       H.restart(path, @name,
-        max_insert_args_bytes: 5,
         max_insert_payload_bytes: 1,
         workers: %{},
         queues: []
@@ -76,7 +75,6 @@ defmodule Tay.Engine.CoreTest do
   test "new insertion budgets fail before append and do not make history invalid", %{path: path} do
     for extra <- [
           [max_state_bytes: 1],
-          [max_insert_args_bytes: 5],
           [max_insert_payload_bytes: 1]
         ] do
       {:ok, root} = H.restart(path, @name, extra)
@@ -86,11 +84,6 @@ defmodule Tay.Engine.CoreTest do
       assert Tay.status(name: @name).state == :ready
       H.stop(root)
     end
-
-    {:ok, root} = H.restart(path, @name, max_state_nodes: 1)
-    assert {:ok, _} = Tay.insert(EngineWorker.new(%{"legacy" => "ignored"}), name: @name)
-    refute Map.has_key?(Tay.status(name: @name), :max_state_nodes)
-    H.stop(root)
   end
 
   test "missing namespace, torn tail, and semantic failure never bootstrap or publish", %{

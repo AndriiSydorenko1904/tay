@@ -20,7 +20,7 @@ defmodule Tay.Storage.RecordBoundaryTest do
     end
   end
 
-  test "16 MB payload is legal and anchored to F10 plus an independent full record checksum" do
+  test "16 MiB payload is legal and anchored to F10 plus an independent full record checksum" do
     payload = :binary.copy(<<0, 255, 84, 65, 89, 0, 127, 128>>, div(@hard, 8))
 
     record =
@@ -40,9 +40,6 @@ defmodule Tay.Storage.RecordBoundaryTest do
     # Neither decode expectation nor independent_bytes comes from Record.encode.
     assert Record.decode(independent_bytes) == {:ok, record, <<>>}
     assert Record.encode(record) == {:ok, independent_bytes}
-
-    assert Record.decode(independent_bytes, max_decode_payload_bytes: @hard - 1) ==
-             {:error, {:resource_limit, @hard, @hard - 1}}
 
     for k <- [
           0,

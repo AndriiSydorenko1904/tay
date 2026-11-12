@@ -60,9 +60,11 @@ Concurrent persistent commands are flushed when the global batch reaches
 written in arrival order and acknowledged together only after their batch fsync
 succeeds. Batching does not change recovery, capacity accounting, or failure
 semantics; a write/fsync error fails the generation without returning success
-for that batch. Embedded Engines use global
-`journal: [batch: [max_events: n, interval_ms: milliseconds]]` configuration.
-The legacy `:group_commit_interval_ms` Engine option remains accepted.
+for that batch. Embedded Engines use
+`journal: [batch: [max_events: n, interval_ms: milliseconds]]`, supplied through
+the `:tay` application configuration or as an Engine override. Standalone maps
+`TAY_GROUP_COMMIT_INTERVAL_MS` to `journal.batch.interval_ms`, with
+`journal.batch.max_events` set to 64 independently of admission slots.
 `durability: :write` remains immediate.
 
 `TAY_MAX_STATE_BYTES` uses binary multipliers: `KB` is 1,024 bytes, `MB` is
@@ -70,10 +72,9 @@ The legacy `:group_commit_interval_ms` Engine option remains accepted.
 A value without a suffix is interpreted as bytes for backward compatibility.
 
 Active-job and terminal-history counts are informational and have no configured
-maximum. `TAY_MAX_JOBS` and `TAY_MAX_TERMINAL_JOBS` are legacy variables and are
-ignored. Active jobs, schedules, retained results and admitted payloads share
+maximum. Active jobs, schedules, retained results and admitted payloads share
 one `TAY_MAX_STATE_BYTES` budget, with conservative accounting for their BEAM
-representation and reserved headroom. The former `TAY_MAX_STATE_NODES` variable is ignored.
+representation and reserved headroom.
 Terminal history is removed only by time-based compaction.
 
 Python HTTP producers and workers need only the HTTP(S) address. Set

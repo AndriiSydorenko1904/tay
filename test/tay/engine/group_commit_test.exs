@@ -110,7 +110,12 @@ defmodule Tay.Engine.GroupCommitTest do
       :ok
     end
 
-    {:ok, root} = EngineHelpers.start(path, @name, group_commit_interval_ms: 0, writer_hook: hook)
+    {:ok, root} =
+      EngineHelpers.start(path, @name,
+        journal: [batch: [max_events: 64, interval_ms: 0]],
+        writer_hook: hook
+      )
+
     assert {:ok, _} = Tay.insert(intent!(%{"n" => 1}), name: @name)
     assert_receive :fsync
     assert {:ok, _} = Tay.insert(intent!(%{"n" => 2}), name: @name)
@@ -174,16 +179,10 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   defp start_batched(path, max_events, interval_ms, extra \\ []) do
-    previous = Application.fetch_env(:tay, :journal)
-    Application.put_env(:tay, :journal, batch: [max_events: max_events, interval_ms: interval_ms])
-
-    try do
-      EngineHelpers.start(path, @name, extra)
-    after
-      case previous do
-        {:ok, value} -> Application.put_env(:tay, :journal, value)
-        :error -> Application.delete_env(:tay, :journal)
-      end
-    end
+    EngineHelpers.start(
+      path,
+      @name,
+      Keyword.put(extra, :journal, batch: [max_events: max_events, interval_ms: interval_ms])
+    )
   end
 end

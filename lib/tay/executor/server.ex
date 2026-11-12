@@ -25,7 +25,8 @@ defmodule Tay.Executor.Server do
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
-  def available_tasks(server), do: GenServer.call(server, :available_tasks, @call_timeout)
+  def available_tasks(server, queue \\ :all),
+    do: GenServer.call(server, {:available_tasks, queue}, @call_timeout)
 
   def reserve(server, task), do: reserve(server, task, :all)
 
@@ -181,6 +182,9 @@ defmodule Tay.Executor.Server do
   @impl true
   def handle_call(:available_tasks, _from, s),
     do: {:reply, Registry.capabilities(s.connections), s}
+
+  def handle_call({:available_tasks, queue}, _from, s),
+    do: {:reply, Registry.capabilities(s.connections, queue), s}
 
   def handle_call(:schedule_coordinator, _from, s),
     do: {:reply, {:ok, s.schedule_coordinator}, s}

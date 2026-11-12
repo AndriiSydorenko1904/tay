@@ -65,7 +65,7 @@ defmodule Tay.Storage.RecordDecodeTest do
       )
 
     for k <- 5..23 do
-      assert Record.decode(binary_part(bytes, 0, k), max_decode_payload_bytes: 0) ==
+      assert Record.decode(binary_part(bytes, 0, k)) ==
                {:incomplete, :header}
     end
   end
@@ -100,7 +100,7 @@ defmodule Tay.Storage.RecordDecodeTest do
     end
   end
 
-  test "fixed header checksum precedes structural values, length, budget, and missing body" do
+  test "fixed header checksum precedes structural values, length and missing body" do
     bad =
       H.frame(
         record_type: 0,
@@ -112,7 +112,7 @@ defmodule Tay.Storage.RecordDecodeTest do
 
     bad = H.flip(bad, 20, 0)
 
-    assert Record.decode(binary_part(bad, 0, 24), max_decode_payload_bytes: 0) ==
+    assert Record.decode(binary_part(bad, 0, 24)) ==
              {:error, {:corrupt, :header_checksum}}
   end
 
@@ -139,7 +139,7 @@ defmodule Tay.Storage.RecordDecodeTest do
 
     for {fields, error} <- cases do
       header = fields |> H.frame() |> binary_part(0, 24)
-      assert Record.decode(header, max_decode_payload_bytes: 0) == {:error, error}
+      assert Record.decode(header) == {:error, error}
     end
 
     for flags <- 1..255 do
@@ -156,7 +156,7 @@ defmodule Tay.Storage.RecordDecodeTest do
     assert {:ok, %{sequence: 1}, ^expected_rest} = Record.decode(a <> expected_rest)
     assert Record.decode(expected_rest) == {:error, {:corrupt, :header_checksum}}
 
-    assert Record.decode(expected_rest, max_decode_payload_bytes: 0) ==
+    assert Record.decode(expected_rest) ==
              {:error, {:corrupt, :header_checksum}}
   end
 
@@ -206,71 +206,22 @@ defmodule Tay.Storage.RecordDecodeTest do
     end
   end
 
-  test "resource budget is checked after hard limit but before any missing body or checksum" do
-    bytes = H.bytes("F02")
-
-    for k <- 24..byte_size(bytes) do
-      assert Record.decode(binary_part(bytes, 0, k), max_decode_payload_bytes: 8) ==
-               {:error, {:resource_limit, 9, 8}}
-    end
-
-    assert {:ok, _, <<>>} = Record.decode(bytes, max_decode_payload_bytes: 9)
-    assert {:ok, _, ^bytes} = Record.decode(H.bytes("F01") <> bytes, max_decode_payload_bytes: 0)
-
-    assert Record.decode(H.bytes("F10"), max_decode_payload_bytes: 0) ==
-             {:error, {:resource_limit, 16_777_216, 0}}
-
-    assert Record.decode(H.bytes("F05"), max_decode_payload_bytes: 8) ==
-             {:error, {:resource_limit, 9, 8}}
-  end
-
-  test "unknown numeric semantics preserve physical incomplete/checksum/resource classifications" do
+  test "unknown numeric semantics preserve physical incomplete/checksum classifications" do
     record = H.record(record_type: 47, payload_schema_version: 3, payload: <<255, 0, 84>>)
     bytes = H.frame(record_type: 47, payload_schema_version: 3, payload: record.payload)
 
     for k <- 24..30 do
       assert Record.decode(binary_part(bytes, 0, k)) == H.incomplete(record, k)
-
-      assert Record.decode(binary_part(bytes, 0, k), max_decode_payload_bytes: 2) ==
-               {:error, {:resource_limit, 3, 2}}
     end
 
     assert Record.decode(H.flip(bytes, 24, 0)) == {:error, {:corrupt, :record_checksum}}
   end
 
-  test "argument validation precedes options and all byte classification" do
+  test "invalid input is rejected and the decoder has no options arity" do
     for value <- [nil, false, 42, 1.0, :input, [], ~c"TAY", [<<84>>], %{}, <<1::1>>, [1 | 2]] do
       assert Record.decode(value) == {:error, {:invalid_argument, :input}}
-      assert Record.decode(value, :invalid) == {:error, {:invalid_argument, :input}}
     end
 
-    for options <- [
-          nil,
-          :invalid,
-          %{},
-          "",
-          [:key],
-          [{"key", 1}],
-          [max_decode_payload_bytes: 1] ++ [false],
-          [{:key, 1} | 2]
-        ] do
-      assert Record.decode(<<0>>, options) == {:error, {:invalid_options, :not_keyword}}
-    end
-
-    assert Record.decode(<<>>, max_decode_payload_bytes: 1, max_decode_payload_bytes: 2) ==
-             {:error, {:invalid_options, :duplicate_keys}}
-
-    assert Record.decode(<<0>>, typo: 1, typo: 2, max_decode_payload_bytes: -1) ==
-             {:error, {:invalid_options, :duplicate_keys}}
-
-    for key <- [:typo, :supported_schemas, :insertion_limit, :repair, :skip_unknown] do
-      assert Record.decode(<<0>>, [{key, %{}}, {:max_decode_payload_bytes, -1}]) ==
-               {:error, {:invalid_options, :unknown_keys}}
-    end
-
-    for limit <- [-1, 16_777_217, 1.0, false, nil, "9", [], %{}] do
-      assert Record.decode(<<0>>, max_decode_payload_bytes: limit) ==
-               {:error, {:invalid_options, :invalid_max_decode_payload_bytes}}
-    end
+    refute function_exported?(Record, :decode, 2)
   end
 end

@@ -1,16 +1,16 @@
 defmodule Tay.Execution.Dispatcher do
   @moduledoc false
 
-  alias Tay.Event
   alias Tay.Engine.{Persistence, ProjectionState}
   alias Tay.Execution.{Clock, Outcome, Registry}
   alias Tay.Executor.Server
   alias Tay.State.{JobIndex, Projection}
 
-  def available_tasks(nil), do: []
+  def available_tasks(server, queue \\ :all)
+  def available_tasks(nil, _queue), do: []
 
-  def available_tasks(server) when is_pid(server) do
-    if Process.alive?(server), do: Server.available_tasks(server), else: []
+  def available_tasks(server, queue) when is_pid(server) do
+    if Process.alive?(server), do: Server.available_tasks(server, queue), else: []
   catch
     :exit, _ -> []
   end
@@ -50,7 +50,17 @@ defmodule Tay.Execution.Dispatcher do
   def outcome(_), do: {:failure, 1}
 
   def start_external(state, job, queue, started, server, reservation) do
-    case Persistence.commit(state, job, started) do
+    result_reserve =
+      if ProjectionState.durability(state, job) == :persistent,
+        do: Persistence.result_history_reserve(state.config),
+        else: 0
+
+    reserved = %{
+      state
+      | persistent_result_reserve: state.persistent_result_reserve + result_reserve
+    }
+
+    case Persistence.commit(reserved, job, started) do
       {:ok, executing, next} ->
         key = {:executor, reservation}
 
@@ -69,7 +79,8 @@ defmodule Tay.Execution.Dispatcher do
           execution: executing.execution,
           reservation: reservation,
           server: server,
-          timer: timer
+          timer: timer,
+          result_reserve: result_reserve
         }
 
         next = %{
@@ -93,6 +104,12 @@ defmodule Tay.Execution.Dispatcher do
 
   def settle(state, key, entry, result) do
     if entry.timer, do: Process.cancel_timer(entry.timer)
+
+    state = %{
+      state
+      | persistent_result_reserve: state.persistent_result_reserve - entry.result_reserve
+    }
+
     job = JobIndex.get(state.projection.jobs, entry.id)
 
     state =
@@ -122,8 +139,8 @@ defmodule Tay.Execution.Dispatcher do
     Tay.State.Memory.settling(state.memory, fn ->
       case Outcome.event(job, outcome(result), Clock.wall(state.config.clock)) do
         {:ok, finished} ->
-          case Persistence.commit(state, job, finished) do
-            {:ok, completed, next} -> persist_result(next, completed, result)
+          case commit_result(state, job, finished, result) do
+            {:ok, _completed, next} -> next
             _ -> exit(:external_execution_settlement_failed)
           end
 
@@ -133,25 +150,18 @@ defmodule Tay.Execution.Dispatcher do
     end)
   end
 
-  defp persist_result(state, completed, {:success, result}) do
-    event = %Event{
-      record_type: 10,
-      payload_schema_version: 2,
-      data: %{
-        "at" => completed.completed_at,
-        "expected_revision" => completed.revision,
-        "job_id" => completed.id,
-        "result" => result
-      }
-    }
+  defp commit_result(state, job, finished, {:success, value}) do
+    case Persistence.commit_success(state, job, finished, value) do
+      {:error, :invalid_result} ->
+        with {:ok, failed} <- Outcome.event(job, {:failure, 6}, finished.data["at"]),
+             do: Persistence.commit(state, job, failed)
 
-    case Persistence.commit_auxiliary(state, event, completed) do
-      {:ok, next} -> next
-      _ -> exit(:external_result_commit_failed)
+      result ->
+        result
     end
   end
 
-  defp persist_result(state, _completed, _result), do: state
+  defp commit_result(state, job, finished, _result), do: Persistence.commit(state, job, finished)
 
   defp safe(function, fallback \\ {:error, :executor_unavailable}) do
     function.()

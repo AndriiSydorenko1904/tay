@@ -5,6 +5,8 @@ defmodule Tay.Engine.Execution do
   relay release, and settlement retain their original serialization order.
   """
   alias Tay.Event
+  alias Tay.Execution.Queue
+  @batch_size 32
   alias Tay.Engine.{Persistence, ProjectionState}
   alias Tay.Execution.{Clock, ControlPlane, Dispatcher, Outcome, Relay}
   alias Tay.Gateway.Runtime, as: GatewayRuntime
@@ -22,7 +24,7 @@ defmodule Tay.Engine.Execution do
       :ets.select(
         s.projection.jobs,
         [{{:"$1", %{state: :executing}}, [], [:"$1"]}],
-        s.config.execution_batch
+        @batch_size
       )
 
     reconcile_batch(s, selection)
@@ -79,11 +81,11 @@ defmodule Tay.Engine.Execution do
   defp valid_control_kind?(_s, _kind), do: false
 
   def control(_kind, %{mode: mode} = s) when mode != :ready,
-    do: {s, s.config.execution_wake_ms}
+    do: {s, Queue.wake_interval()}
 
   def control(:scheduler, s) do
     at = Clock.wall(s.config.clock)
-    ids = SchedulerIndex.due(s.projection.schedule, at, s.config.execution_batch)
+    ids = SchedulerIndex.due(s.projection.schedule, at, @batch_size)
 
     {s, refused} =
       Enum.reduce_while(ids, {s, false}, fn id, {acc, _} ->
@@ -104,8 +106,8 @@ defmodule Tay.Engine.Execution do
     # A capacity refusal must not turn a due head into a busy loop.
     delay =
       if due && not refused,
-        do: Clock.delay_until(due, Clock.wall(s.config.clock), s.config.execution_wake_ms),
-        else: s.config.execution_wake_ms
+        do: Clock.delay_until(due, Clock.wall(s.config.clock), Queue.wake_interval()),
+        else: Queue.wake_interval()
 
     {wake_queues(s), delay}
   end
@@ -116,14 +118,14 @@ defmodule Tay.Engine.Execution do
         {:ok, job} ->
           case claim(s, job, queue) do
             {:ok, next} -> {next, 0}
-            {:error, next} -> {next, s.config.execution_wake_ms}
+            {:error, next} -> {next, Queue.wake_interval()}
           end
 
         :none ->
-          {s, s.config.execution_wake_ms}
+          {s, Queue.wake_interval()}
       end
     else
-      {s, s.config.execution_wake_ms}
+      {s, Queue.wake_interval()}
     end
   end
 
@@ -134,7 +136,7 @@ defmodule Tay.Engine.Execution do
   defp next_ready(s, queue, now) do
     local = Map.keys(s.projection.registry)
 
-    external = Dispatcher.available_tasks(s.executor_server)
+    external = Dispatcher.available_tasks(s.executor_server, queue)
 
     candidates =
       (local ++ external)
@@ -172,12 +174,12 @@ defmodule Tay.Engine.Execution do
     at = Clock.wall(s.config.clock)
     started = event(3, job, at, %{"attempt" => job.next_attempt, "cycle_token" => job.cycle})
 
-    with {:ok, dispatch} <- dispatch_for(s, job),
-         true <- not MapSet.member?(s.projection.held, job.id),
+    with true <- not MapSet.member?(s.projection.held, job.id),
          {:ok, predicted} <- predict_execution(s, job, started),
          :ok <- settlement_fits(s, predicted, at),
          {:ok, {_, _, payload}} <- execution_encoding(s, job, started),
-         :ok <- execution_headroom(s, job, payload) do
+         :ok <- execution_headroom(s, job, payload),
+         {:ok, dispatch} <- dispatch_for(s, job) do
       case dispatch do
         {:local, worker} ->
           options = %{
@@ -205,9 +207,17 @@ defmodule Tay.Engine.Execution do
   end
 
   defp execution_headroom(s, job, payload) do
-    if ProjectionState.durability(s, job) == :persistent,
-      do: Persistence.headroom(s, byte_size(payload), s.persistent_settlement_reserve + 1),
-      else: :ok
+    if ProjectionState.durability(s, job) == :persistent do
+      extra =
+        if Map.has_key?(s.config.workers, job.definition["worker_key"]),
+          do: 0,
+          else: Persistence.result_history_reserve(s.config)
+
+      reserved = %{s | persistent_result_reserve: s.persistent_result_reserve + extra}
+      Persistence.headroom(reserved, byte_size(payload), s.persistent_settlement_reserve + 1)
+    else
+      :ok
+    end
   end
 
   defp dispatch_for(s, job) do

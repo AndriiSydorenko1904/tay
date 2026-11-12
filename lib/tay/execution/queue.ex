@@ -2,6 +2,9 @@ defmodule Tay.Execution.Queue do
   @moduledoc false
   use GenServer
 
+  @wake_interval 1_000
+  def wake_interval, do: @wake_interval
+
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
   def wake(pid), do: GenServer.cast(pid, :wake)
   def acknowledged(pid, token, delay), do: GenServer.cast(pid, {:ack, token, delay})
@@ -24,7 +27,7 @@ defmodule Tay.Execution.Queue do
   def handle_info(_, s), do: {:noreply, s}
 
   def handle_cast({:ack, token, delay}, %{pending: token} = s),
-    do: {:noreply, arm(%{s | pending: nil}, min(max(delay, 0), s.wake_ms))}
+    do: {:noreply, arm(%{s | pending: nil}, min(max(delay, 0), @wake_interval))}
 
   def handle_cast(:wake, %{pending: nil} = s), do: {:noreply, arm(s, 0)}
   def handle_cast(_, s), do: {:noreply, s}

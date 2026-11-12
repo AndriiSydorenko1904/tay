@@ -85,6 +85,8 @@ defmodule Tay.HTTP.Router do
 
   defp dispatch(%Plug.Conn{method: method, path_info: ["schedules", id]} = conn, options)
        when method in ["GET", "DELETE"] do
+    id = URI.decode(id)
+
     if Protocol.identifier?(id) do
       kind = if method == "GET", do: "schedule_status", else: "cancel_schedule"
       result = Service.handle(service_context(options), %{"type" => kind, "schedule_id" => id})

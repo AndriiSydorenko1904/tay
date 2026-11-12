@@ -92,7 +92,7 @@ defmodule Tay.Execution.ResourceTest do
     H.stop(root)
   end
 
-  test "execution timing and batch bounds are operational options, not Event limits" do
+  test "execution config validates queues and runtime controls" do
     base = [
       data_dir: "tmp/execution-config-unused",
       durability: :write,
@@ -101,16 +101,11 @@ defmodule Tay.Execution.ResourceTest do
 
     assert {:ok, config} = Tay.Engine.Config.new(base)
     assert config.queue_limits == %{"default" => 2, "other" => 3}
-    assert config.execution_wake_ms == 1_000
-    assert config.execution_batch == 32
+
     assert config.execution
     assert config.clock == Tay.Execution.Clock
 
     for opts <- [
-          [execution_batch: 0],
-          [execution_batch: 1_025],
-          [execution_wake_ms: 0],
-          [execution_wake_ms: 1_001],
           [execution: false],
           [test_execution: nil],
           [test_clock: "never-an-atom"],
@@ -118,11 +113,5 @@ defmodule Tay.Execution.ResourceTest do
         ] do
       assert {:error, _} = Tay.Engine.Config.new(Keyword.merge(base, opts))
     end
-
-    assert {:ok, minimum} =
-             Tay.Engine.Config.new(base ++ [execution_batch: 1, execution_wake_ms: 1])
-
-    assert minimum.value_limits == config.value_limits
-    assert minimum.candidate_limits == config.candidate_limits
   end
 end

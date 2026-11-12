@@ -25,9 +25,9 @@ defmodule Tay.Executor.Registry do
       length(tasks) == length(Enum.uniq(tasks))
   end
 
-  def capabilities(connections) do
+  def capabilities(connections, queue \\ :all) do
     connections
-    |> Enum.filter(fn {_connection, entry} -> available?(entry) end)
+    |> Enum.filter(fn {_connection, entry} -> available?(entry) and queue?(entry, queue) end)
     |> Enum.flat_map(fn {_connection, entry} -> MapSet.to_list(entry.tasks) end)
     |> Enum.uniq()
     |> Enum.sort()
@@ -38,7 +38,7 @@ defmodule Tay.Executor.Registry do
       connections
       |> Enum.filter(fn {_connection, entry} ->
         available?(entry) and MapSet.member?(entry.tasks, task) and
-          (queue == :all or Map.get(entry, :queue, :all) in [:all, queue])
+          queue?(entry, queue)
       end)
       |> Enum.min_by(
         fn {connection, entry} ->
@@ -55,4 +55,6 @@ defmodule Tay.Executor.Registry do
 
   defp available?(entry),
     do: entry.mode in ["embedded", "worker"] and MapSet.size(entry.reservations) < entry.capacity
+
+  defp queue?(entry, queue), do: queue == :all or Map.get(entry, :queue, :all) in [:all, queue]
 end

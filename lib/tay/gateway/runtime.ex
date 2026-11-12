@@ -74,7 +74,11 @@ defmodule Tay.Gateway.Runtime do
   end
 
   defp start_child(supervisor, child_spec) do
-    case DynamicSupervisor.start_child(supervisor, child_spec) do
+    # Gateway children retain each other's PIDs and a generation's recovered
+    # state. Never restart one beneath those surviving dependencies.
+    spec = Supervisor.child_spec(child_spec, restart: :permanent)
+
+    case DynamicSupervisor.start_child(supervisor, spec) do
       {:ok, pid} -> {:ok, pid}
       {:ok, pid, _info} -> {:ok, pid}
       {:error, reason} -> {:error, reason}

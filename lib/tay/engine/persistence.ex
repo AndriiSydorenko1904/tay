@@ -8,10 +8,121 @@ defmodule Tay.Engine.Persistence do
   alias Tay.State.Auxiliary
   alias Tay.Storage.{Segment, Writer}
   alias Tay.Storage.V2.{Codec, Mutation}
+  alias Tay.Storage.V2.Completion
   alias Tay.Storage.V2.Reducer, as: V2Reducer
 
   @memory_reclaim_idle_ms 1_000
   @segment_catalog_limit 128
+
+  # Value's fixed-width scalar encoding can exceed compact JSON. Include the
+  # bounded result payload, event envelope and a possible segment rotation.
+  def result_history_reserve(config), do: config.executor_result_bytes * 16 + 4_096
+
+  def commit_success(state, previous, finished, result) do
+    event = Completion.event(previous, finished.data["at"], result)
+
+    # Validate the real completion before changing either persistent or volatile
+    # job state. Storage limits belong to the Engine, not the transport server.
+    with {:ok, {14, 2, payload}} <- encode_completion(state.config, event) do
+      if ProjectionState.durability(state, previous) == :volatile do
+        with {:ok, completed, next} <- commit(state, previous, finished),
+             event = %Event{
+               record_type: 10,
+               payload_schema_version: 2,
+               data: %{
+                 "at" => completed.completed_at,
+                 "expected_revision" => completed.revision,
+                 "job_id" => completed.id,
+                 "result" => result
+               }
+             },
+             {:ok, next} <- commit_auxiliary(next, event, completed),
+             do: {:ok, completed, next}
+      else
+        commit_completion(state, previous, event, payload)
+      end
+    end
+  end
+
+  defp encode_completion(config, event) do
+    case Event.encode(
+           event,
+           config.value_limits
+         ) do
+      {:ok, encoded} -> {:ok, encoded}
+      {:error, _} -> {:error, :invalid_result}
+    end
+  end
+
+  defp completion_seed(state, previous) do
+    seed = V2Reducer.candidate(state.config.candidate_limits, state.config.value_limits)
+
+    %{
+      seed
+      | jobs: %{previous.id => previous},
+        count: state.budget.count,
+        bytes: state.budget.bytes + state.auxiliary_bytes,
+        auxiliary_bytes: state.auxiliary_bytes,
+        results: state.results,
+        next_availability_order: state.next_availability_order
+    }
+  end
+
+  defp commit_completion(state, previous, event, payload) do
+    ensure_generation_live!(state)
+    position = %{sequence: state.next_sequence}
+
+    with {:ok, candidate} <- Completion.reduce(completion_seed(state, previous), event, position),
+         reserve = reservation_after(state, previous, 4),
+         :ok <- headroom(state, byte_size(payload), reserve),
+         {:ok, _job, budget} <-
+           ProjectionState.account_active(state, previous, candidate.jobs[previous.id]) do
+      delta =
+        budget.bytes - state.budget.bytes + candidate.auxiliary_bytes - state.auxiliary_bytes
+
+      Tay.State.Memory.transaction(state.memory, delta, fn ->
+        hook(state.config, {:execution, 4, :pre_append})
+        hook(state.config, :pre_append)
+        {writer_result, state} = append_record(state, 14, 2, payload)
+
+        case writer_result do
+          {:ok, receipt} ->
+            validate_receipt!(state, receipt, byte_size(payload))
+            hook(state.config, :post_append)
+            hook(state.config, {:execution, 4, :post_append})
+
+            {:ok, candidate} =
+              Completion.reduce(completion_seed(state, previous), event, %{
+                sequence: state.next_sequence
+              })
+
+            {:ok, job, budget} =
+              ProjectionState.account_active(state, previous, candidate.jobs[previous.id])
+
+            actual =
+              budget.bytes - state.budget.bytes + candidate.auxiliary_bytes -
+                state.auxiliary_bytes
+
+            next = %{
+              state
+              | results: candidate.results,
+                auxiliary_bytes: candidate.auxiliary_bytes
+            }
+
+            committed =
+              finish_commit(next, previous, job, budget, receipt, payload, reserve, 4, nil)
+
+            {:memory_delta, actual, committed}
+
+          {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
+            {:error, reason}
+
+          _ ->
+            exit(:writer_commit_unknown)
+        end
+      end)
+    end
+  end
 
   def commit(state, previous, event, encoded \\ nil) do
     {durability, _encoded} =
@@ -44,8 +155,7 @@ defmodule Tay.Engine.Persistence do
     with {:ok, {type, 2, payload}} <-
            Event.encode(
              event,
-             state.config.value_limits,
-             Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
+             state.config.value_limits
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: state.next_sequence}, seed),
          :ok <- headroom(state, byte_size(payload), state.persistent_settlement_reserve) do
@@ -274,8 +384,7 @@ defmodule Tay.Engine.Persistence do
     with {:ok, {_, 2, _}} <-
            Event.encode(
              event,
-             state.config.value_limits,
-             Keyword.fetch!(state.config.recovery, :max_decode_payload_bytes)
+             state.config.value_limits
            ),
          {:ok, candidate} <- Auxiliary.reduce(event, %{sequence: 1}, seed) do
       Tay.State.Memory.transaction(
@@ -435,17 +544,11 @@ defmodule Tay.Engine.Persistence do
         {:error, :segment_id_exhausted}
 
       over_limit?(
-        state.history_bytes + history_delta(state, bytes) + outcome_reserve(reserve),
+        state.history_bytes + history_delta(state, bytes) + outcome_reserve(reserve) +
+            state.persistent_result_reserve,
         state.config.max_history_bytes
       ) ->
         {:error, {:resource_limit, :max_history_bytes}}
-
-      over_limit?(
-        state.segment_count + expected_position(state, bytes).segment_id - state.segment.id +
-            reserve,
-        state.config.max_segments
-      ) ->
-        {:error, {:resource_limit, :max_segments}}
 
       true ->
         :ok

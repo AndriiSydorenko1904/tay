@@ -53,7 +53,6 @@ defmodule Tay.Executor.DispatchFairnessTest do
                executor_socket: socket,
                executor_max_connections: 2,
                executor_max_tasks_per_connection: 16,
-               execution_wake_ms: 1_000,
                writer_hook: writer_hook
              )
 

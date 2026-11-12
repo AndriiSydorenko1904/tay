@@ -2,19 +2,38 @@ defmodule Tay.Engine.ConfigTest do
   use ExUnit.Case, async: false
   alias Tay.Engine.Config
 
+  test "recovery exposes only supported budgets and rejects removed aggregate limits" do
+    base = [data_dir: "tmp/config-only", durability: :write]
+    assert {:ok, config} = Config.new(base)
+
+    assert Enum.sort(Keyword.keys(config.recovery)) ==
+             Enum.sort([
+               :max_directory_entries,
+               :deadline_ms
+             ])
+
+    for key <- [
+          :max_replay_records,
+          :max_total_segment_bytes,
+          :event_limits
+        ] do
+      assert {:error, %Tay.Storage.Recovery.Error{reason: :invalid_recovery_options}} =
+               Tay.Storage.Recovery.options([{key, :infinity}])
+
+      assert {:error, %Tay.Error{kind: :invalid}} = Config.new(base ++ [recovery: [{key, 1}]])
+    end
+  end
+
   test "appendix option names, defaults, exact domains and conservative cross-budget checks" do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, c} = Config.new(base)
     assert c.initialize == :never
-    assert c.group_commit_interval_ms == 0
-
-    assert {:ok, %{group_commit_interval_ms: 1_000}} =
-             Config.new(base ++ [group_commit_interval_ms: 1_000])
+    assert c.journal_batch == %{max_events: 1, interval_ms: 0}
 
     assert {:ok, %{initialize: :if_missing}} = Config.new(base ++ [initialize: :if_missing])
 
-    assert {c.max_insert_payload_bytes, c.max_insert_args_bytes, c.insert_value_depth,
-            c.insert_value_nodes} == {1_048_576, 262_144, 32, 10_000}
+    assert c.max_insert_payload_bytes == 1_048_576
+    assert c.value_limits == Tay.Event.Value.defaults()
 
     assert is_binary(c.executor_socket)
     refute String.starts_with?(c.executor_socket, Path.expand("tmp/config-only") <> "/")
@@ -34,7 +53,6 @@ defmodule Tay.Engine.ConfigTest do
           [insert_depth: 32],
           [rotation_target_bytes: 1],
           [rotation_target_bytes: 1_073_741_825],
-          [recovery: [max_decode_payload_bytes: 1024]],
           [
             recovery: [event_limits: %{depth: 31, output_nodes: 10_000, binary_bytes: 16_777_216}]
           ],
@@ -44,9 +62,6 @@ defmodule Tay.Engine.ConfigTest do
           [workers: %{"" => __MODULE__}],
           [workers: %{"w" => "Elixir.NeverFromDisk"}],
           [client_slots: 0],
-          [group_commit_interval_ms: -1],
-          [group_commit_interval_ms: 1_001],
-          [group_commit_interval_ms: "5"],
           [client_bytes: 1],
           [caller_timeout: :infinity],
           [initialize: :always],
@@ -55,18 +70,14 @@ defmodule Tay.Engine.ConfigTest do
         ],
         do: assert({:error, %Tay.Error{kind: :invalid}} = Config.new(Keyword.merge(base, extra)))
 
-    assert {:ok, _} = Config.new(base ++ [max_insert_payload_bytes: 1, max_insert_args_bytes: 5])
-    assert {:ok, legacy} = Config.new(base ++ [max_state_nodes: 1])
-    refute Map.has_key?(legacy, :max_state_nodes)
-    assert {:error, _} = Config.new(base ++ [max_state_nodes: -1])
+    assert {:ok, _} = Config.new(base ++ [max_insert_payload_bytes: 1])
 
     assert {:error, _} =
              Config.new(base ++ [executor_socket: Path.expand("tmp/config-only/tay.sock")])
 
-    assert {:ok, config} =
+    assert {:ok, _config} =
              Config.new(base ++ [executor_socket: Path.expand("tmp/tay-config-only.sock")])
 
-    assert config.executor_max_results == 10_000
     assert {:error, _} = Config.new(base ++ [durability: :write])
     assert {:error, _} = Config.new(:bad)
   end
@@ -84,7 +95,25 @@ defmodule Tay.Engine.ConfigTest do
     end
   end
 
-  test "uses global journal batching while preserving the legacy interval option" do
+  test "rejects removed compatibility options instead of silently ignoring them" do
+    base = [data_dir: "tmp/config-only", durability: :write]
+
+    for key <- [
+          :max_jobs,
+          :max_state_nodes,
+          :executor_max_results,
+          :group_commit_interval_ms,
+          :max_insert_args_bytes,
+          :insert_value_depth,
+          :insert_value_nodes,
+          :max_segments
+        ],
+        value <- [0, 1, 10_000] do
+      assert {:error, %Tay.Error{kind: :invalid}} = Config.new(base ++ [{key, value}])
+    end
+  end
+
+  test "journal batching uses the shared shape and an Engine override preserves max_events" do
     previous = Application.fetch_env(:tay, :journal)
 
     on_exit(fn ->
@@ -98,8 +127,22 @@ defmodule Tay.Engine.ConfigTest do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, %{journal_batch: %{max_events: 100, interval_ms: 10}}} = Config.new(base)
 
-    assert {:ok, %{journal_batch: %{max_events: 64, interval_ms: 25}}} =
-             Config.new(base ++ [group_commit_interval_ms: 25])
+    assert {:ok, %{journal_batch: %{max_events: 7, interval_ms: 25}}} =
+             Config.new(
+               base ++ [client_slots: 2, journal: [batch: [max_events: 7, interval_ms: 25]]]
+             )
+
+    assert Application.get_env(:tay, :journal) == [batch: [max_events: 100, interval_ms: 10]]
+
+    for journal <- [
+          [batch: [max_events: 0, interval_ms: 10]],
+          [batch: [max_events: 2, interval_ms: -1]],
+          [batch: [max_events: 2, interval_ms: 1_001]],
+          [batch: [max_events: 2, interval_ms: 25, unknown: true]],
+          [batch: [max_events: 2, interval_ms: 25], batch: [max_events: 2, interval_ms: 25]]
+        ] do
+      assert {:error, %Tay.Error{kind: :invalid}} = Config.new(base ++ [journal: journal])
+    end
   end
 
   test "HTTP binds to loopback unless complete mTLS is configured" do

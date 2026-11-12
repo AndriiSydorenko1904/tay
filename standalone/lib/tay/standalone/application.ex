@@ -16,7 +16,7 @@ defmodule Tay.Standalone.Application do
               data_dir: config.data_dir,
               initialize: config.initialize,
               durability: :sync,
-              group_commit_interval_ms: config.group_commit_interval_ms,
+              journal: config.journal,
               validated_filesystem: true,
               workers: %{},
               queues: [default: config.default_queue_concurrency],

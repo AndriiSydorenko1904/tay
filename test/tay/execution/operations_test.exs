@@ -154,16 +154,6 @@ defmodule Tay.Execution.OperationsTest do
     assert snapshot.retained_definition_bytes == Enum.sum(definitions)
   end
 
-  test "segment admission reserves an outcome coordinate before starting", %{path: path} do
-    start(path, max_segments: 1)
-    {job, token} = H.job()
-    assert {:ok, _} = Tay.insert(job, name: @name)
-    assert :ok = Tay.pause_queue(:default, name: @name)
-    assert {:ok, %{state: :available}} = Tay.get_job(job.id, name: @name)
-    assert H.entries(token) == 0
-    assert :ok = Tay.drain(name: @name)
-  end
-
   test "concurrent drains occupy bounded permits until timeout, but outcomes still settle", %{
     path: path
   } do

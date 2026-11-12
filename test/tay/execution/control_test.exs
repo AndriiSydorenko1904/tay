@@ -118,7 +118,7 @@ defmodule Tay.Execution.ControlTest do
 
   test "suspended control processes receive coalesced wakeups across many ordinary client commands",
        %{path: path} do
-    root = start(path, execution_wake_ms: 1000)
+    root = start(path)
     coordinators = Map.values(controls(root))
     Enum.each(coordinators, &:sys.suspend/1)
 
@@ -188,7 +188,7 @@ defmodule Tay.Execution.ControlTest do
 
   test "capacity-refused due head preserves bytes and uses bounded wake interval, not a millisecond loop",
        %{path: path} do
-    root = start(path, execution_wake_ms: 200)
+    root = start(path)
     {job, token} = H.job(scheduled_at: 1_010_000)
     assert {:ok, _} = Tay.insert(job, name: @name)
     engine = H.engine(root)
@@ -217,7 +217,7 @@ defmodule Tay.Execution.ControlTest do
   test "two queues receive bounded demand fairly despite an earlier queue's backlog", %{
     path: path
   } do
-    root = start(path, queues: [alpha: 2, beta: 1], execution_batch: 2)
+    root = start(path, queues: [alpha: 2, beta: 1])
 
     jobs =
       for queue <- List.duplicate(:alpha, 12) ++ List.duplicate(:beta, 3) do

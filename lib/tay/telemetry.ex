@@ -452,7 +452,6 @@ defmodule Tay.Telemetry do
            :client_bytes,
            :max_state_bytes,
            :max_history_bytes,
-           :max_segments,
            :sequence_exhausted,
            :segment_id_exhausted,
            :event_budget

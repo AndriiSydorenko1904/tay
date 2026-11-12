@@ -25,11 +25,9 @@ defmodule Tay.Engine.CompactionConfig do
          true <-
            Enum.all?(
              Keyword.keys(options),
-             &(&1 == :max_terminal_jobs or Map.has_key?(@defaults, &1))
+             &Map.has_key?(@defaults, &1)
            ),
-         true <- legacy_terminal_limit?(Keyword.get(options, :max_terminal_jobs, 0)),
-         config <-
-           Map.merge(@defaults, options |> Keyword.delete(:max_terminal_jobs) |> Map.new()),
+         config <- Map.merge(@defaults, Map.new(options)),
          true <- is_boolean(config.enabled),
          :ok <- Retention.validate(config.terminal_retention),
          true <- config.terminal_retention != :infinity,
@@ -55,5 +53,4 @@ defmodule Tay.Engine.CompactionConfig do
   def new(_), do: {:error, :compaction_configuration}
   defp timer?(n), do: is_integer(n) and n in 1..@max_timer
   defp checkpoint_interval?(n), do: is_integer(n) and n in @checkpoint_disabled..@max_timer
-  defp legacy_terminal_limit?(n), do: is_integer(n) and n in 0..4_294_967_295
 end

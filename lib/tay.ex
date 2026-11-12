@@ -28,7 +28,9 @@ defmodule Tay do
   supervise `Tay.child_spec/1`. Callers may opt into `initialize: :if_missing`
   to initialize only a genuinely missing root before normal recovery. It is
   never a repair or recovery fallback. Engine options are not `:tay` application
-  environment keys.
+  environment keys. `:data_dir`, `:queues`, and `:journal` can override the
+  corresponding foundation settings for one Engine; journal batching always
+  uses `journal: [batch: [max_events: count, interval_ms: milliseconds]]`.
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
   is a development mode and is never described as durable.
   """

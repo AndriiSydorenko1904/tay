@@ -160,6 +160,7 @@ defmodule Tay.Engine do
             snapshot_dirty: false,
             settlement_reserve: 0,
             persistent_settlement_reserve: 0,
+            persistent_result_reserve: 0,
             mode: :ready,
             paused:
               if(config.start_paused, do: MapSet.new(Map.keys(config.queues)), else: MapSet.new()),
@@ -744,13 +745,7 @@ defmodule Tay.Engine do
              "eligible_at" => definition["scheduled_at"] || at
            }
          },
-         limits = %{
-           c.value_limits
-           | depth: c.insert_value_depth,
-             output_nodes: c.insert_value_nodes
-         },
-         {:ok, {1, 1, payload}} <- Event.encode(event, limits, c.max_insert_payload_bytes),
-         {:ok, _} <- Value.measure(definition["args"], limits, c.max_insert_args_bytes),
+         {:ok, {1, 1, payload}} <- Event.encode(event, c.value_limits, c.max_insert_payload_bytes),
          {:ok, job, next} <-
            Persistence.commit(s, nil, event, {:durability, durability, payload}) do
       {{:ok, ProjectionState.view(next, job)}, next}

@@ -64,8 +64,7 @@ defmodule Tay.Test.ExecutionHelpers do
           workers: %{"execution.test.v1" => ExecutionWorker},
           queues: [default: 1],
           test_execution: true,
-          test_clock: ExecutionClock,
-          execution_wake_ms: 10
+          test_clock: ExecutionClock
         ],
         extra
       )

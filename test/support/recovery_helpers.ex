@@ -47,7 +47,7 @@ defmodule Tay.Test.RecoveryHelpers do
       codec: Tay.Event,
       initial_acc: Transition.candidate(),
       reducer: &Tay.Engine.CompactionReplay.reduce/3,
-      options: [deadline_ms: 900_000, activation_deadline_ms: 900_000]
+      options: [deadline_ms: 900_000]
     }
 
     {:ok, writer} = start(path, replay_spec, timeout: 900_000)

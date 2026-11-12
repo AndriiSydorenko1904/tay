@@ -63,7 +63,6 @@ defmodule Tay.Engine.CapacityTest do
     options = [
       rotation_target_bytes: Segment.min_rotation_bytes(),
       max_insert_payload_bytes: 2_097_152,
-      max_insert_args_bytes: 2_097_152,
       client_slots: 4,
       client_bytes: 8_388_608
     ]
@@ -106,7 +105,7 @@ defmodule Tay.Engine.CapacityTest do
   end
 
   test "active and terminal job counts are informational across restart", %{path: path} do
-    options = [max_jobs: 1, start_paused: true, compaction: false]
+    options = [start_paused: true, compaction: false]
     {:ok, root} = H.start(path, @name, options)
 
     jobs =
@@ -116,7 +115,6 @@ defmodule Tay.Engine.CapacityTest do
       end
 
     assert %{active_jobs: 20, terminal_jobs: 0} = Tay.status(name: @name)
-    refute Map.has_key?(Tay.status(name: @name), :max_jobs)
 
     for job <- jobs do
       assert {:ok, %{state: :cancelled}} = Tay.cancel(job.id, name: @name)

@@ -15,7 +15,7 @@ defmodule Tay.Execution.Supervisor do
           id: :controls
         ),
         Supervisor.child_spec(
-          {DynamicSupervisor, strategy: :one_for_one, max_restarts: 10, max_seconds: 5},
+          {DynamicSupervisor, strategy: :one_for_one, max_restarts: 0},
           id: :gateways
         )
       ],

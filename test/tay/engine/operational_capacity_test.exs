@@ -27,7 +27,7 @@ defmodule Tay.Engine.OperationalCapacityTest do
     assert {:ok, _} = Tay.insert(intent, name: @name)
     H.stop(root)
     evidence = R.snapshot(path)
-    root = start(path, max_history_bytes: 0, max_segments: 0)
+    root = start(path, max_history_bytes: 0)
     assert {:ok, %{id: id}} = Tay.insert(intent, name: @name)
     assert id == intent.id
 
@@ -36,7 +36,7 @@ defmodule Tay.Engine.OperationalCapacityTest do
 
     assert R.snapshot(path) == evidence
     H.stop(root)
-    root = start(path, max_history_bytes: 10_000, max_segments: 10)
+    root = start(path, max_history_bytes: 10_000)
     assert {:ok, _} = Tay.insert(EngineWorker.new(%{}), name: @name)
     H.stop(root)
   end
@@ -47,8 +47,6 @@ defmodule Tay.Engine.OperationalCapacityTest do
 
     for options <- [
           [max_history_bytes: 0],
-          [max_segments: 0],
-          [max_segments: 100],
           [start_paused: true]
         ] do
       assert {:ok, config} = Tay.Engine.Config.new(base ++ options)

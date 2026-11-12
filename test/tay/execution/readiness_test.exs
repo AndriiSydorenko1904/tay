@@ -100,7 +100,7 @@ defmodule Tay.Execution.ReadinessTest do
     end
   end
 
-  test "crash after one reconciliation batch commits only that subset and resumes without attempt loss",
+  test "crash during reconciliation commits only the durable subset and resumes without attempt loss",
        %{path: path} do
     assert {:ok, root} = H.start(path, @name, queues: [default: 5])
     on_exit(fn -> H.stop(root) end)
@@ -126,11 +126,10 @@ defmodule Tay.Execution.ReadinessTest do
     {creator, ref} =
       start_async(path,
         queues: [default: 5],
-        execution_batch: 1,
-        test_hook: barrier(self(), :reconciliation_batch)
+        test_hook: barrier(self(), {:execution, 4, :post_projection})
       )
 
-    assert_receive {:readiness_boundary, :reconciliation_batch, engine}, 5_000
+    assert_receive {:readiness_boundary, {:execution, 4, :post_projection}, engine}, 5_000
 
     assert %{state: :recovering, phase: :reconciling, pending_reconciliation: pending} =
              Tay.status(name: @name)
@@ -154,7 +153,7 @@ defmodule Tay.Execution.ReadinessTest do
     # Missing current worker mappings must not affect reconciliation of persisted
     # execution semantics or consume a logical failure attempt.
     assert {:ok, recovered} =
-             H.start(path, @name, workers: %{}, queues: [default: 5], execution_batch: 1)
+             H.start(path, @name, workers: %{}, queues: [default: 5])
 
     on_exit(fn -> H.stop(recovered) end)
     assert %{state: :ready, unsettled_executions: 0, blocked_jobs: 5} = Tay.status(name: @name)
@@ -186,7 +185,7 @@ defmodule Tay.Execution.ReadinessTest do
              &(&1.event.data["outcome"] == 3 and &1.event.data["next_attempt"] == 1)
            )
 
-    assert {:ok, restored} = H.start(path, @name, queues: [default: 5], execution_batch: 1)
+    assert {:ok, restored} = H.start(path, @name, queues: [default: 5])
     on_exit(fn -> H.stop(restored) end)
     H.tick(restored, Enum.max(due))
 

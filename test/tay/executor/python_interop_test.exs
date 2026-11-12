@@ -29,8 +29,7 @@ defmodule Tay.Executor.PythonInteropTest do
              ExecutionHelpers.start(path, @name,
                workers: %{},
                executor_socket: socket,
-               executor_max_connections: 2,
-               execution_wake_ms: 5
+               executor_max_connections: 2
              )
 
     on_exit(fn ->
@@ -77,8 +76,7 @@ defmodule Tay.Executor.PythonInteropTest do
             job = await client.enqueue(
                 "python.interop.v1",
                 {"left": 2, "right": 5},
-                submission_id="python-interop-submission",
-            )
+                submission_id="python-interop-submission")
             statuses = []
             for _ in range(100):
                 current = await job.status()
@@ -119,8 +117,7 @@ defmodule Tay.Executor.PythonInteropTest do
              ExecutionHelpers.start(path, @name,
                workers: %{},
                executor_socket: :auto,
-               executor_max_connections: 2,
-               execution_wake_ms: 5
+               executor_max_connections: 2
              )
 
     on_exit(fn ->
@@ -266,8 +263,7 @@ defmodule Tay.Executor.PythonInteropTest do
              ExecutionHelpers.start(path, @name,
                workers: %{},
                executor_socket: socket,
-               executor_max_connections: 2,
-               execution_wake_ms: 5
+               executor_max_connections: 2
              )
 
     on_exit(fn ->

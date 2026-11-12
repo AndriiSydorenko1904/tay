@@ -69,6 +69,14 @@ successful-result recording. Tay 1.8.0-rc3 adds `(11,2)` for delivery/skip advan
 with a persisted `active_job_id`, `(12,2)` for historical schedule checkpoints,
 and `(13,2)` for new registration/state/checkpoints with the complete
 `active_job_ids` set and `membership_complete` flag.
+Unreleased builds add `(14,2)` for atomic successful external completion. Its
+exact fields are `at`, `execution_token`, `expected_revision`, `job_id` (bytes),
+and `result`. It requires the matching executing job and token, advances the
+logical job revision once, and stores the result at that new revision in the
+same physical record. Compaction retains the completed snapshot and its existing
+`(10,2)` result checkpoint. Binaries through Tay 1.8.1 cannot read `(14,2)`;
+downgrade after writing it requires a pre-upgrade backup.
+
 The checkpoint records definition, original logical revision, registration time,
 next/last due times, cancellation time and occurrence membership. It preserves schedule
 CAS identity across compaction, independently of physical record coordinates.
@@ -101,3 +109,12 @@ semantic validity. A larger budget permits a new complete inspection; it never
 makes corrupt bytes valid. Job counts are not capped. Terminal history is
 removed only by successful time-based compaction; active jobs are never
 evicted. Individual log files must not be removed to reclaim capacity.
+
+Recovery and offline inspection replay the complete retained history under
+the configured time, state-memory, decoding and directory traversal budgets.
+Record payloads use the fixed 16 MiB format ceiling and the common Value codec
+checks. Recovery has no separately configurable payload or Value budgets.
+
+The physical record decoder exposes only `Tay.Storage.Record.decode/1`.
+Its payload ceiling is fixed at 16 MiB; neither the decoder nor the segment
+parser accepts a configurable decode payload limit.
