@@ -290,7 +290,8 @@ defmodule Tay.Storage.ColdCopy do
     end
   end
 
-  defp archive_objects(%{manifest: %{recovery_index: %{format: 2} = index}}) do
+  defp archive_objects(%{manifest: %{recovery_index: %{format: format} = index}})
+       when format in [2, 3] do
     {:ok, objects} = CheckpointIndex.objects(index)
     objects
   end

@@ -270,6 +270,7 @@ defmodule Tay.Executor.AuditRegressionsTest do
     end
 
     assert {:ok, _} = Task.await(compact, 60_000)
+    refute :sys.get_state(:sys.get_state(@name).writer).delegate_read_open
     assert Tay.result(job.id, name: @name) == {:ok, %{"atomic" => true}}
     stop(root)
     {_root, _, _} = start(path, socket)
@@ -457,6 +458,34 @@ defmodule Tay.Executor.AuditRegressionsTest do
     stop(root)
     {_root, _, _} = start(path, socket)
     assert {:error, :not_found} = Tay.get_job(job.id, name: @name)
+  end
+
+  test "persistent result bodies remain on disk across checkpoints and restart", %{
+    path: path,
+    socket: socket
+  } do
+    {root, engine, server} =
+      start(path, socket, compaction: false, executor_result_bytes: 262_144)
+
+    assert {:ok, _} = Tay.compact(name: @name, terminal_retention: :infinity)
+    worker = worker(server)
+    value = %{"payload" => String.duplicate("r", 100_000)}
+    {:ok, job} = Tay.enqueue("audit.task", %{}, name: @name)
+    complete(server, worker, value)
+    assert EngineHelpers.eventually(fn -> Tay.result(job.id, name: @name) == {:ok, value} end)
+    {:ok, raw} = Tay.JobID.decode(job.id)
+    assert %{cold_result: true} = :sys.get_state(engine).results[raw]
+    refute Map.has_key?(:sys.get_state(engine).results[raw], :value)
+
+    for _ <- 1..2 do
+      assert {:ok, _} = Tay.compact(name: @name, terminal_retention: :infinity)
+      assert {:ok, ^value} = Tay.result(job.id, name: @name)
+    end
+
+    stop(root)
+    {_root, engine, _server} = start(path, socket, compaction: false)
+    refute Map.has_key?(:sys.get_state(engine).results, raw)
+    assert {:ok, ^value} = Tay.result(job.id, name: @name)
   end
 
   test "a worker in another queue cannot starve an eligible task", %{path: path, socket: socket} do

@@ -203,7 +203,7 @@ defmodule Tay.Engine.IncrementalCheckpointTest do
       end
 
     assert {:ok, first} = Tay.compact(name: @name, terminal_retention: :infinity, timeout: 60_000)
-    assert first.recovered.manifest.recovery_index.format == 2
+    assert first.recovered.manifest.recovery_index.format == 3
     {:ok, intent} = EngineWorker.new(%{"new" => "tail"})
     {:ok, added} = Tay.insert(intent, name: @name)
     {:ok, _} = Tay.cancel(added.id, name: @name, expected_revision: added.revision)

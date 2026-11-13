@@ -23,12 +23,12 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     EngineHelpers.stop(root)
     {:ok, restarted} = EngineHelpers.restart(path, @name, compaction: false)
     engine = :sys.get_state(@name).engine
-    # The private disk projection contains authenticated metadata, no arg body.
+    # Published history remains in the authenticated index; restart does not
+    # rebuild a disposable DETS copy of every terminal identifier.
     store = :sys.get_state(engine).terminal_store
     {:ok, raw} = Tay.JobID.decode(intent.id)
-    [{_, cold}] = :dets.lookup(store.table, raw)
-    assert cold.cold
-    assert cold.definition["args"] == %{}
+    assert :dets.lookup(store.table, raw) == []
+    assert store.backend
     assert {:ok, restored} = Tay.get_job(job.id, name: @name)
     assert restored.definition["args"] == args
     assert {:ok, duplicate} = Tay.insert(intent, name: @name)
@@ -195,7 +195,7 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     assert {:ok, restored} = Tay.get_job(intent.id, name: @name)
     assert restored.args == intent.args
     assert {:ok, migrated} = Tay.compact(name: @name, terminal_retention: :infinity)
-    assert migrated.recovered.manifest.recovery_index.format == 2
+    assert migrated.recovered.manifest.recovery_index.format == 3
     EngineHelpers.stop(root)
   end
 

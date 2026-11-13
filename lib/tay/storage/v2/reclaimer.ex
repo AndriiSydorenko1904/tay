@@ -9,9 +9,10 @@ defmodule Tay.Storage.V2.Reclaimer do
   alias Tay.Storage.Native
 
   def predecessor(native, %{
-        manifest: %{recovery_index: %{format: 2} = descriptor} = manifest,
+        manifest: %{recovery_index: %{format: format} = descriptor} = manifest,
         current: current
-      }) do
+      })
+      when format in [2, 3] do
     with {:ok, keep} <- keep_objects(descriptor) do
       if manifest.source_epoch_id do
         case prune(native, manifest.source_epoch_id, current, keep) do
@@ -39,10 +40,11 @@ defmodule Tay.Storage.V2.Reclaimer do
   end
 
   def start_background(state, %{
-        manifest: %{recovery_index: %{format: 2} = descriptor},
+        manifest: %{recovery_index: %{format: format} = descriptor},
         current: current,
         epoch_id: epoch
-      }) do
+      })
+      when format in [2, 3] do
     stop_background(state)
     owner = self()
     reference = make_ref()

@@ -118,6 +118,65 @@ defmodule Tay.Storage.DiskIndexTest do
     assert :ok = :file.close(file)
   end
 
+  test "bounded metadata repacking eventually releases the source index file", %{index_file: file} do
+    source = <<41::128>>
+    Process.put(:repack_pages, %{})
+
+    writer = fn epoch ->
+      fn at, bytes ->
+        Process.put(:repack_pages, Map.put(Process.get(:repack_pages), {epoch, at}, bytes))
+        :ok
+      end
+    end
+
+    reader = fn epoch, at, size ->
+      bytes = Map.fetch!(Process.get(:repack_pages), {epoch, at})
+      assert byte_size(bytes) == size
+      {:ok, bytes}
+    end
+
+    {:ok, root, _} = DiskIndex.build(Enum.map(1..200, &{key(&1), &1}), writer.(source), 64)
+    root = DiskIndex.bind_epoch(root, source)
+    original = root
+    object = DiskIndex.object(source, 0, 0)
+
+    root =
+      Enum.reduce_while(42..80, root, fn n, root ->
+        if object in DiskIndex.objects(root) do
+          epoch = <<n::128>>
+
+          assert {:ok, next, _, _} =
+                   DiskIndex.repack(reader, writer.(epoch), root, source, 64, epoch, 4_000)
+
+          assert {:ok, 200} = DiskIndex.fetch(reader, next, key(200))
+          {:cont, next}
+        else
+          {:halt, root}
+        end
+      end)
+
+    refute object in DiskIndex.objects(root)
+    assert {:ok, entries} = DiskIndex.page(reader, root, nil, 200)
+    assert length(entries) == 200
+    assert {:ok, 1} = DiskIndex.fetch(reader, original, key(1))
+
+    assert {:error, :enospc} =
+             DiskIndex.repack(
+               reader,
+               fn _, _ -> {:error, :enospc} end,
+               original,
+               source,
+               64,
+               <<99::128>>,
+               4_000
+             )
+
+    assert {:ok, ^original, 64, 0} =
+             DiskIndex.repack(reader, writer.(source), original, source, 64, source, 0)
+
+    :ok = :file.close(file)
+  end
+
   test "copy-on-write updates read and rewrite only changed paths across epochs", %{
     index_file: file
   } do

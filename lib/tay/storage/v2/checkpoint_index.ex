@@ -3,15 +3,21 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   alias Tay.Storage.{DiskIndex, Native, Record, Segment}
   alias Tay.Storage.V2.{Codec, RecoveryIndex, Reducer}
 
-  @roles [:root, :work, :schedules, :results, :expiry]
-  @header <<"TAYI", 2, 0::size(59 * 8)>>
+  @v2_roles [:root, :work, :schedules, :results, :expiry]
+  @roles @v2_roles ++ [:history, :stats]
+  @header_v2 <<"TAYI", 2, 0::size(59 * 8)>>
+  @header_v3 <<"TAYI", 3, 0::size(59 * 8)>>
   def roles, do: @roles
 
-  def valid?(%{format: 2, bytes: bytes} = descriptor) do
-    keys = [:format, :bytes | @roles] |> Enum.sort()
+  def roles(2), do: @v2_roles
+  def roles(3), do: @roles
+
+  def valid?(%{format: format, bytes: bytes} = descriptor) when format in [2, 3] do
+    roles = roles(format)
+    keys = [:format, :bytes | roles] |> Enum.sort()
 
     Enum.sort(Map.keys(descriptor)) == keys and is_integer(bytes) and bytes >= 64 and
-      Enum.all?(@roles, fn role ->
+      Enum.all?(roles, fn role ->
         case DiskIndex.decode_root(descriptor[role]) do
           {:ok, nil} -> true
           {:ok, %{epoch: epoch, objects: _}} when byte_size(epoch) == 16 -> true
@@ -24,7 +30,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
 
   def begin(native, epoch, previous \\ nil) do
     with {:ok, _} <- Native.create_stage(native, :candidate, "RECOVERY"),
-         {:ok, _} <- Native.write(native, 0, @header),
+         {:ok, _} <- Native.write(native, 0, @header_v3),
          {:ok, roots} <- roots(previous) do
       {:ok, %{native: native, epoch: epoch, roots: roots, offset: 64}}
     end
@@ -64,6 +70,18 @@ defmodule Tay.Storage.V2.CheckpointIndex do
          {:ok, state} <- build_role(state, :schedules, Enum.sort(schedules)),
          {:ok, state} <- build_role(state, :results, Enum.sort(results)),
          {:ok, state} <- build_role(state, :expiry, Enum.sort(expiry)),
+         {:ok, state} <-
+           build_role(
+             state,
+             :history,
+             entries
+             |> Enum.flat_map(fn {id, pointer} ->
+               job = jobs[id]
+               if terminal?(job), do: [{history_key(job), pointer}], else: []
+             end)
+             |> Enum.sort()
+           ),
+         {:ok, state} <- build_role(state, :stats, [{"summary", archive_summary(jobs)}]),
          do: finish(state)
   end
 
@@ -110,7 +128,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
           {role, bytes}
         end)
 
-      {:ok, Map.merge(encoded, %{format: 2, bytes: state.offset})}
+      {:ok, Map.merge(encoded, %{format: 3, bytes: state.offset})}
     end
   end
 
@@ -119,7 +137,13 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   def roots(descriptor) do
     if valid?(descriptor) do
       {:ok,
-       Map.new(@roles, fn role -> {role, elem(DiskIndex.decode_root(descriptor[role]), 1)} end)}
+       Map.new(@roles, fn role ->
+         {role,
+          if(Map.has_key?(descriptor, role),
+            do: elem(DiskIndex.decode_root(descriptor[role]), 1),
+            else: nil
+          )}
+       end)}
     else
       {:error, :checkpoint_roots}
     end
@@ -135,6 +159,52 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   def count(descriptor, role \\ :root) do
     {:ok, root} = DiskIndex.decode_root(descriptor[role])
     if root, do: root.count, else: 0
+  end
+
+  def repack(state, max_epochs \\ 32) when is_integer(max_epochs) and max_epochs >= 0 do
+    epochs =
+      state.roots
+      |> Map.values()
+      |> Enum.flat_map(&DiskIndex.objects/1)
+      |> Enum.flat_map(fn
+        <<epoch::binary-size(16), 0, 0::128>> -> [epoch]
+        _ -> []
+      end)
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == state.epoch))
+      |> Enum.sort()
+
+    if length(epochs) > max_epochs do
+      source = hd(epochs)
+
+      write = fn offset, bytes ->
+        with {:ok, _} <- Native.write(state.native, offset, bytes), do: :ok
+      end
+
+      Enum.reduce_while(@roles, {:ok, state, 64 * 1_048_576}, fn role, {:ok, acc, budget} ->
+        case DiskIndex.repack(
+               reader(acc.native, acc.epoch, :candidate),
+               write,
+               acc.roots[role],
+               source,
+               acc.offset,
+               acc.epoch,
+               budget
+             ) do
+          {:ok, root, offset, left} ->
+            {:cont, {:ok, %{acc | offset: offset, roots: Map.put(acc.roots, role, root)}, left}}
+
+          error ->
+            {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, next, _} -> {:ok, next}
+        error -> error
+      end
+    else
+      {:ok, state}
+    end
   end
 
   def change(state, role, changes) when role in @roles do
@@ -178,25 +248,29 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   def apply_changes(state, puts, expired) do
     read = reader(state.native, state.epoch, :candidate)
 
-    with {:ok, old_expiry} <-
-           Enum.reduce_while(puts, {:ok, []}, fn {id, _pointer, _job}, {:ok, changes} ->
+    prior_ids =
+      Enum.map(puts, &elem(&1, 0)) ++ Enum.map(expired, &elem(&1, 0))
+
+    with {:ok, previous} <-
+           Enum.reduce_while(prior_ids, {:ok, %{}}, fn id, {:ok, jobs} ->
              case DiskIndex.fetch(read, state.roots.root, id) do
                {:ok, %{"summary" => _} = pointer} ->
                  case summary(pointer) do
-                   {:ok, job} -> {:cont, {:ok, [{expiry_key(job), :delete} | changes]}}
+                   {:ok, job} -> {:cont, {:ok, Map.put(jobs, id, job)}}
                    error -> {:halt, error}
                  end
 
                {:ok, _} ->
-                 {:cont, {:ok, changes}}
+                 {:cont, {:ok, jobs}}
 
                :not_found ->
-                 {:cont, {:ok, changes}}
+                 {:cont, {:ok, jobs}}
 
                error ->
                  {:halt, error}
              end
            end),
+         old_expiry = Enum.map(previous, fn {_, job} -> {expiry_key(job), :delete} end),
          deletes = Enum.map(expired, fn {id, _job} -> {id, :delete} end),
          root_changes =
            deletes ++ Enum.map(puts, fn {id, pointer, _} -> {id, {:put, pointer}} end),
@@ -213,10 +287,162 @@ defmodule Tay.Storage.V2.CheckpointIndex do
                terminal?(job),
                do: {expiry_key(job), {:put, pointer}}
              ),
+         history_changes =
+           Enum.map(previous, fn {_, job} -> {history_key(job), :delete} end) ++
+             Enum.map(expired, fn {_, job} -> {history_key(job), :delete} end) ++
+             for(
+               {_id, pointer, job} <- puts,
+               terminal?(job),
+               do: {history_key(job), {:put, pointer}}
+             ),
          {:ok, state} <- change(state, :root, root_changes),
          {:ok, state} <- change(state, :work, work_changes),
          {:ok, state} <- change(state, :expiry, expiry_changes),
+         {:ok, state} <- change(state, :history, history_changes),
+         {:ok, state} <- update_archive_summary(state, previous, puts),
          do: change(state, :results, deletes)
+  end
+
+  def archive_summary(native, descriptor, epoch, scope \\ :epoch) do
+    with {:ok, roots} <- roots(descriptor),
+         {:ok, value} <- DiskIndex.fetch(reader(native, epoch, scope), roots.stats, "summary"),
+         do: decode_archive_summary(value)
+  end
+
+  def history_page(native, descriptor, epoch, after_key, limit, scope \\ :epoch) do
+    with {:ok, roots} <- roots(descriptor),
+         {:ok, page} <-
+           DiskIndex.page(reader(native, epoch, scope), roots.history, after_key, limit) do
+      Enum.reduce_while(page, {:ok, []}, fn {key, pointer}, {:ok, acc} ->
+        case summary(pointer) do
+          {:ok, job} -> {:cont, {:ok, [{key, job} | acc]}}
+          error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, jobs} -> {:ok, Enum.reverse(jobs)}
+        error -> error
+      end
+    end
+  end
+
+  def history_candidates(native, descriptor, epoch, query, scope \\ :epoch) do
+    with {:ok, summary} <- archive_summary(native, descriptor, epoch, scope) do
+      cond do
+        not is_nil(query.id) ->
+          case fetch(native, descriptor, epoch, query.id, scope) do
+            {:ok, job} ->
+              jobs = if history_match?(job, query), do: [job], else: []
+              {:ok, %{jobs: jobs, total_count: length(jobs)}}
+
+            :not_found ->
+              {:ok, %{jobs: [], total_count: 0}}
+
+            error ->
+              error
+          end
+
+        is_nil(query.worker_contains) and
+            (is_nil(query.position) or match?({:after, _, _}, query.position)) ->
+          cursor =
+            case query.position do
+              nil -> nil
+              {:after, {at, id}, _} -> history_key(%{inserted_at: at, id: id})
+            end
+
+          with {:ok, jobs} <-
+                 history_forward(native, descriptor, epoch, cursor, query, query.limit, [], scope) do
+            {:ok, %{jobs: jobs, total_count: history_count(summary, query)}}
+          end
+
+        true ->
+          with {:ok, entries} <- history_entries(native, descriptor, epoch, nil, [], scope) do
+            matching =
+              entries |> Enum.map(&elem(&1, 1)) |> Enum.filter(&history_match?(&1, query))
+
+            selected =
+              case query.position do
+                nil ->
+                  matching
+
+                :last ->
+                  Enum.reverse(matching)
+
+                {:after, {at, id}, _} ->
+                  matching
+                  |> Enum.drop_while(&({&1.inserted_at, &1.id} != {at, id}))
+                  |> Enum.drop(1)
+
+                {:before, {at, id}, _} ->
+                  matching
+                  |> Enum.take_while(&({&1.inserted_at, &1.id} != {at, id}))
+                  |> Enum.reverse()
+              end
+              |> Enum.take(query.limit)
+
+            {:ok, %{jobs: selected, total_count: length(matching)}}
+          end
+      end
+    end
+  end
+
+  defp history_forward(native, descriptor, epoch, cursor, query, limit, acc, scope) do
+    with {:ok, page} <- history_page(native, descriptor, epoch, cursor, 128, scope) do
+      next =
+        page
+        |> Enum.map(&elem(&1, 1))
+        |> Enum.filter(&history_match?(&1, query))
+        |> then(&(acc ++ &1))
+
+      cond do
+        length(next) >= limit ->
+          {:ok, Enum.take(next, limit)}
+
+        length(page) < 128 ->
+          {:ok, next}
+
+        true ->
+          history_forward(
+            native,
+            descriptor,
+            epoch,
+            elem(List.last(page), 0),
+            query,
+            limit,
+            next,
+            scope
+          )
+      end
+    end
+  end
+
+  defp history_count(summary, query) do
+    Enum.reduce(summary.facets, 0, fn {{queue, state, worker}, count}, total ->
+      if (is_nil(query.states) or state in query.states) and
+           (is_nil(query.queues) or queue in query.queues) and
+           (is_nil(query.workers) or worker in query.workers),
+         do: total + count,
+         else: total
+    end)
+  end
+
+  defp history_entries(native, descriptor, epoch, cursor, acc, scope) do
+    with {:ok, page} <- history_page(native, descriptor, epoch, cursor, 256, scope) do
+      next = acc ++ page
+
+      if length(page) == 256,
+        do: history_entries(native, descriptor, epoch, elem(List.last(page), 0), next, scope),
+        else: {:ok, next}
+    end
+  end
+
+  defp history_match?(job, query) do
+    (is_nil(query.id) or job.id == query.id) and
+      (is_nil(query.states) or job.state in query.states) and
+      (is_nil(query.queues) or job.definition["queue_key"] in query.queues) and
+      (is_nil(query.workers) or job.definition["worker_key"] in query.workers) and
+      (is_nil(query.worker_contains) or
+         String.contains?(job.definition["worker_key"], query.worker_contains))
   end
 
   def expired(native, descriptor, epoch, retention, now, jobs) do
@@ -386,6 +612,171 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   defp remove_expiry(state, {:ok, _}), do: {:ok, state}
   defp remove_expiry(_state, error), do: error
   defp expiry_key(job), do: <<job.terminal_at::64, job.id::binary-size(16)>>
+
+  defp history_key(job) do
+    inverse_id = :crypto.exor(job.id, :binary.copy(<<255>>, 16))
+    <<9_223_372_036_854_775_807 - job.inserted_at::64, inverse_id::binary-size(16)>>
+  end
+
+  defp update_archive_summary(state, previous, puts) do
+    current =
+      case DiskIndex.fetch(
+             reader(state.native, state.epoch, :candidate),
+             state.roots.stats,
+             "summary"
+           ) do
+        {:ok, value} -> elem(decode_archive_summary(value), 1)
+        :not_found -> empty_archive_summary()
+      end
+
+    next =
+      previous
+      |> Map.values()
+      |> Enum.reduce(current, &archive_adjust(&2, &1, -1))
+      |> then(fn summary ->
+        Enum.reduce(puts, summary, fn {_id, _pointer, job}, acc ->
+          archive_adjust(acc, job, 1)
+        end)
+      end)
+
+    change(state, :stats, [{"summary", {:put, encode_archive_summary(next)}}])
+  end
+
+  defp archive_summary(jobs) do
+    jobs
+    |> Enum.reduce(empty_archive_summary(), fn {_, job}, acc ->
+      if terminal?(job), do: archive_adjust(acc, job, 1), else: acc
+    end)
+    |> encode_archive_summary()
+  end
+
+  defp empty_archive_summary,
+    do: %{
+      count: 0,
+      bytes: 0,
+      definition_bytes: 0,
+      bound_bytes: 0,
+      states: %{},
+      facets: %{},
+      buckets: %{}
+    }
+
+  defp archive_adjust(summary, job, sign) do
+    if terminal?(job) do
+      queue = job.definition["queue_key"]
+      worker = job.definition["worker_key"]
+      definition = Map.get(job, :definition_size, byte_size(job.definition_bytes))
+      bucket = div(job.terminal_at, 3_600_000)
+
+      summary
+      |> Map.update!(:count, &(&1 + sign))
+      |> Map.update!(:bytes, &(&1 + sign * archive_charge(job)))
+      |> Map.update!(:definition_bytes, &(&1 + sign * definition))
+      |> Map.update!(:bound_bytes, &(&1 + sign * (definition + 512)))
+      |> update_counter(:states, job.state, sign)
+      |> update_counter(:facets, {queue, job.state, worker}, sign)
+      |> update_bucket(bucket, sign, definition + 512)
+    else
+      summary
+    end
+  end
+
+  defp update_counter(summary, field, key, amount) do
+    values = Map.update(Map.fetch!(summary, field), key, amount, &(&1 + amount))
+    values = if values[key] == 0, do: Map.delete(values, key), else: values
+    Map.put(summary, field, values)
+  end
+
+  defp update_bucket(summary, key, sign, bytes) do
+    old = Map.get(summary.buckets, key, %{count: 0, bytes: 0})
+    next = %{count: old.count + sign, bytes: old.bytes + sign * bytes}
+
+    buckets =
+      if next.count == 0,
+        do: Map.delete(summary.buckets, key),
+        else: Map.put(summary.buckets, key, next)
+
+    %{summary | buckets: buckets}
+  end
+
+  defp archive_charge(%{charge: %{bytes: bytes}}), do: bytes
+
+  defp archive_charge(job) do
+    {:ok, candidate} = Reducer.insert_snapshot(Reducer.candidate(), job)
+    candidate.jobs[job.id].charge.bytes
+  end
+
+  defp encode_archive_summary(summary) do
+    %{
+      "version" => 1,
+      "count" => summary.count,
+      "bytes" => summary.bytes,
+      "definition_bytes" => summary.definition_bytes,
+      "bound_bytes" => summary.bound_bytes,
+      "states" => Map.new(summary.states, fn {key, value} -> {Atom.to_string(key), value} end),
+      "facets" =>
+        summary.facets
+        |> Enum.sort_by(fn {{queue, state, worker}, _} -> {queue, state, worker} end)
+        |> Enum.map(fn {{queue, state, worker}, count} ->
+          %{
+            "queue" => queue,
+            "state" => Atom.to_string(state),
+            "worker" => worker,
+            "count" => count
+          }
+        end),
+      "buckets" =>
+        summary.buckets
+        |> Enum.sort()
+        |> Enum.map(fn {hour, bucket} -> [hour, bucket.count, bucket.bytes] end)
+    }
+  end
+
+  defp decode_archive_summary(%{
+         "version" => 1,
+         "count" => count,
+         "bytes" => bytes,
+         "definition_bytes" => definition_bytes,
+         "bound_bytes" => bound_bytes,
+         "states" => states,
+         "facets" => facets,
+         "buckets" => buckets
+       }) do
+    known = %{"completed" => :completed, "cancelled" => :cancelled, "discarded" => :discarded}
+
+    with true <- is_integer(count) and count >= 0 and is_integer(bytes) and bytes >= 0,
+         true <- is_integer(definition_bytes) and definition_bytes >= 0,
+         true <- is_integer(bound_bytes) and bound_bytes >= 0,
+         true <- is_map(states) and is_list(facets) and is_list(buckets) do
+      {:ok,
+       %{
+         count: count,
+         bytes: bytes,
+         definition_bytes: definition_bytes,
+         bound_bytes: bound_bytes,
+         states: Map.new(states, fn {key, value} -> {Map.fetch!(known, key), value} end),
+         facets:
+           Map.new(facets, fn %{
+                                "queue" => queue,
+                                "state" => state,
+                                "worker" => worker,
+                                "count" => n
+                              } ->
+             {{queue, Map.fetch!(known, state), worker}, n}
+           end),
+         buckets:
+           Map.new(buckets, fn [hour, bucket_count, value] ->
+             {hour, %{count: bucket_count, bytes: value}}
+           end)
+       }}
+    else
+      _ -> {:error, :checkpoint_archive_summary}
+    end
+  rescue
+    _ -> {:error, :checkpoint_archive_summary}
+  end
+
+  defp decode_archive_summary(_), do: {:error, :checkpoint_archive_summary}
   defp terminal?(job), do: job.state in [:completed, :cancelled, :discarded]
 
   def pointer(epoch, segment, offset, record, job \\ nil) do
@@ -429,8 +820,12 @@ defmodule Tay.Storage.V2.CheckpointIndex do
          true <-
            pointer["summary"] ==
              RecoveryIndex.location(pointer["segment"], pointer["offset"], record, job)["summary"] ||
-             {:error, :checkpoint_summary_mismatch},
-         do: {:ok, job}
+             {:error, :checkpoint_summary_mismatch} do
+      case summary(pointer) do
+        {:ok, archived} -> {:ok, Map.put(job, :charge, archived.charge)}
+        _ -> {:ok, job}
+      end
+    end
   end
 
   def read_record(native, epoch, scope, %{
@@ -498,7 +893,10 @@ defmodule Tay.Storage.V2.CheckpointIndex do
          :ok <-
            with_file(native, epoch, epoch, scope, "RECOVERY", fn identity ->
              with true <- identity.size == descriptor.bytes || {:error, :checkpoint_index_size},
-                  {:ok, @header} <- Native.read(native, 0, 64),
+                  {:ok, header} <- Native.read(native, 0, 64),
+                  true <-
+                    header == if(descriptor.format == 2, do: @header_v2, else: @header_v3) ||
+                      {:error, :checkpoint_index_header},
                   do: :ok
            end),
          {:ok, roots} <- roots(descriptor) do
@@ -531,7 +929,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
              native,
              descriptor,
              epoch,
-             if(mode == :work, do: :work, else: :root),
+             if(mode in [:work, :runtime], do: :work, else: :root),
              Reducer.candidate(limits, value_limits),
              fn id, pointer, candidate ->
                value =
@@ -552,9 +950,9 @@ defmodule Tay.Storage.V2.CheckpointIndex do
          {:ok, candidate} <-
            load_auxiliary(native, descriptor, epoch, :schedules, candidate, scope),
          {:ok, candidate} <-
-           if(mode == :work,
+           if(mode in [:work, :runtime],
              do: {:ok, candidate},
-             else: load_auxiliary(native, descriptor, epoch, :results, candidate, scope)
+             else: load_results(native, descriptor, epoch, candidate, scope, mode)
            ) do
       {:ok, candidate}
     end
@@ -658,7 +1056,8 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   def scrub_objects(native, descriptor, epoch, store_id, scope \\ :epoch) do
     with :ok <- verify_roots(native, descriptor, epoch, scope),
          {:ok, files} <-
-           Enum.reduce_while(@roles -- [:work, :expiry], {:ok, %{}}, fn role, {:ok, acc} ->
+           Enum.reduce_while(@roles -- [:work, :expiry, :stats], {:ok, %{}}, fn role,
+                                                                                {:ok, acc} ->
              result =
                reduce(
                  native,
@@ -720,6 +1119,9 @@ defmodule Tay.Storage.V2.CheckpointIndex do
       end)
     end
   end
+
+  defp load_results(native, descriptor, epoch, candidate, scope, _),
+    do: load_auxiliary(native, descriptor, epoch, :results, candidate, scope)
 
   defp load_auxiliary(native, descriptor, epoch, role, candidate, scope) do
     reduce(

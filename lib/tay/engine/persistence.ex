@@ -99,6 +99,16 @@ defmodule Tay.Engine.Persistence do
             {:ok, job, budget} =
               ProjectionState.account_active(state, previous, candidate.jobs[previous.id])
 
+            marker = Tay.Storage.V2.ResultReference.cold(candidate.results[previous.id])
+            old_result_bytes = Tay.State.Memory.result_bytes(candidate.results[previous.id])
+            marker_bytes = Tay.State.Memory.result_bytes(marker)
+
+            candidate = %{
+              candidate
+              | results: Map.put(candidate.results, previous.id, marker),
+                auxiliary_bytes: candidate.auxiliary_bytes - old_result_bytes + marker_bytes
+            }
+
             actual =
               budget.bytes - state.budget.bytes + candidate.auxiliary_bytes -
                 state.auxiliary_bytes

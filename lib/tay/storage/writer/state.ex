@@ -11,6 +11,8 @@ defmodule Tay.Storage.Writer.State do
       store_id: nil,
       epoch_id: nil,
       v2_current: nil,
+      result_checkpoint: nil,
+      result_locations: %{},
       candidate_limits: %{},
       value_limits: Tay.Event.Value.defaults(),
       compacted: false,

@@ -43,6 +43,12 @@ result as one atomic record. They continue reading older completion/result
 records. Released binaries through Tay 1.8.1 refuse the new pair; restore a
 pre-upgrade backup to downgrade. No existing schema-1 fields are changed.
 
+Tay 2.0 reads legacy recovery descriptors plus checkpoint formats 2 and 3.
+The next checkpoint migrates older descriptors to format 3, whose authenticated
+history and aggregate roots allow startup without scanning retained terminal
+IDs. Older Tay binaries do not understand format 3; downgrade requires the
+pre-upgrade cold backup.
+
 Unreleased builds reject the removed Engine options `max_jobs`,
 `max_state_nodes`, `executor_max_results`, `group_commit_interval_ms`, and
 `compaction.max_terminal_jobs`, along with inspection's `--max-state-nodes`.
@@ -52,7 +58,8 @@ setting are removed too. Standalone rejects that obsolete environment setting.
 
 ## Supported runtime and storage
 
-- Build with Elixir 1.20, Erlang/OTP 29, and a C11 compiler. The consuming
+- The pinned build toolchain is Elixir 1.20.5 / Erlang/OTP 29.1.2 with a C11
+  compiler, matching `.tool-versions`, CI and Docker. The consuming
   release must be built for its target OS/architecture and compatible ABI;
   releases are not cross-platform bundles.
 - Strict `:sync` durability is Linux-only on an explicitly validated supported

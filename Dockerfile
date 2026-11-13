@@ -1,8 +1,8 @@
 # Keep builder and runtime on the same Debian release. Override these pinned
 # args together when updating the toolchain.
-ARG ELIXIR_VERSION=1.20.2
-ARG OTP_VERSION=29.0.3
-ARG DEBIAN_VERSION=trixie-20260623-slim
+ARG ELIXIR_VERSION=1.20.5
+ARG OTP_VERSION=29.1.2
+ARG DEBIAN_VERSION=trixie-20261104-slim
 ARG BUILDER_IMAGE=hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}
 ARG RUNNER_IMAGE=debian:${DEBIAN_VERSION}
 

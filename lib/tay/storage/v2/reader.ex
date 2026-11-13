@@ -153,17 +153,18 @@ defmodule Tay.Storage.V2.Reader do
          native,
          candidate,
          canonical,
-         %{recovery_index: %{format: 2}} = manifest,
+         %{recovery_index: %{format: format}} = manifest,
          _exclude,
          options
-       ) do
+       )
+       when format in [2, 3] do
     checkpoint_replay(
       native,
       :segments,
       candidate,
       canonical,
       manifest,
-      if(Keyword.get(options, :reuse, false), do: :work, else: :scrub),
+      if(Keyword.get(options, :reuse, false) and format == 3, do: :work, else: :scrub),
       true
     )
   end
@@ -263,9 +264,10 @@ defmodule Tay.Storage.V2.Reader do
          native,
          candidate,
          canonical,
-         %{recovery_index: %{format: 2}} = manifest,
+         %{recovery_index: %{format: format}} = manifest,
          mode
-       ),
+       )
+       when format in [2, 3],
        do: checkpoint_replay(native, :candidate_segments, candidate, canonical, manifest, mode)
 
   defp candidate_replay(native, candidate, canonical, manifest, _mode),
@@ -313,6 +315,11 @@ defmodule Tay.Storage.V2.Reader do
            ) do
       {bytes, segments} =
         CheckpointIndex.archive_size(manifest.recovery_index, manifest.epoch_id, summaries)
+
+      state =
+        if mode == :runtime,
+          do: %{state | candidate: Tay.Storage.V2.ResultReference.cool(state.candidate)},
+          else: state
 
       {:ok,
        %{
@@ -362,16 +369,17 @@ defmodule Tay.Storage.V2.Reader do
          native,
          candidate,
          canonical,
-         %{recovery_index: %{format: 2}} = manifest,
+         %{recovery_index: %{format: format}} = manifest,
          options
-       ) do
+       )
+       when format in [2, 3] do
     checkpoint_replay(
       native,
       :segments,
       candidate,
       canonical,
       manifest,
-      if(Keyword.get(options, :indexed, false), do: :all, else: :scrub)
+      if(Keyword.get(options, :indexed, false), do: :runtime, else: :scrub)
     )
   end
 
@@ -486,10 +494,21 @@ defmodule Tay.Storage.V2.Reader do
             native,
             entry.size,
             acc,
-            fn record, _offset, current ->
-              with {:ok, current} <-
-                     hydrate(native, manifest, record, current, entry, scope),
-                   do: consume(record, false, current)
+            fn record, offset, current ->
+              with {:ok, current} <- hydrate(native, manifest, record, current, entry, scope),
+                   {:cont, next} <- consume(record, false, current) do
+                locations =
+                  Tay.Storage.V2.ResultReference.track(
+                    Map.get(next.candidate, :result_locations, %{}),
+                    manifest.epoch_id,
+                    id,
+                    offset,
+                    record
+                  )
+
+                {:cont,
+                 %{next | candidate: Map.put(next.candidate, :result_locations, locations)}}
+              end
             end,
             id: id,
             store_id: manifest.store_id,
@@ -510,12 +529,13 @@ defmodule Tay.Storage.V2.Reader do
 
   defp hydrate(
          native,
-         %{recovery_index: %{format: 2} = descriptor} = manifest,
+         %{recovery_index: %{format: format} = descriptor} = manifest,
          record,
          state,
          entry,
          scope
-       ) do
+       )
+       when format in [2, 3] do
     with {:ok, affected} <- CheckpointIndex.affected(record, state.candidate.value_limits),
          :ok <- Native.close_read(native),
          {:ok, candidate} <-
@@ -826,10 +846,15 @@ defmodule Tay.Storage.V2.Reader do
   defp verify_index(
          native,
          scope,
-         %{recovery_index: %{format: 2} = descriptor, epoch_id: epoch, store_id: store_id},
+         %{
+           recovery_index: %{format: format} = descriptor,
+           epoch_id: epoch,
+           store_id: store_id
+         },
          _expected,
          _auxiliary
-       ) do
+       )
+       when format in [2, 3] do
     CheckpointIndex.scrub_objects(
       native,
       descriptor,

@@ -1,10 +1,10 @@
 defmodule Tay.State.TerminalStore do
-  @moduledoc "Disk-backed disposable projection for terminal job history."
+  @moduledoc "Authenticated checkpoint history with a disposable live-tail overlay."
 
   @terminal [:completed, :cancelled, :discarded]
   @slots 0..3
 
-  defstruct [:table, :file, :registry, :slot, :order, :counts, :loader]
+  defstruct [:table, :file, :registry, :slot, :order, :counts, :loader, :backend, :tombstones]
 
   def open(name, data_dir, jobs, options \\ [])
       when is_atom(name) and is_binary(data_dir) and is_map(jobs) do
@@ -30,7 +30,9 @@ defmodule Tay.State.TerminalStore do
                 slot: slot,
                 order: order,
                 counts: counts,
-                loader: Keyword.get(options, :loader)
+                loader: Keyword.get(options, :loader),
+                backend: Keyword.get(options, :backend),
+                tombstones: :ets.new(__MODULE__, [:set, :private])
               }}}
           else
             error ->
@@ -55,12 +57,14 @@ defmodule Tay.State.TerminalStore do
         registry: registry,
         slot: slot,
         order: order,
-        counts: counts
+        counts: counts,
+        tombstones: tombstones
       }) do
     result = :dets.close(table)
     _ = File.rm(file)
     :ets.delete(order)
     :ets.delete(counts)
+    :ets.delete(tombstones)
     release(registry, slot)
     result
   end
@@ -68,14 +72,15 @@ defmodule Tay.State.TerminalStore do
   def get(%__MODULE__{table: table} = store, id) do
     case :dets.lookup(table, id) do
       [{^id, job}] -> resolve(store, job)
-      [] -> nil
+      [] -> backend_get(store, id)
     end
   end
 
   def put(%__MODULE__{} = store, job) do
-    previous = get(store, job.id)
+    previous = local_get(store, job.id)
 
     with :ok <- :dets.insert(store.table, {job.id, job}) do
+      true = :ets.insert(store.tombstones, {job.id})
       if previous, do: remove_index(store, previous)
       add_index(store, job)
       :ok
@@ -83,17 +88,26 @@ defmodule Tay.State.TerminalStore do
   end
 
   def delete(%__MODULE__{} = store, id) do
-    previous = get(store, id)
+    previous = local_get(store, id)
 
     with :ok <- :dets.delete(store.table, id) do
+      true = :ets.insert(store.tombstones, {id})
       if previous, do: remove_index(store, previous)
       :ok
     end
   end
 
-  def count(%__MODULE__{table: table}), do: :dets.info(table, :size)
+  def count(%__MODULE__{table: table, backend: nil}), do: :dets.info(table, :size)
+
+  def count(%__MODULE__{} = store) do
+    store.backend.summary.().count + :dets.info(store.table, :size) - overridden_base_count(store)
+  end
 
   def candidates(%__MODULE__{} = store, query) do
+    if store.backend, do: backend_candidates(store, query), else: local_candidates(store, query)
+  end
+
+  defp local_candidates(store, query) do
     total = matching_count(store, query)
     {first, step} = candidate_start(store.order, query)
     jobs = scan(store, first, step, query, query.limit, [])
@@ -111,6 +125,84 @@ defmodule Tay.State.TerminalStore do
   end
 
   defp resolve(_store, job), do: job
+
+  defp local_get(store, id) do
+    case :dets.lookup(store.table, id) do
+      [{^id, job}] -> resolve(store, job)
+      [] -> nil
+    end
+  end
+
+  defp backend_get(%{backend: nil}, _id), do: nil
+
+  defp backend_get(store, id) do
+    if :ets.member(store.tombstones, id) do
+      nil
+    else
+      case store.backend.get.(id) do
+        {:ok, job} ->
+          job
+
+        :not_found ->
+          nil
+
+        error ->
+          exit({:checkpoint_read_failed, error})
+      end
+    end
+  end
+
+  defp backend_candidates(store, query) do
+    hidden =
+      store.tombstones
+      |> :ets.tab2list()
+      |> MapSet.new(fn {id} -> id end)
+
+    requested = %{query | limit: query.limit + MapSet.size(hidden)}
+
+    case store.backend.candidates.(requested) do
+      {:ok, base} ->
+        overlay = local_candidates(store, query)
+
+        base_jobs = Enum.reject(base.jobs, &MapSet.member?(hidden, &1.id))
+
+        jobs =
+          (overlay.jobs ++ base_jobs)
+          |> Enum.sort_by(&key/1, candidate_order(query.position))
+          |> Enum.take(query.limit)
+          |> Enum.map(&resolve(store, &1))
+
+        removed =
+          Enum.count(hidden, fn id ->
+            case store.backend.get.(id) do
+              {:ok, job} -> matches_job?(job, query)
+              _ -> false
+            end
+          end)
+
+        %{jobs: jobs, total_count: base.total_count - removed + overlay.total_count}
+
+      error ->
+        exit({:checkpoint_history_failed, error})
+    end
+  end
+
+  defp candidate_order(:last), do: :asc
+  defp candidate_order({:before, _, _}), do: :asc
+  defp candidate_order(_), do: :desc
+
+  defp overridden_base_count(store) do
+    :ets.foldl(
+      fn {id}, count ->
+        case store.backend.get.(id) do
+          {:ok, _} -> count + 1
+          _ -> count
+        end
+      end,
+      0,
+      store.tombstones
+    )
+  end
 
   # Live commands have already applied the caught-up tail to this projection.
   # Remove expired IDs using only metadata; retained argument bodies and indexes
@@ -140,6 +232,14 @@ defmodule Tay.State.TerminalStore do
     end)
 
     %{store | loader: loader}
+  end
+
+  def rebind(store, loader, backend) do
+    :ok = :dets.delete_all_objects(store.table)
+    :ets.delete_all_objects(store.order)
+    :ets.delete_all_objects(store.counts)
+    :ets.delete_all_objects(store.tombstones)
+    %{store | loader: loader, backend: backend}
   end
 
   defp open_file(file),

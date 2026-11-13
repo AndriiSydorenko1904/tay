@@ -223,12 +223,13 @@ defmodule Tay.Storage.V2NativeTest do
     path: path,
     store_id: store_id
   } do
+    Process.flag(:trap_exit, true)
     {:ok, native} = open(path)
     assert {:ok, published} = publish_next(native)
 
     assert :ok = Native.shutdown(native)
     name = :tay_v2_engine_native_test
-    {:ok, root} = Tay.Test.EngineHelpers.start(path, name)
+    {:ok, root} = Tay.Test.EngineHelpers.restart(path, name)
     {:ok, intent} = Tay.Test.EngineWorker.new(%{"v2" => true})
     assert {:ok, job} = Tay.insert(intent, name: name)
 

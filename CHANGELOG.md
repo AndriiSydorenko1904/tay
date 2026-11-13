@@ -34,6 +34,15 @@
 
 ### Changed
 
+- Align Docker and CI on Elixir 1.20.5 / Erlang/OTP 29.1.2, with a matching
+  local `.tool-versions` file and the verified Debian 2026-11-04 image tags.
+- Evacuate reachable index pages in bounded portions when checkpoint metadata
+  spans many epochs, allowing GC to reclaim old `RECOVERY` files without
+  copying argument or result bodies. Freeze a literal format-2 compatibility fixture.
+- Publish format-3 history and aggregate roots. Startup now loads active work
+  without traversing retained terminal IDs or result bodies; Dashboard history,
+  facets, counts and compaction estimates use authenticated disk metadata.
+
 - Production Engines use sync durability without a public storage-mode option.
   Development and test builds retain explicit modes; job durability is unchanged.
 - Engine startup uses authenticated checkpoint metadata, loads active snapshots

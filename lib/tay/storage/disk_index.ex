@@ -210,6 +210,44 @@ defmodule Tay.Storage.DiskIndex do
          do: update_root(write, parents, next, epoch)
   end
 
+  @doc "Moves reachable pages out of one old index file within a read-byte budget."
+  def repack(read, write, root, source, offset, epoch, budget) do
+    with :ok <- reference(root),
+         do: repack_node(read, write, root, object(source, 0, 0), offset, epoch, budget)
+  end
+
+  defp repack_node(_read, _write, nil, _object, offset, _epoch, budget),
+    do: {:ok, nil, offset, budget}
+
+  defp repack_node(read, write, root, object, offset, epoch, budget) do
+    if budget <= 0 or object not in objects(root) do
+      {:ok, root, offset, budget}
+    else
+      with {:ok, node} <- load(read, root) do
+        budget = budget - root.bytes
+
+        case node do
+          {:leaf, entries} ->
+            with {:ok, [next], offset} <- emit_leaves(write, entries, offset, epoch),
+                 do: {:ok, next, offset, budget}
+
+          {:children, children} ->
+            with {:ok, updated, offset, budget} <-
+                   Enum.reduce_while(children, {:ok, [], offset, budget}, fn child,
+                                                                             {:ok, acc, at, left} ->
+                     case repack_node(read, write, child, object, at, epoch, left) do
+                       {:ok, next, at, left} -> {:cont, {:ok, [next | acc], at, left}}
+                       error -> {:halt, error}
+                     end
+                   end),
+                 {:ok, [next], offset} <-
+                   emit_branches(write, Enum.reverse(updated), offset, epoch),
+                 do: {:ok, next, offset, budget}
+        end
+      end
+    end
+  end
+
   def bind_epoch(nil, _epoch), do: nil
   def bind_epoch(ref, nil), do: ref
 

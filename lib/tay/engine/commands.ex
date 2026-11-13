@@ -63,8 +63,49 @@ defmodule Tay.Engine.Commands do
 
   def execute({:get_result, raw}, state, _insert_new, _cancel_task) do
     case Map.fetch(state.results, raw) do
-      {:ok, result} -> {{:ok, result.value}, state}
-      :error -> {:missing, state}
+      {:ok, %{cold_result: true, job_revision: revision}} ->
+        case GenServer.call(
+               state.writer,
+               {:checkpoint_result, state.admission, state.epoch_id, raw, revision},
+               state.config.storage_timeout
+             ) do
+          {:ok, value} ->
+            {{:ok, value}, state}
+
+          {:error, :checkpoint_switched} ->
+            {{:error, Tay.Error.new(:unavailable, :checkpoint_switched)}, state}
+
+          error ->
+            exit({:checkpoint_result_failed, error})
+        end
+
+      {:ok, result} ->
+        {{:ok, result.value}, state}
+
+      :error ->
+        case ProjectionState.lookup(state, raw) do
+          %{state: :completed, revision: revision} ->
+            case GenServer.call(
+                   state.writer,
+                   {:checkpoint_result, state.admission, state.epoch_id, raw, revision},
+                   state.config.storage_timeout
+                 ) do
+              {:ok, value} ->
+                {{:ok, value}, state}
+
+              :not_found ->
+                {:missing, state}
+
+              {:error, :checkpoint_switched} ->
+                {{:error, Tay.Error.new(:unavailable, :checkpoint_switched)}, state}
+
+              error ->
+                exit({:checkpoint_result_failed, error})
+            end
+
+          _ ->
+            {:missing, state}
+        end
     end
   end
 

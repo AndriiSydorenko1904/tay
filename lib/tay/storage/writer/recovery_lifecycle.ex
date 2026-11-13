@@ -126,6 +126,8 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
            store_id: view.store.store_id,
            epoch_id: Map.get(view, :epoch_id),
            v2_current: Map.get(view, :current),
+           result_checkpoint: Map.get(view.manifest, :recovery_index),
+           result_locations: Map.get(view.candidate, :result_locations, %{}),
            next_sequence: view.store.next_sequence,
            recovery: recovery
        }}
@@ -146,6 +148,8 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
       store_id: nil,
       epoch_id: nil,
       v2_current: nil,
+      result_checkpoint: nil,
+      result_locations: %{},
       candidate_limits: if(is_map(initial), do: Map.get(initial, :limits, %{}), else: %{}),
       value_limits:
         if(is_map(initial),

@@ -65,8 +65,10 @@ Online checkpoints publish immutable `RECOVERY` metadata beside `MANIFEST` and
 checkpoints without an index and the preceding job-only/job-plus-auxiliary
 index descriptors remain readable through their existing replay paths.
 
-The current descriptor contains `format: 2`, `bytes` (the exact current index
-file length), and five roots encoded by `DiskIndex.encode_root/1`:
+The current descriptor contains `format: 3`, `bytes` (the exact current index
+file length), and seven roots encoded by `DiskIndex.encode_root/1`. Format 2,
+with its original five roots, remains readable and is migrated by the next
+checkpoint:
 
 | Root | Key | Value |
 | --- | --- | --- |
@@ -75,14 +77,16 @@ file length), and five roots encoded by `DiskIndex.encode_root/1`:
 | `expiry` | unsigned big-endian terminal time followed by job ID | same terminal pointer |
 | `schedules` | schedule ID | canonical `(13,2)` record pointer |
 | `results` | raw job ID | canonical `(10,2)` record pointer |
+| `history` | inverted insertion time followed by job ID | terminal summary pointer |
+| `stats` | `summary` | terminal state/facet, charge and retention-bucket aggregates |
 
-Even an empty format-2 checkpoint has a 64-byte index header: `TAYI`, version
-byte `2`, and 59 zero bytes. Null roots use the existing version-1 root envelope.
+Even an empty current checkpoint has a 64-byte index header: `TAYI`, version
+byte `3`, and 59 zero bytes. Null roots use the existing version-1 root envelope.
 The old descriptor is `{bytes, root}` or `{bytes, root, auxiliary}` and has no
 header; its auxiliary tree uses physical sequence keys.
 
 Every page reference authenticates offset, encoded length, SHA-256 digest,
-first/last key, count and height. Format-2 references additionally identify the
+first/last key, count and height. Format-2/3 references additionally identify the
 16-byte source epoch and summarize reachable files and live record bytes.
 File keys are `epoch[16] || scope[1] || segment_id[u64] || sealed_bytes[u64]`;
 scope zero names that epoch's `RECOVERY` with both integers zero, and scope one
@@ -116,19 +120,26 @@ published authentication. Full inspection and cold backup scrub reachable
 segments and verify the root/work/expiry partition and auxiliary identities.
 
 Native readers pin the archive ancestors and revalidate them on each read.
-Reclamation derives reachability from all five roots, checks exact CURRENT
+Reclamation derives reachability from all descriptor roots, checks exact CURRENT
 before each batch, refuses pinned/current/candidate epochs, and syncs deletion
 directories. Referenced older epoch files survive publication. Background GC
 resumes on startup. Cold backup/restore copies every reachable epoch file,
 retaining the relative paths and checksummed catalog; an old epoch MANIFEST is
 not needed to resolve an authenticated pointer.
 
-Startup still traverses terminal metadata to rebuild disposable DETS and
-history ordering/counts. It is proportional to retained IDs, active bodies,
-result bodies and tail size; results remain in the Engine memory budget.
-Checkpoint work no longer requires that terminal-ID traversal. Older binaries
-that do not understand the new descriptor refuse it; downgrade requires a
-pre-upgrade backup.
+When more than 32 older index epochs remain reachable, checkpoint construction
+also evacuates pages from one metadata file. The shared read budget is 64 MiB
+across all roots; an individual page and rewritten ancestor paths may
+extend the final portion. Unvisited subtrees retain their authenticated old
+references. Only after the last reference disappears may GC remove that
+`RECOVERY` file. Argument/result segments are not read during page evacuation.
+
+Startup loads the `work` root plus the bounded tail. It does not traverse
+terminal IDs, rebuild terminal DETS, or load result bodies. Terminal lookups and
+Dashboard pages use authenticated `root`/`history` paths; state/facet counts and
+compaction estimates initialize from the `stats` aggregate. Result payloads are
+read by authenticated record location only when requested. Older binaries that
+do not understand format 3 refuse it; downgrade requires a pre-upgrade backup.
 
 ## Event and recovery boundary
 

@@ -219,6 +219,7 @@ defmodule Tay.Storage.Writer.SegmentOps do
           group -> Map.put(next, :group_commit, GroupCommit.increment(group))
         end
 
+      next = Tay.Storage.V2.ResultReference.written(next, bytes, receipt)
       {:ok, next, receipt}
     end
   end

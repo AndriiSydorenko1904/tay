@@ -123,6 +123,8 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
           | native: native,
             epoch_id: recovered.epoch_id,
             v2_current: recovered.current,
+            result_checkpoint: recovered.manifest.recovery_index,
+            result_locations: Map.get(recovered.candidate, :result_locations, %{}),
             segment: recovered.highest,
             next_sequence: recovered.next_sequence,
             online_compaction: nil

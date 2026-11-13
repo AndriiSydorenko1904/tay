@@ -2,8 +2,10 @@
 
 The changed-tail checkpoint shares immutable archive files and appends changed
 index paths. The first checkpoint migrates older descriptors through full
-snapshot publication. Startup still rebuilds terminal metadata and loads results;
-these measurements do not claim startup independent of retained ID count.
+snapshot publication. These raw measurements predate the format-3
+history/aggregate roots and therefore remain compaction evidence only; they are
+not startup measurements. Current startup no longer rebuilds terminal DETS or
+loads result bodies.
 
 ## Finite changed-tail measurements
 
@@ -32,6 +34,17 @@ samples and restart observations:
 - [macOS 200](macos-write-200.json), [macOS 1,000](macos-write-1000.json)
 - [Linux 200](linux-sync-200.json), [Linux 1,000](linux-sync-1000.json)
 
+## Format-3 follow-up
+
+After adding persistent history/aggregate roots and lazy result reads, a local
+macOS `:write` follow-up on 2026-11-14 used the same 16,000-byte arguments and
+four callers. With 200 archived jobs, the unchanged/changed checkpoints were
+24/39 ms total with 4/4 ms admission pauses; restart was 33 ms. With 1,000
+archived jobs, they were 14/29 ms total with 3/3 ms pauses; restart was 23 ms.
+The changed 1,000-job pass reused 16,669,608 segment bytes and read 689,391
+native bytes. These are finite development samples, not latency guarantees;
+the exact release SHA is qualified separately by CI artifacts.
+
 macOS ran Elixir 1.20.4 / OTP 29 with ten schedulers. Linux ran Elixir 1.20.2 /
 OTP 29 with two schedulers inside Docker, on a fresh 2 GiB loop-backed Btrfs
 filesystem; the helper verified Btrfs and used explicit validated `:sync` mode.
@@ -46,6 +59,8 @@ sync selection passed 37 checks,
 including changed tails, sparse-segment retention, corruption, backup/restore,
 reader pins, stale CURRENT, native cleanup interruptions and publication faults.
 Dialyzer, production compilation, formatting and documentation generation passed.
+The format-3 follow-up core suite passed 755 checks (25 properties and 730
+tests), with 18 optional checks skipped; standalone remained 28/28.
 
 The SIGKILL test targets the BEAM owner at epoch rename, epoch parent
 sync, CURRENT publication and CURRENT root sync, then verifies both shared cold

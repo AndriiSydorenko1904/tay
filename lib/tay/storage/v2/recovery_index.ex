@@ -65,7 +65,8 @@ defmodule Tay.Storage.V2.RecoveryIndex do
     end
   end
 
-  def valid?(%{format: 2} = descriptor), do: Tay.Storage.V2.CheckpointIndex.valid?(descriptor)
+  def valid?(%{format: format} = descriptor) when format in [2, 3],
+    do: Tay.Storage.V2.CheckpointIndex.valid?(descriptor)
 
   def valid?(%{bytes: bytes, root: encoded} = descriptor) when map_size(descriptor) in [2, 3] do
     with true <- Enum.sort(Map.keys(descriptor)) in [[:bytes, :root], [:auxiliary, :bytes, :root]],
@@ -84,7 +85,7 @@ defmodule Tay.Storage.V2.RecoveryIndex do
 
   def valid?(_), do: false
 
-  def to_value(%{format: 2} = descriptor) do
+  def to_value(%{format: format} = descriptor) when format in [2, 3] do
     Map.new(descriptor, fn
       {key, value} when key in [:bytes, :format] -> {Atom.to_string(key), value}
       {key, value} -> {Atom.to_string(key), {:bytes, value}}
@@ -98,8 +99,8 @@ defmodule Tay.Storage.V2.RecoveryIndex do
     end)
   end
 
-  def from_value(%{"format" => 2} = value) do
-    keys = [:format, :bytes | Tay.Storage.V2.CheckpointIndex.roles()]
+  def from_value(%{"format" => format} = value) when format in [2, 3] do
+    keys = [:format, :bytes | Tay.Storage.V2.CheckpointIndex.roles(format)]
 
     if Enum.sort(Map.keys(value)) == Enum.sort(Enum.map(keys, &Atom.to_string/1)) do
       descriptor =
@@ -266,7 +267,7 @@ defmodule Tay.Storage.V2.RecoveryIndex do
     end)
   end
 
-  def fetch(native, %{format: 2} = descriptor, id, epoch),
+  def fetch(native, %{format: format} = descriptor, id, epoch) when format in [2, 3],
     do: Tay.Storage.V2.CheckpointIndex.fetch(native, descriptor, epoch, id)
 
   def fetch(native, descriptor, id, _epoch), do: fetch(native, descriptor, id)

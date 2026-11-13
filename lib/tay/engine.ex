@@ -62,6 +62,26 @@ defmodule Tay.Engine do
          inspection = Writer.status(writer),
          {:ok, summary, candidate} <-
            Writer.activate_recovered(writer, inspection.session_ref),
+         backend =
+           OnlineCheckpoint.backend(
+             writer,
+             summary.admission_ref,
+             summary.epoch_id,
+             summary.recovery_index
+           ),
+         archive =
+           if(backend,
+             do: backend.summary.(),
+             else: %{
+               count: 0,
+               bytes: 0,
+               definition_bytes: 0,
+               bound_bytes: 0,
+               states: %{},
+               facets: %{},
+               buckets: %{}
+             }
+           ),
          :ok <- Tay.State.Memory.reserve(admission_meta.memory, candidate.bytes),
          config = OnlineCheckpoint.recovered_config(config, summary),
          :ok <-
@@ -77,7 +97,8 @@ defmodule Tay.Engine do
                  summary.admission_ref,
                  summary.epoch_id,
                  summary.recovery_index
-               )
+               ),
+             backend: backend
            ) do
       case activation_capability(summary) do
         {:error, error} ->
@@ -109,8 +130,54 @@ defmodule Tay.Engine do
           hook(config, :indexes_created)
           projection = Projection.load(projection, active_jobs)
           true = Projection.valid?(projection)
-          {active_budget, terminal_budget} = ProjectionState.partition_budgets(candidate.jobs)
+
+          {active_budget, loaded_terminal_budget} =
+            ProjectionState.partition_budgets(candidate.jobs)
+
+          terminal_budget =
+            if(backend,
+              do: %{count: archive.count, bytes: archive.bytes},
+              else: loaded_terminal_budget
+            )
+
           budget = candidate |> Transition.accounting() |> Map.merge(active_budget)
+
+          terminal_states = Map.merge(ProjectionState.zero_states(), archive.states)
+
+          terminal_queues =
+            Enum.reduce(archive.facets, %{}, fn {{queue, state, _worker}, count}, acc ->
+              current = Map.get(acc, queue, %{count: 0, states: ProjectionState.zero_states()})
+
+              Map.put(acc, queue, %{
+                count: current.count + count,
+                states: Map.update!(current.states, state, &(&1 + count))
+              })
+            end)
+
+          loaded_estimate =
+            Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
+              CompactionEstimate.replace(acc, nil, job)
+            end)
+
+          compaction_estimate =
+            if backend do
+              %{
+                loaded_estimate
+                | jobs: loaded_estimate.jobs + archive.count,
+                  definition_bytes: loaded_estimate.definition_bytes + archive.definition_bytes,
+                  terminal_jobs: archive.count,
+                  terminal_bytes: archive.bound_bytes,
+                  buckets: archive.buckets
+              }
+            else
+              loaded_estimate
+            end
+
+          terminal_stats =
+            if backend,
+              do: %{states: terminal_states, queues: terminal_queues},
+              else: ProjectionState.terminal_statistics(candidate.jobs)
+
           # No copy of candidate.jobs survives init. Active jobs live in private
           # ETS; terminal history lives in a disposable disk projection. Startup
           # accounting reserves up to three charged active views.
@@ -128,15 +195,12 @@ defmodule Tay.Engine do
             schedule_index: Tay.State.ScheduleIndex.new(candidate.schedules),
             schedules: candidate.schedules,
             results: candidate.results,
-            terminal_stats: ProjectionState.terminal_statistics(candidate.jobs),
+            terminal_stats: terminal_stats,
             budget: budget,
             active_budget: active_budget,
             terminal_budget: terminal_budget,
             volatile_terminal_budget: %{count: 0, bytes: 0},
-            compaction_estimate:
-              Enum.reduce(candidate.jobs, CompactionEstimate.new(), fn {_, job}, acc ->
-                CompactionEstimate.replace(acc, nil, job)
-              end),
+            compaction_estimate: compaction_estimate,
             # Capture precedes construction, not publication. Recovered activation
             # is a conservative post-publication cooldown anchor; a restart may
             # extend cooldown but must never shorten it by construction time.

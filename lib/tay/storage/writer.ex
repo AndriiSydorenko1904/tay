@@ -164,6 +164,24 @@ defmodule Tay.Storage.Writer do
         :infinity
       )
 
+  @doc false
+  def checkpoint_history(writer, admission_ref, epoch_id, descriptor, query),
+    do:
+      GenServer.call(
+        writer,
+        {:checkpoint_history, admission_ref, epoch_id, descriptor, query},
+        :infinity
+      )
+
+  @doc false
+  def checkpoint_archive_summary(writer, admission_ref, epoch_id, descriptor),
+    do:
+      GenServer.call(
+        writer,
+        {:checkpoint_archive_summary, admission_ref, epoch_id, descriptor},
+        :infinity
+      )
+
   def status(writer), do: GenServer.call(writer, :status, :infinity)
   @doc "Appends opaque physical bytes supplied by an upstream semantic validator."
   def append(writer, type, schema, payload),
@@ -192,8 +210,11 @@ defmodule Tay.Storage.Writer do
     Process.flag(:trap_exit, true)
 
     case RecoveryLifecycle.open(options, spec, budgets, deadline, caller) do
-      {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:stop, reason}
+      {:ok, state} ->
+        {:ok, state}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
@@ -423,6 +444,73 @@ defmodule Tay.Storage.Writer do
       else
         result = Tay.Storage.V2.RecoveryIndex.fetch(state.native, descriptor, id, state.epoch_id)
         {:reply, result, state}
+      end
+    else
+      {:reply, {:error, :stale_checkpoint_reader}, state}
+    end
+  end
+
+  def handle_call(
+        {:checkpoint_result, reference, epoch, id, revision} = request,
+        {caller, _} = from,
+        %{recovery: recovery} = state
+      ) do
+    if recovery.status == :ready and caller == recovery.caller and
+         reference == recovery.admission_ref do
+      if epoch != state.epoch_id do
+        {:reply, {:error, :checkpoint_switched}, state}
+      else
+        if state.delegate_read_open do
+          {:noreply, %{state | read_waiters: [{from, request} | state.read_waiters]}}
+        else
+          {:reply, Tay.Storage.V2.ResultReference.fetch(state, id, revision), state}
+        end
+      end
+    else
+      {:reply, {:error, :stale_result_reader}, state}
+    end
+  end
+
+  def handle_call(
+        {operation, reference, epoch, descriptor, argument} = request,
+        {caller, _} = from,
+        %{recovery: recovery} = state
+      )
+      when operation in [:checkpoint_history] do
+    if recovery.status == :ready and caller == recovery.caller and
+         reference == recovery.admission_ref and epoch == state.epoch_id do
+      if state.delegate_read_open do
+        {:noreply, %{state | read_waiters: [{from, request} | state.read_waiters]}}
+      else
+        {:reply,
+         Tay.Storage.V2.CheckpointIndex.history_candidates(
+           state.native,
+           descriptor,
+           epoch,
+           argument
+         ), state}
+      end
+    else
+      {:reply, {:error, :stale_checkpoint_reader}, state}
+    end
+  end
+
+  def handle_call(
+        {:checkpoint_archive_summary, reference, epoch, descriptor} = request,
+        {caller, _} = from,
+        %{recovery: recovery} = state
+      ) do
+    if recovery.status == :ready and caller == recovery.caller and
+         reference == recovery.admission_ref and epoch == state.epoch_id do
+      if state.delegate_read_open do
+        {:noreply, %{state | read_waiters: [{from, request} | state.read_waiters]}}
+      else
+        {:reply,
+         Tay.Storage.V2.CheckpointIndex.archive_summary(
+           state.native,
+           descriptor,
+           epoch
+         ), state}
       end
     else
       {:reply, {:error, :stale_checkpoint_reader}, state}

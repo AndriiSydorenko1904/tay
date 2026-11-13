@@ -44,20 +44,34 @@ defmodule Tay.Engine.OnlineCheckpoint do
     fn id -> Tay.Storage.Writer.checkpoint_job(writer, reference, epoch, descriptor, id) end
   end
 
+  def backend(writer, reference, epoch, %{format: 3} = descriptor) do
+    %{
+      get: loader(writer, reference, epoch, descriptor),
+      candidates: fn query ->
+        Tay.Storage.Writer.checkpoint_history(writer, reference, epoch, descriptor, query)
+      end,
+      summary: fn ->
+        {:ok, summary} =
+          Tay.Storage.Writer.checkpoint_archive_summary(writer, reference, epoch, descriptor)
+
+        summary
+      end
+    }
+  end
+
+  def backend(_, _, _, _), do: nil
+
   def adopt(state, %{recovered: %{incremental: true} = recovered} = stats, retention) do
     expired = recovered.expired
     state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
 
+    descriptor = recovered.manifest.recovery_index
+
     terminal_store =
-      TerminalStore.expire(
+      TerminalStore.rebind(
         state.terminal_store,
-        expired,
-        loader(
-          state.writer,
-          state.admission,
-          recovered.epoch_id,
-          recovered.manifest.recovery_index
-        )
+        loader(state.writer, state.admission, recovered.epoch_id, descriptor),
+        backend(state.writer, state.admission, recovered.epoch_id, descriptor)
       )
 
     terminal_budget =
@@ -147,16 +161,13 @@ defmodule Tay.Engine.OnlineCheckpoint do
     state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
     jobs = recovered.candidate.jobs
 
+    descriptor = Map.get(recovered.manifest, :recovery_index)
+
     terminal_store =
-      TerminalStore.rebase(
+      TerminalStore.rebind(
         state.terminal_store,
-        jobs,
-        loader(
-          state.writer,
-          state.admission,
-          recovered.epoch_id,
-          Map.get(recovered.manifest, :recovery_index)
-        )
+        loader(state.writer, state.admission, recovered.epoch_id, descriptor),
+        backend(state.writer, state.admission, recovered.epoch_id, descriptor)
       )
 
     terminal_budget = terminal_budget(jobs)
@@ -167,7 +178,12 @@ defmodule Tay.Engine.OnlineCheckpoint do
       |> Enum.map(&Map.take(&1, [:id, :state, :bytes, :count, :first_sequence, :last_sequence]))
       |> Enum.take(-@segment_catalog_limit)
 
-    results = Map.merge(recovered.candidate.results, volatile_results)
+    results =
+      Map.new(recovered.candidate.results, fn {id, result} ->
+        {id, Tay.Storage.V2.ResultReference.cold(result)}
+      end)
+      |> Map.merge(volatile_results)
+
     schedules = retain_volatile_memberships(recovered.candidate.schedules, state)
     auxiliary_bytes = Tay.State.Memory.auxiliary_bytes(schedules, results)
     next_bytes = state.budget.bytes + auxiliary_bytes

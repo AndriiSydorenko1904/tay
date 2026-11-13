@@ -182,7 +182,7 @@ Engine can run directly inside the application's supervision tree.
 
 ## Elixir integration
 
-Use Elixir 1.20 and Erlang/OTP 29 with a C11 compiler (`cc`) available when
+Use Elixir 1.20.5 and Erlang/OTP 29.1.2 with a C11 compiler (`cc`) available when
 building.
 
 Add Tay to your application's Mix dependencies:

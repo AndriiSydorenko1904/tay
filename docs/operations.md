@@ -152,7 +152,7 @@ extended index is available, followed by tail replay. Older checkpoints use full
 mutations are already covered.
 All checkpoints operate on Store-v2 generations and prepare online.
 
-Checkpoint format 2 reuses immutable index pages and data segments across
+Checkpoint format 3 reuses immutable index pages and data segments across
 source epochs even when the tail changes. The builder reads working jobs and
 the new tail, addresses affected archived jobs, and updates only changed tree
 paths. Retention walks the ordered expiry index through its cutoff. The first
@@ -167,8 +167,9 @@ back CURRENT. Restart resumes cleanup. Cold backups include all referenced
 epoch files; copying only the CURRENT epoch is insufficient.
 
 Checkpoint adoption removes expired IDs through metadata and rebinds cold
-readers to the new epoch; retained terminal DETS bodies need no rewrite.
-Startup still rebuilds terminal metadata and loads result bodies into memory.
+readers to the new epoch. Startup loads active work and the bounded tail;
+terminal history/counts and result payloads remain behind authenticated disk
+indexes until queried.
 
 Compaction `pause_ms` measures the final admission fence through immediate
 reclamation, Engine adoption and resumed admission. `total_ms` includes

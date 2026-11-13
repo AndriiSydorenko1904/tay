@@ -148,7 +148,7 @@ defmodule Tay.Storage.V2.Publisher do
            retention_stats: %{
              context.retention_stats
              | retained_terminal_jobs:
-                 if(match?(%{format: 2}, recovery_index),
+                 if(match?(%{format: format} when format in [2, 3], recovery_index),
                    do: CheckpointIndex.count(recovery_index, :expiry),
                    else: context.retention_stats.retained_terminal_jobs
                  )
@@ -374,7 +374,14 @@ defmodule Tay.Storage.V2.Publisher do
   defp load_source_jobs(_, _, _, _), do: {:error, :source_jobs}
 
   defp incremental_source(
-         {:ok, %{source_replay: %{incremental: true} = recovered} = source},
+         {:ok,
+          %{
+            source_replay:
+              %{
+                incremental: true,
+                manifest: %{recovery_index: %{format: 3}}
+              } = recovered
+          } = source},
          native
        ) do
     descriptor = recovered.manifest.recovery_index
@@ -472,6 +479,7 @@ defmodule Tay.Storage.V2.Publisher do
           do: {data["job_id"], {:put, decorate.(pointer)}}
 
     with {:ok, transaction} <- CheckpointIndex.begin(native, source.candidate_epoch_id, previous),
+         {:ok, transaction} <- CheckpointIndex.repack(transaction),
          {:ok, transaction} <- CheckpointIndex.apply_changes(transaction, puts, source.expired),
          {:ok, transaction} <- CheckpointIndex.change(transaction, :schedules, schedules),
          {:ok, transaction} <- CheckpointIndex.change(transaction, :results, results),
@@ -1296,6 +1304,23 @@ defmodule Tay.Storage.V2.Publisher do
               crc_state: CRC32C.update(current.crc_state, frame)
           }
 
+          record = %Record{
+            record_type: type,
+            payload_schema_version: 2,
+            sequence: sequence,
+            payload: payload
+          }
+
+          locations =
+            Tay.Storage.V2.ResultReference.track(
+              Map.get(next_logical, :result_locations, %{}),
+              source.candidate_epoch_id,
+              current.id,
+              current.bytes,
+              record
+            )
+
+          next_logical = Map.put(next_logical, :result_locations, locations)
           {:cont, {:ok, next_logical, next, bytes + byte_size(frame)}}
         else
           error -> {:halt, error}
