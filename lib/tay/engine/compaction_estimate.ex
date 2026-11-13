@@ -24,7 +24,10 @@ defmodule Tay.Engine.CompactionEstimate do
 
   # Prefix<=41, body header=5, keys=174, state<=14, scalars<=72,
   # diagnostic<=45, Record=28, per-job segment framing=108: total<=487.
-  def job_bound(job), do: byte_size(job.definition_bytes) + 512
+  def job_bound(job), do: definition_bytes(job) + 512
+
+  defp definition_bytes(%{definition_size: size}), do: size
+  defp definition_bytes(job), do: byte_size(job.definition_bytes)
 
   def replace(estimate, previous, job) do
     estimate = if previous, do: bucket(estimate, previous, -1), else: estimate
@@ -33,7 +36,7 @@ defmodule Tay.Engine.CompactionEstimate do
       estimate
       | jobs: estimate.jobs + if(previous, do: 0, else: 1),
         definition_bytes:
-          estimate.definition_bytes + if(previous, do: 0, else: byte_size(job.definition_bytes))
+          estimate.definition_bytes + if(previous, do: 0, else: definition_bytes(job))
     }
 
     bucket(estimate, job, 1)
@@ -97,7 +100,7 @@ defmodule Tay.Engine.CompactionEstimate do
       # Manifest entries<=256 each; 1 MB covers fixed metadata and empty tail.
       candidate_bound =
         snapshot_bound + 1_048_576 +
-          (sealed_segments + estimate.jobs - expired) * 256
+          sealed_segments * 256 + (estimate.jobs - expired) * 4_096
 
       reclaimable = max(0, sealed_bytes - candidate_bound)
 

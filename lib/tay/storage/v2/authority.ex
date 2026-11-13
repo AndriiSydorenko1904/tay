@@ -7,7 +7,7 @@ defmodule Tay.Storage.V2.Authority do
   alias Tay.Event.V2
   alias Tay.Event.Value
   alias Tay.Storage.CRC32C
-  alias Tay.Storage.V2.Retention
+  alias Tay.Storage.V2.{Retention, RecoveryIndex}
 
   @max 18_446_744_073_709_551_615
   @legacy_manifest_keys ~w(store_id epoch_id source_epoch_id source_frontier captured_at terminal_retention source_segments base_segments tail_segment_id tail_first_sequence)
@@ -68,7 +68,10 @@ defmodule Tay.Storage.V2.Authority do
          true <- length == byte_size(body) || {:error, :manifest_length},
          {:ok, value} <- Value.decode(body),
          true <-
-           (exact?(value, @manifest_keys) or exact?(value, @legacy_manifest_keys)) ||
+           (is_map(value) and
+              Enum.any?([@manifest_keys, @legacy_manifest_keys], fn keys ->
+                exact?(Map.delete(value, "recovery_index"), keys)
+              end)) ||
              {:error, :manifest_keys},
          {:ok, manifest} <- manifest_from_body(value),
          :ok <- manifest?(manifest) do
@@ -126,6 +129,10 @@ defmodule Tay.Storage.V2.Authority do
 
       not valid_availability_frontier?(Map.get(manifest, :availability_frontier)) ->
         {:error, :availability_frontier}
+
+      Map.has_key?(manifest, :recovery_index) and
+          not RecoveryIndex.valid?(manifest.recovery_index) ->
+        {:error, :recovery_index}
 
       not V2.time?(captured_at) ->
         {:error, :captured_at}
@@ -200,6 +207,27 @@ defmodule Tay.Storage.V2.Authority do
       "tail_first_sequence" => m.tail_first_sequence
     }
 
+    body =
+      case Map.fetch(m, :recovery_index) do
+        {:ok, index} ->
+          Map.put(
+            body,
+            "recovery_index",
+            %{
+              "bytes" => index.bytes,
+              "root" => {:bytes, index.root}
+            }
+            |> then(fn value ->
+              if Map.has_key?(index, :auxiliary),
+                do: Map.put(value, "auxiliary", {:bytes, index.auxiliary}),
+                else: value
+            end)
+          )
+
+        :error ->
+          body
+      end
+
     case Map.fetch(m, :availability_frontier) do
       {:ok, frontier} -> Map.put(body, "availability_frontier", frontier)
       :error -> body
@@ -230,6 +258,28 @@ defmodule Tay.Storage.V2.Authority do
         tail_first_sequence: body["tail_first_sequence"]
       }
 
+      manifest =
+        case Map.fetch(body, "recovery_index") do
+          {:ok, %{"bytes" => bytes, "root" => {:bytes, root}} = index}
+          when map_size(index) in [2, 3] ->
+            descriptor = %{bytes: bytes, root: root}
+
+            descriptor =
+              case Map.fetch(index, "auxiliary") do
+                {:ok, {:bytes, auxiliary}} -> Map.put(descriptor, :auxiliary, auxiliary)
+                :error -> descriptor
+                _ -> Map.put(descriptor, :auxiliary, :invalid)
+              end
+
+            Map.put(manifest, :recovery_index, descriptor)
+
+          {:ok, _} ->
+            Map.put(manifest, :recovery_index, :invalid)
+
+          :error ->
+            manifest
+        end
+
       {:ok,
        if(Map.has_key?(body, "availability_frontier"),
          do: Map.put(manifest, :availability_frontier, body["availability_frontier"]),
@@ -239,7 +289,7 @@ defmodule Tay.Storage.V2.Authority do
   end
 
   defp manifest_shape?(manifest) do
-    keys = Map.keys(manifest)
+    keys = Map.keys(Map.delete(manifest, :recovery_index))
     legacy = Enum.map(@legacy_manifest_keys, &String.to_existing_atom/1)
     current = Enum.map(@manifest_keys, &String.to_existing_atom/1)
     Enum.sort(keys) in [Enum.sort(legacy), Enum.sort(current)]

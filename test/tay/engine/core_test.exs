@@ -52,7 +52,22 @@ defmodule Tay.Engine.CoreTest do
     H.stop(root)
   end
 
-  test "reconciliation precedes lower insertion limits and current worker mappings", %{path: path} do
+  test "default admission accepts arguments larger than the former insertion ceiling", %{
+    path: path
+  } do
+    {:ok, root} = H.start(path, @name)
+    {:ok, intent} = EngineWorker.new(%{"blob" => String.duplicate("x", 1_100_000)})
+    assert {:ok, job} = Tay.insert(intent, name: @name)
+    assert byte_size(job.definition["args"]["blob"]) == 1_100_000
+    assert Tay.status(name: @name).client_bytes_used == 0
+    H.stop(root)
+    {:ok, root} = H.restart(path, @name)
+    assert {:ok, recovered} = Tay.get_job(job.id, name: @name)
+    assert byte_size(recovered.definition["args"]["blob"]) == 1_100_000
+    H.stop(root)
+  end
+
+  test "reconciliation precedes current worker mappings", %{path: path} do
     {:ok, root} = H.start(path, @name)
     {:ok, intent} = EngineWorker.new(%{"text" => String.duplicate("a", 2000)})
     assert {:ok, _} = Tay.insert(intent, name: @name)
@@ -60,7 +75,6 @@ defmodule Tay.Engine.CoreTest do
 
     {:ok, root} =
       H.restart(path, @name,
-        max_insert_payload_bytes: 1,
         workers: %{},
         queues: []
       )
@@ -74,8 +88,7 @@ defmodule Tay.Engine.CoreTest do
 
   test "new insertion budgets fail before append and do not make history invalid", %{path: path} do
     for extra <- [
-          [max_state_bytes: 1],
-          [max_insert_payload_bytes: 1]
+          [max_state_bytes: 1]
         ] do
       {:ok, root} = H.restart(path, @name, extra)
       before = R.snapshot(path)

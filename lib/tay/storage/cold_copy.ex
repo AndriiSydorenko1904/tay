@@ -240,8 +240,7 @@ defmodule Tay.Storage.ColdCopy do
   defp open_source(config) do
     Native.open_existing(config.source,
       durability: config.durability,
-      validated_filesystem: config.validated_filesystem,
-      max_directory_entries: config.max_files
+      validated_filesystem: config.validated_filesystem
     )
     |> native(:source)
   end

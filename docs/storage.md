@@ -1,6 +1,6 @@
 # Storage and recovery contract
 
-This is the persistent-format reference for Tay 1.8. For setup, configuration,
+This is the persistent-format reference for Tay 2.0. For setup, configuration,
 backup and restore, start with [operations](operations.md). For supported
 platforms and upgrade restrictions, see [compatibility](compatibility.md).
 
@@ -56,7 +56,62 @@ containing matching identity/coordinates, last sequence, record count, segment
 CRC32C, and footer CRC32C. An active empty segment is exactly its 44-byte
 header; an empty sealed segment is invalid. Records and segment IDs advance
 contiguously. The physical segment size bound is 1 GB; the rotation target is
-an operational setting, not a change to the format.
+chosen internally by the storage engine, not a public setting.
+
+## Checkpoint location index (2.0)
+
+New nonempty checkpoints also publish `RECOVERY` beside `MANIFEST` and
+`segments/`. It is an immutable index of base job-snapshot locations, not a
+second job journal. Tail changes remain authoritative over those snapshots.
+Empty checkpoints omit the index. Earlier checkpoints without it remain valid;
+readers which do not recognize the extended manifest refuse new checkpoints.
+
+The optional manifest field `recovery_index` contains `bytes` (the exact file
+length), `root` for jobs and `auxiliary` for schedule/result records (byte strings
+encoded by `DiskIndex.encode_root/1`). Earlier job-only descriptors remain readable. The root
+envelope is a canonical Value map with `version: 1` and an optional `root`
+reference. Each reference contains `offset`, `bytes`, SHA-256 `digest`, binary
+`first`/`last` keys, entry `count`, and tree `height`. A reference's digest covers
+the exact encoded page. Root metadata is covered by the manifest digest in
+`CURRENT`. All map keys on disk are strings; binary keys/digests use Value's
+byte carrier.
+
+Pages are canonical Value maps with `version: 1` and either `leaf` entries or
+`children` references. Leaf entries are ordered binary-key/value pairs; keys
+are strictly increasing. Children have disjoint ordered key ranges, matching
+counts and heights, and point only to earlier bytes in the same file.
+Pages have at most 64 entries/references. This is internal page structure,
+not a configurable job count or recovery quota.
+
+Job keys are raw 16-byte IDs. A location value contains `segment`, `offset`,
+`bytes` (complete Record size), `sequence` (physical snapshot sequence) and
+`digest` (SHA-256 of the snapshot payload). Addressed reads verify native file
+identity, bounds, Record CRC, type/schema `(7,1)`, sequence, payload digest and
+decoded job ID. Terminal locations also contain an authenticated `summary`: a
+snapshot with empty arguments, the original encoded definition length and its
+terminal memory charge. The auxiliary tree uses big-endian 64-bit physical
+sequences as keys and authenticates the locations of schedule/result records.
+Full semantic replay independently reconstructs job locations and summaries
+from parsed records and compares them with the index before candidate publication. Missing, orphaned, truncated or mismatched indexes
+refuse recovery without repair.
+
+The native owner appends and syncs the index before manifest publication and
+the atomic CURRENT switch. Index bytes are included in candidate-space
+admission and publication measurements; like MANIFEST, they are metadata rather
+than journal segment bytes. Activation syncs the index, cold copy includes it,
+and predecessor reclamation unlinks and directory-syncs it before removing
+MANIFEST. Engine startup reads index metadata, validates base headers/footers,
+loads active snapshots and auxiliary records by authenticated location, then
+replays the tail. Cold terminal arguments are read only on job lookup or when a
+tail mutation needs that job. Missing/corrupt cold record bodies are detected at
+that read and fail the Engine closed; they never become `not_found`. Inspection
+and publication retain full physical/semantic replay for an archive-wide check.
+Older indexes and checkpoints without an index use full replay.
+
+Startup still traverses terminal metadata to rebuild history ordering/counts;
+it is proportional to retained IDs, active bodies, result bodies and tail size.
+It does not yet provide startup independent of archive ID count. Results remain
+in the Engine memory budget. These limits are distinct from lazy argument loading.
 
 ## Event and recovery boundary
 
@@ -91,27 +146,30 @@ queue identities are inert UTF-8 keys; persisted bytes never select Elixir
 modules or create atoms. A future event field needs a new explicit schema and
 literal fixtures, not an optional field in schema 1.
 
-Recovery acquires the existing store and lock, validates every canonical byte
-and sequence, then replays every complete understood event into a private
-candidate. For Store v2 this is the canonical semantic snapshot followed by its
-ordered tail, not all superseded journal history. Unknown semantics, invalid
-transitions, missing history, corruption, or an incomplete tail stop the attempt
-without publishing a partial candidate or mutating the source. A recovered
-writer may activate only while retaining
-the same ownership session and after full revalidation. There is no scan-ahead,
-automatic torn-tail truncation, stage deletion, or writable-prefix salvage.
-Inspection and copy catalogs do not grant activation authority.
+Recovery acquires the existing store and lock and builds a private candidate.
+With an extended index it validates authority, metadata, active/auxiliary records
+and the entire tail; cold terminal bodies are checked on addressed read. Without
+that index, recovery validates every canonical byte and replays the full snapshot
+and ordered tail. Unknown semantics, invalid transitions, missing required
+history, corruption in inspected data, or an incomplete tail stop the attempt
+without publishing a partial candidate or mutating the source. Activation retains
+the same ownership session and revalidates the same view using its original
+recovery mode. There is no writable-prefix salvage, automatic torn-tail
+truncation or corruption repair. Inspection and copy catalogs do not grant
+activation authority.
 
-Resource budgets for decoding, active candidate payload data, directory
-traversal, and history admission are operational limits. Lowering them can
+Resource budgets for active candidate payload data and history admission are
+operational limits. Directory inventory is streamed in bounded native protocol
+pages without a total file-count quota. Lowering them can
 refuse an otherwise valid active workload but cannot redefine physical or
 semantic validity. A larger budget permits a new complete inspection; it never
 makes corrupt bytes valid. Job counts are not capped. Terminal history is
 removed only by successful time-based compaction; active jobs are never
 evicted. Individual log files must not be removed to reclaim capacity.
 
-Recovery and offline inspection replay the complete retained history under
-the configured time, state-memory, decoding and directory traversal budgets.
+Offline inspection and legacy recovery replay the complete retained history.
+Indexed Engine recovery reads metadata, active/auxiliary data and the tail under
+the configured time and state-memory budgets, with fixed format/Value checks.
 Record payloads use the fixed 16 MiB format ceiling and the common Value codec
 checks. Recovery has no separately configurable payload or Value budgets.
 

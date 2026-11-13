@@ -18,6 +18,8 @@ defmodule Tay.Engine.Lifecycle.Operation do
     :driver,
     :monitor,
     :stats,
+    :started_at,
+    :switch_at,
     :terminal_retention,
     :expected_source
   ]

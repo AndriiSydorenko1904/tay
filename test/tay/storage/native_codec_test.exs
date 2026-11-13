@@ -4,7 +4,7 @@ defmodule Tay.Storage.Native.CodecTest do
   alias Tay.Storage.Native
 
   defp fixtures do
-    Path.expand("../../fixtures/native/port_v1.json", __DIR__) |> File.read!() |> Jason.decode!()
+    Path.expand("../../fixtures/native/port_v2.json", __DIR__) |> File.read!() |> Jason.decode!()
   end
 
   defp platform(value) when is_map(value), do: Map.fetch!(value, to_string(elem(:os.type(), 1)))
@@ -84,7 +84,7 @@ defmodule Tay.Storage.Native.CodecTest do
         end
 
       requests = Enum.map(malformed, &Codec.encode_request(operation, id, &1))
-      requests = [<<2, fixture["opcode"], id::64, body::binary>> | requests]
+      requests = [<<1, fixture["opcode"], id::64, body::binary>> | requests]
 
       for request <- requests do
         reply = exchange(request, fixture["helper"])
@@ -138,6 +138,7 @@ defmodule Tay.Storage.Native.CodecTest do
   @stage ".tay-new-00000000000000000001-" <> String.duplicate("0", 32) <> ".tmp"
   @canonical "00000000000000000001.tay"
   defp invoke(n, :list), do: Native.list(n, :root)
+  defp invoke(n, :v2_clone), do: Native.v2_clone(n, :candidate, "RECOVERY")
   defp invoke(n, :mkdir), do: Native.mkdir_segments(n)
   defp invoke(n, :open_read), do: Native.open_read(n, :segments, @canonical)
   defp invoke(n, :read), do: Native.read(n, 0, 1)
@@ -175,17 +176,17 @@ defmodule Tay.Storage.Native.CodecTest do
   test "invalid envelopes cannot be mistaken for an acknowledged operation" do
     for reply <- [
           <<>>,
-          <<2, 17, 1::64, 0, 0::32, 0::64>>,
-          <<1, 14, 1::64, 0, 0::32, 0::64>>,
-          <<1, 17, 2::64, 0, 0::32, 0::64>>,
-          <<1, 17, 1::64, 0, 9::32, 0::64>>
+          <<1, 17, 1::64, 0, 0::32, 0::64>>,
+          <<2, 14, 1::64, 0, 0::32, 0::64>>,
+          <<2, 17, 2::64, 0, 0::32, 0::64>>,
+          <<2, 17, 1::64, 0, 9::32, 0::64>>
         ] do
       assert Codec.decode_reply(reply, :shutdown, 1) == :invalid_reply
     end
 
     assert {:error, %{bytes_written: :unknown}} =
              Codec.decode_reply(
-               <<1, 9, 1::64, 1, 5::32, 18_446_744_073_709_551_615::64, "eio">>,
+               <<2, 9, 1::64, 1, 5::32, 18_446_744_073_709_551_615::64, "eio">>,
                :write,
                1
              )

@@ -111,33 +111,31 @@ generation within their configured caller timeout instead of receiving an
 immediate `unavailable`. New stores are initialized directly with an empty
 Store-v2 generation. Store-v1 roots are refused and must be migrated with a
 Tay 1.4.x release before upgrading to 1.5.0.
-Reclaim-policy thresholds are conjunctive. Store-v2 retention compaction may run
-with active jobs. A due periodic checkpoint additionally requires at least one new
+Retention compaction compares estimated reclaimable bytes with the cost of
+rewriting the retained candidate and may run with active jobs. A due periodic checkpoint additionally requires at least one new
 durable tail event. Cooldown uses the later
 of the verified manifest capture time and post-publication recovered activation
-time. Restart conservatively extends cooldown rather than shortening it by
-construction time. Backward clocks conservatively defer.
+time. Maintenance backoff follows the measured duration of the previous
+operation rather than a configurable minimum interval. Backward clocks conservatively defer.
 
 Configuration (milliseconds except the explicit retention unit):
 
 ```elixir
 compaction: [
-  enabled: true,
   terminal_retention: {:hours, 24},
-  check_interval: 60_000,
-  checkpoint_interval: 0,
-  min_interval: 3_600_000,
-  min_sealed_segments: 1,
-  min_reclaimable_bytes: 16_777_216,
-  dead_ratio_threshold: 0.25
+  checkpoint_interval: 0
 ]
 ```
 
 `checkpoint_interval: 0` disables periodic checkpoints. A positive millisecond
 value checkpoints only after at least one new durable tail event. The evaluator
-runs at the smaller of `check_interval` and `checkpoint_interval`. Automatic
+schedules its own maintenance checks and respects the checkpoint interval. Automatic
 checkpoints first flush the current group commit and rotate at an exact durable
-sequence frontier. The background publisher reconstructs the candidate from the
+sequence frontier. Periodic checkpoints capture the frontier at actual start:
+new appends after the policy estimate do not invalidate it within the same Engine
+generation and storage epoch. A different generation or epoch still defers the
+checkpoint. Retention-based reclaim estimates retain their exact source check.
+The background publisher reconstructs the candidate from the
 sealed immutable Store-v2 generation on disk; it never scans, mutates, or copies
 the Engine's ETS projections. Concurrent mutations after that frontier are
 appended to an ordered candidate tail. The publisher performs repeated catch-up
@@ -149,19 +147,36 @@ buffer, and leaves the source generation authoritative and writable. A builder
 that cannot converge within the bounded round limit behaves the same way.
 The new `CURRENT` is published only after the candidate and its incremental tail
 are validated and synced. The post-publication authority check is bounded;
-restart still performs the full replay of the canonical snapshot followed by
-its tail. The durable sequence frontier, rather than a wall-clock timestamp, decides which
+restart uses checkpoint metadata and addressed active/auxiliary reads when the
+extended index is available, followed by tail replay. Older checkpoints use full replay. The durable sequence frontier, rather than a wall-clock timestamp, decides which
 mutations are already covered.
 All checkpoints operate on Store-v2 generations and prepare online.
 
-Unknown/duplicate keys, unbounded/nonpositive timers or byte/count limits and
-invalid ratios fail configuration. Timers/counts fit unsigned 32 bits; bytes fit
-signed durable time/integer range. Bounded hours use the shared manifest rule
+When the source has no new tail events and retention keeps every snapshot,
+publication reuses base segments and `RECOVERY` through copy-on-write copies.
+Each copy has its own inode and one link; predecessor cleanup cannot remove
+bytes addressed by the new epoch. The native owner syncs each copy before the
+usual directory/manifest/CURRENT barriers. Unsupported filesystems use bounded
+copies instead. A changed tail or expired history uses the normal rewrite path;
+this is not yet incremental segment cleaning under sustained writes.
+
+Checkpoint adoption removes expired IDs through metadata and rebinds cold
+readers to the new epoch; retained terminal DETS bodies need no rewrite.
+
+Compaction `pause_ms` measures the final admission fence through reclamation,
+Engine checkpoint adoption and resumed admission. `total_ms` also includes
+preparation and coordination. `publication_pause_ms` and `publication_total_ms`
+preserve the narrower publisher measurements. `candidate_bytes` is the logical
+candidate size; `reused_bytes` counts successful copy-on-write reuse and
+`rewritten_bytes` counts the remaining logical bytes, including fallback copies.
+These byte counts do not measure filesystem allocation or physical device writes.
+
+Unknown/duplicate keys and invalid checkpoint intervals fail configuration.
+Checkpoint intervals fit unsigned 32 bits. Bounded hours use the shared manifest rule
 `1..2_562_047_788_015`, not a separate configuration duration syntax. A manual
 zero-retention request is a one-shot full terminal-history purge: it preserves
 every non-terminal job and persists the minimum future retention of one hour.
-Ratios are
-positive finite numbers at most one. Automatic configuration rejects infinity.
+Automatic retention configuration rejects infinity.
 
 Terminal jobs are removed from the hot ETS job projection as soon as they
 finish and remain queryable through a disposable disk-backed inspection index.
@@ -360,9 +375,13 @@ This applies to persistent and volatile jobs. Executor.Server has no separate
 storage or Value-limit configuration.
 
 Recovery, activation revalidation and offline inspection use the same fixed
-record-format and Value checks. There are no separate recovery payload, Value,
-insertion argument/depth/node or segment-count settings. New insertions retain
-one configurable whole-event limit, `max_insert_payload_bytes` (default 1 MiB).
+record-format and Value checks. Each recovery pass verifies snapshot SHA-256
+during segment parsing, without a separate digest read. Preparation and activation
+revalidation each still read the complete retained snapshot and journal tail.
+There are no separate recovery payload, Value,
+insertion argument/depth/node, whole-event insertion or segment-count settings.
+Insertions use the physical format ceiling and the shared admission byte pool;
+admission does not divide the available bytes evenly between client slots.
 Journal byte admission remains controlled by `max_history_bytes`.
 
 Execution batch size and scheduler polling are internal implementation choices.
@@ -370,3 +389,25 @@ Recovery sessions expire internally if not activated. `recovery.deadline_ms`
 controls each replay and activation/revalidation phase; `storage_timeout` controls
 storage I/O during recovery and normal operation. Offline inspection accepts the
 same `storage_timeout` option.
+
+## Shared platform verification
+
+On macOS, run the core and standalone checks directly:
+
+```sh
+mix test --warnings-as-errors --seed 0
+cd standalone
+mix test --warnings-as-errors --seed 0
+```
+
+Run the same commands on Linux with the same seed, separately on ext4 and Btrfs.
+For strict sync coverage, set `TAY_TEST_SYNC=1` and `TAY_TEST_DATA_ROOT` to a
+writable directory on the filesystem under test.
+`scripts/Dockerfile.test` provides the Linux test dependencies. A disposable
+loop-mounted filesystem requires privileged Docker; run the tests as the
+unprivileged `tester` user and remove the test container when finished.
+
+Production Engines always use sync storage durability; omit the Engine `durability`
+option. Development/test builds and low-level storage commands retain explicit
+modes for fixtures and measurements. Global `:persistent`/`:volatile` job policy
+is configured separately and remains supported.

@@ -9,6 +9,7 @@ defmodule Tay.Storage.Segment do
 
   @max_id 18_446_744_073_709_551_615
   @max_bytes 1_073_741_824
+  @rotation_bytes 67_108_864
   @max_count 38_347_918
   @min_rotation_bytes 16_777_352
   defstruct [
@@ -33,6 +34,9 @@ defmodule Tay.Storage.Segment do
 
   @spec min_rotation_bytes() :: pos_integer()
   def min_rotation_bytes, do: @min_rotation_bytes
+
+  @doc false
+  def rotation_bytes, do: @rotation_bytes
 
   @spec max_count() :: pos_integer()
   def max_count, do: @max_count

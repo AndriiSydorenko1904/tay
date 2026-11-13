@@ -155,6 +155,15 @@ defmodule Tay.Storage.Writer do
   def finish_online_freeze(writer, admission_ref, token),
     do: GenServer.call(writer, {:compact_online_freeze_ack, admission_ref, token}, :infinity)
 
+  @doc false
+  def checkpoint_job(writer, admission_ref, epoch_id, descriptor, id),
+    do:
+      GenServer.call(
+        writer,
+        {:checkpoint_job, admission_ref, epoch_id, descriptor, id},
+        :infinity
+      )
+
   def status(writer), do: GenServer.call(writer, :status, :infinity)
   @doc "Appends opaque physical bytes supplied by an upstream semantic validator."
   def append(writer, type, schema, payload),
@@ -384,6 +393,20 @@ defmodule Tay.Storage.Writer do
   def handle_call(_request, _from, %{compacted: true} = state),
     do: {:reply, {:error, :compaction_restart_required}, state}
 
+  def handle_call(
+        {:checkpoint_job, reference, epoch_id, descriptor, id},
+        {caller, _},
+        %{recovery: recovery} = state
+      ) do
+    if recovery.status == :ready and caller == recovery.caller and
+         reference == recovery.admission_ref and epoch_id == state.epoch_id do
+      result = Tay.Storage.V2.RecoveryIndex.fetch(state.native, descriptor, id)
+      {:reply, result, state}
+    else
+      {:reply, {:error, :stale_checkpoint_reader}, state}
+    end
+  end
+
   def handle_call({:activate_recovered, reference}, {caller, _}, %{recovery: recovery} = state)
       when is_map(recovery) do
     case RecoveryLifecycle.activation_error(recovery, reference) do
@@ -584,7 +607,6 @@ defmodule Tay.Storage.Writer do
       results: %{},
       frontier: 0,
       captured_at: 0,
-      rotation_target_bytes: state.options.rotation_target_bytes,
       candidate_limits: state.candidate_limits,
       value_limits: state.value_limits
     }

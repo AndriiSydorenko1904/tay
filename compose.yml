@@ -3,12 +3,11 @@
 # Durability is fixed to :sync in the standalone runtime; it has no env override.
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:1.8.1}
+    image: ${TAY_IMAGE:-ghcr.io/andriisydorenko1904/tay:2.0.0}
     build: .
     environment:
       TAY_DATA_DIR: /var/lib/tay/store
       TAY_INITIALIZE_IF_MISSING: "true"
-      TAY_GROUP_COMMIT_INTERVAL_MS: ${TAY_GROUP_COMMIT_INTERVAL_MS:-0}
       TAY_CHECKPOINT_INTERVAL_MS: ${TAY_CHECKPOINT_INTERVAL_MS:-60000}
       TAY_DEFAULT_QUEUE_CONCURRENCY: ${TAY_DEFAULT_QUEUE_CONCURRENCY:-10}
       TAY_CALLER_TIMEOUT_MS: ${TAY_CALLER_TIMEOUT_MS:-5000}

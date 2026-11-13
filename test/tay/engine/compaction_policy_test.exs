@@ -52,36 +52,23 @@ defmodule Tay.Engine.CompactionPolicyTest do
 
   test "strict finite config, shared duration bound, disabled opt-out" do
     assert {:ok, defaults} = CompactionConfig.new([])
-    assert defaults.enabled
+    assert defaults.automatic
     assert defaults.checkpoint_interval == 0
-    assert {:ok, %{enabled: false}} = CompactionConfig.new(false)
+    assert {:ok, %{automatic: false}} = CompactionConfig.new(false)
     assert {:ok, _} = CompactionConfig.new(terminal_retention: {:hours, Retention.max_hours()})
 
     for options <- [
           nil,
           true,
           %{},
-          [enabled: true, enabled: true],
           [unknown: 1],
-          [enabled: nil],
           [terminal_retention: :infinity],
           [terminal_retention: {:hours, 0}],
           [terminal_retention: {:hours, Retention.max_hours() + 1}],
           [max_terminal_jobs: 5_000],
-          [check_interval: :infinity],
-          [check_interval: 0],
-          [check_interval: 4_294_967_296],
           [checkpoint_interval: -1],
           [checkpoint_interval: 4_294_967_296],
-          [checkpoint_interval: 1.0],
-          [min_interval: -1],
-          [min_interval: 1.0],
-          [min_sealed_segments: 0],
-          [min_reclaimable_bytes: V2.max_time() + 1],
-          [min_reclaimable_bytes: 0],
-          [dead_ratio_threshold: 0],
-          [dead_ratio_threshold: 1.01],
-          [dead_ratio_threshold: :nan]
+          [checkpoint_interval: 1.0]
         ] do
       assert {:error, :compaction_configuration} = CompactionConfig.new(options)
     end
@@ -112,9 +99,10 @@ defmodule Tay.Engine.CompactionPolicyTest do
       running_jobs: 1,
       source: {<<1::128>>, 10},
       last_compaction_at: nil,
-      sealed_segments: config.min_sealed_segments,
-      reclaimable_bytes: config.min_reclaimable_bytes,
-      ratio: config.dead_ratio_threshold
+      sealed_segments: 1,
+      reclaimable_bytes: 2_000_000,
+      candidate_upper_bytes: 1_000_000,
+      ratio: 0.5
     }
 
     assert :ok = CompactionPolicy.eligible(summary, config, 10)
@@ -133,7 +121,9 @@ defmodule Tay.Engine.CompactionPolicyTest do
       checkpoint_events: 1,
       sealed_segments: 0,
       reclaimable_bytes: 0,
-      ratio: 0
+      ratio: 0,
+      candidate_upper_bytes: 1_000_000,
+      maintenance_cost_ms: 2_000
     }
 
     assert {:error, :cooldown} = CompactionPolicy.eligible(summary, config, 14_999)
@@ -145,53 +135,32 @@ defmodule Tay.Engine.CompactionPolicyTest do
              CompactionPolicy.eligible(%{summary | checkpoint_events: 0}, config, 15_000)
   end
 
-  test "all gates conjunctive, cooldown equality and minimal generations do not churn" do
+  test "maintenance compares rewrite benefit and backs off by its measured cost" do
     c = CompactionConfig.defaults()
 
     s = %{
       last_compaction_at: nil,
-      sealed_segments: c.min_sealed_segments,
-      reclaimable_bytes: c.min_reclaimable_bytes,
-      ratio: c.dead_ratio_threshold
+      sealed_segments: 1,
+      reclaimable_bytes: 2_000_000,
+      candidate_upper_bytes: 1_000_000,
+      maintenance_cost_ms: 250
     }
 
-    assert :ok = CompactionPolicy.eligible(s, c, 10_000_000)
+    assert :ok = CompactionPolicy.eligible(s, c, 10_000)
 
-    assert {:error, :too_few_segments} =
-             CompactionPolicy.eligible(%{s | sealed_segments: 0}, c, 10_000_000)
+    assert {:error, :no_sealed_history} =
+             CompactionPolicy.eligible(%{s | sealed_segments: 0}, c, 10_000)
 
-    assert {:error, :not_enough_reclaimable_bytes} =
-             CompactionPolicy.eligible(
-               %{s | reclaimable_bytes: c.min_reclaimable_bytes - 1},
-               c,
-               10_000_000
-             )
+    assert {:error, :no_reclaimable_history} =
+             CompactionPolicy.eligible(%{s | reclaimable_bytes: 0}, c, 10_000)
 
-    assert {:error, :ratio_below_threshold} =
-             CompactionPolicy.eligible(
-               %{s | ratio: c.dead_ratio_threshold - 0.001},
-               c,
-               10_000_000
-             )
+    assert {:error, :rewrite_cost} =
+             CompactionPolicy.eligible(%{s | reclaimable_bytes: 999_999}, c, 10_000)
 
-    s = %{s | last_compaction_at: 10_000_000}
-    assert {:error, :cooldown} = CompactionPolicy.eligible(s, c, 9_999_999)
-    assert {:error, :cooldown} = CompactionPolicy.eligible(s, c, 10_000_000 + c.min_interval - 1)
-    assert :ok = CompactionPolicy.eligible(s, c, 10_000_000 + c.min_interval)
-
-    {:ok, estimate} =
-      CompactionEstimate.summarize(CompactionEstimate.new(), 44, 0, {:hours, 24}, 100_000_000)
-
-    for _ <- 1..1000,
-        do:
-          assert(
-            {:error, _} =
-              CompactionPolicy.eligible(
-                Map.put(estimate, :last_compaction_at, nil),
-                c,
-                100_000_000
-              )
-          )
+    s = %{s | last_compaction_at: 10_000}
+    assert {:error, :cooldown} = CompactionPolicy.eligible(s, c, 9_999)
+    assert {:error, :cooldown} = CompactionPolicy.eligible(s, c, 10_999)
+    assert :ok = CompactionPolicy.eligible(s, c, 11_000)
   end
 
   property "candidate upper bound dominates worst one-segment-per-snapshot bytes and full authority metadata" do

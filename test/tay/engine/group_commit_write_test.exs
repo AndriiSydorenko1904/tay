@@ -4,16 +4,13 @@ defmodule Tay.Engine.GroupCommitWriteTest do
   alias Tay.Test.RecoveryHelpers, as: Recovery
   @name __MODULE__
 
-  test "write durability is not delayed by a configured group-commit interval" do
+  test "write durability does not enter automatic sync batching" do
     path = NativeHelpers.path()
     Recovery.store(path)
     on_exit(fn -> File.rm_rf!(path) end)
 
     {:ok, root} =
-      EngineHelpers.start(path, @name,
-        durability: :write,
-        journal: [batch: [max_events: 64, interval_ms: 1_000]]
-      )
+      EngineHelpers.start(path, @name, durability: :write)
 
     {:ok, intent} = EngineWorker.new(%{})
     started = System.monotonic_time(:millisecond)

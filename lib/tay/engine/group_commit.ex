@@ -3,6 +3,9 @@ defmodule Tay.Engine.GroupCommit do
 
   alias Tay.Engine.ProjectionState
   alias Tay.Storage.Writer
+  @commands_per_turn 8
+
+  def window(config), do: min(config.client_slots, @commands_per_turn)
 
   def batchable?(state, {:insert, _, _, _, requested}) do
     mode = requested || state.config.job_durability
@@ -26,15 +29,12 @@ defmodule Tay.Engine.GroupCommit do
 
   def batchable?(_, _), do: false
 
-  defp enabled?(state) do
-    batch = state.config.journal_batch
+  defp enabled?(state), do: state.config.durability == :sync and state.mode == :ready
 
-    state.config.durability == :sync and state.mode == :ready and
-      (batch.max_events > 1 or batch.interval_ms > 0)
-  end
-
-  def full?(%{group_commit: %{commands: commands}, config: %{journal_batch: batch}}),
-    do: length(commands) >= batch.max_events
+  # Collect commands already admitted to the Engine, then sync once. The limit
+  # follows existing admission capacity; no batch-size or delay setting exists.
+  def full?(%{group_commit: %{commands: commands}, config: config}),
+    do: length(commands) >= window(config)
 
   def full?(_), do: false
 
@@ -45,7 +45,7 @@ defmodule Tay.Engine.GroupCommit do
       Process.send_after(
         self(),
         {:flush_group_commit, token},
-        state.config.journal_batch.interval_ms
+        0
       )
 
     %{

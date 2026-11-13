@@ -9,9 +9,11 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <linux/fs.h>
+#include <sys/ioctl.h>
 #else
 #include <sys/mount.h>
 #include <sys/attr.h>
+#include <sys/clonefile.h>
 #endif
 #include <dirent.h>
 #include <fcntl.h>
@@ -24,7 +26,7 @@
 #include <limits.h>
 #include <signal.h>
 
-#define PROTOCOL_VERSION 1u
+#define PROTOCOL_VERSION 2u
 #define RECORD_PAYLOAD_MAX_BYTES 16777216u
 #define RECORD_OVERHEAD_BYTES 28u
 #define IO_BODY_MAX (RECORD_PAYLOAD_MAX_BYTES + RECORD_OVERHEAD_BYTES)
@@ -88,7 +90,7 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
   V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31,
   V2_PUBLISH_CURRENT=33, V2_SPACE=34,
-  V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39,
+  V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39, V2_CLONE=40,
   FAULT=240 };
 
 /* Fault-site values are part of the test protocol. Keep their numeric values
@@ -174,13 +176,22 @@ struct store_state {
   struct stat read_identity, write_identity;
   int strict_mode, validated_fs, root_created, inspection_only;
   uint64_t filesystem_type, known_written;
-  uint32_t ancestor_syncs, directory_limit;
+  uint32_t ancestor_syncs;
 };
 static struct store_state store = {
   .root_fd=-1, .segments_fd=-1, .lock_fd=-1, .read_fd=-1, .write_fd=-1,
   .epochs_fd=-1, .epoch_fd=-1, .segments_parent_fd=-1,
-  .segments_name="segments", .directory_limit=UINT32_MAX
+  .segments_name="segments"
 };
+
+static DIR *listing=NULL;
+static int listing_scope=-1, listing_cold=0;
+static struct stat listing_identity;
+static int close_listing(void) {
+  int e=listing && closedir(listing)<0?errno:0;
+  listing=NULL; listing_scope=-1;
+  return e;
+}
 
 /* Candidate descriptors are independent of the selected source epoch. */
 struct candidate_state {
@@ -666,7 +677,7 @@ static int stage_kind(int scope,const char *name) {
     memcpy(canon+SEGMENT_ID_DIGITS,SEGMENT_EXTENSION,sizeof(SEGMENT_EXTENSION));
     if (canonical(canon)) return WRITE_SEGMENT_HEADER_STAGE;
   }
-  if (scope==SCOPE_CANDIDATE && !strcmp(name,"MANIFEST")) return WRITE_COLD_COPY;
+  if (scope==SCOPE_CANDIDATE && (!strcmp(name,"MANIFEST") || !strcmp(name,"RECOVERY"))) return WRITE_COLD_COPY;
   if (scope==SCOPE_CANDIDATE_SEGMENTS && canonical(name)) return WRITE_SEGMENT;
   return WRITE_NONE;
 }
@@ -684,11 +695,6 @@ static int acquire(int mode) {
   if (store.acquired || !need(2)) return EPROTO;
   store.strict_mode=(int)number(1); store.validated_fs=(int)number(1);
   if (store.strict_mode>1 || store.validated_fs>1) return EINVAL;
-  if (existing) {
-    if (!need(4)) return EPROTO;
-    store.directory_limit=(uint32_t)number(4);
-    if (!store.directory_limit) return EINVAL;
-  }
 #ifndef __linux__
   if (store.strict_mode) return ENOTSUP;
 #endif
@@ -844,7 +850,7 @@ static int v2_begin(void) {
 static int release_candidate_handles(void) {
   int *descriptors[] = {&store.read_fd, &pending_epoch.write_fd,
     &pending_epoch.segments_fd, &pending_epoch.fd};
-  int first_error=0;
+  int first_error=close_listing();
   for (size_t i=0; i<sizeof(descriptors)/sizeof(descriptors[0]); i++) {
     int error=release_owned_fd(descriptors[i]);
     if (!first_error) first_error=error;
@@ -934,12 +940,11 @@ static int reclaim_segments(int directory,uint64_t *bytes) {
   if (copy<0) { e=errno; close(fd); return e; }
   DIR *dir=fdopendir(copy);
   if (!dir) { e=errno; close(copy); close(fd); return e; }
-  struct dirent *ent; uint32_t count=0;
+  struct dirent *ent;
   errno=0;
   while ((ent=readdir(dir))) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
     struct stat s;
-    if (++count>store.directory_limit) { e=EFBIG; break; }
     if (!canonical(ent->d_name) || fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0 ||
         !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
     errno=0;
@@ -998,16 +1003,20 @@ static int v2_reclaim(void) {
     if (copy<0) { e=errno; close(target_fd); return e; }
     DIR *dir=fdopendir(copy);
     if (!dir) { e=errno; close(copy); close(target_fd); return e; }
-    struct dirent *ent; int manifest=0,segments_present=0; uint32_t count=0;
+    struct dirent *ent; int manifest=0,recovery_index=0,segments_present=0;
     errno=0;
     while ((ent=readdir(dir))) {
       if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
-      if (++count>store.directory_limit) { e=EFBIG; break; }
-      if (!strcmp(ent->d_name,"MANIFEST")) {
+        if (!strcmp(ent->d_name,"MANIFEST")) {
         struct stat s;
         if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0 ||
             !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
         manifest=1;
+      } else if (!strcmp(ent->d_name,"RECOVERY")) {
+        struct stat s;
+        if (fstatat(target_fd,"RECOVERY",&s,AT_SYMLINK_NOFOLLOW)<0 ||
+            !S_ISREG(s.st_mode) || s.st_nlink!=1) { e=EINVAL; break; }
+        recovery_index=1;
       } else if (!strcmp(ent->d_name,"segments")) {
         struct stat s;
         if (fstatat(target_fd,"segments",&s,AT_SYMLINK_NOFOLLOW)<0 || !S_ISDIR(s.st_mode)) { e=EINVAL; break; }
@@ -1020,9 +1029,16 @@ static int v2_reclaim(void) {
     /* A previous attempt may already have unlinked the manifest after all
      * segments, then lost the directory-fsync/rmdir reply. Resume that exact
      * empty predecessor, but never accept segments without its manifest. */
-    if (!manifest && segments_present && !e) e=EINVAL;
+    if (!manifest && (segments_present || recovery_index) && !e) e=EINVAL;
     if (e) { close(target_fd); return e; }
     e=reclaim_segments(target_fd,&bytes);
+    if (!e && recovery_index) {
+      struct stat s;
+      if (fstatat(target_fd,"RECOVERY",&s,AT_SYMLINK_NOFOLLOW)<0) e=errno;
+      else if (reclamation_unlink(target_fd,"RECOVERY",0,FAULT_MANIFEST_UNLINK)<0 ||
+               promotion_sync(target_fd,FAULT_MANIFEST_UNLINK_SYNC)<0) e=errno;
+      else bytes+=(uint64_t)s.st_size;
+    }
     if (!e && manifest) {
       struct stat s;
       if (fstatat(target_fd,"MANIFEST",&s,AT_SYMLINK_NOFOLLOW)<0) e=errno;
@@ -1197,46 +1213,62 @@ static int cold_sync_catalog(void) {
     for (size_t i=cold.catalog_chain.count;i>0;i--) if (fsync(cold.catalog_chain.fds[i-1])<0) return errno;
   return 0;
 }
-static int cold_list_directory(void) {
-  if (!need(5)) return EPROTO;
-  int scope=(int)number(1), fd=scope_fd(scope);
-  uint32_t limit=(uint32_t)number(4);
-  if (!cold.source || !limit || fd<0 ||
-      !(scope==SCOPE_ROOT || scope==SCOPE_SEGMENTS || scope==SCOPE_EPOCH)) return EINVAL;
-  /* Reuse the normal listing implementation's wire format, but give the
-   * caller its remaining global budget so copy inventory stops incrementally. */
-  uint32_t saved=store.directory_limit; store.directory_limit=limit;
-  unsigned char body[1]={ (unsigned char)scope };
-  const unsigned char *saved_input=input; size_t saved_n=input_n,saved_pos=pos;
-  input=body; input_n=1; pos=0;
-  int e=list_directory();
-  input=saved_input; input_n=saved_n; pos=saved_pos; store.directory_limit=saved;
-  return e;
+/* A cursor owns a separate directory FD across bounded protocol pages. No
+ * total inventory quota exists; a changed directory invalidates the cursor. */
+static int directory_unchanged(const struct stat *a,const struct stat *b) {
+#ifdef __APPLE__
+  return same(a,b) && time_ns(&a->st_mtimespec)==time_ns(&b->st_mtimespec) &&
+    time_ns(&a->st_ctimespec)==time_ns(&b->st_ctimespec);
+#else
+  return same(a,b) && time_ns(&a->st_mtim)==time_ns(&b->st_mtim) &&
+    time_ns(&a->st_ctim)==time_ns(&b->st_ctim);
+#endif
 }
-static int list_directory(void) {
-  if (!need(1)) return EPROTO;
-  int scope=(int)number(1), fd=scope_fd(scope);
+static int list_page(int is_cold) {
+  if (!need(is_cold?6:2)) return EPROTO;
+  int scope=(int)number(1), continuation=(int)number(1), fd=scope_fd(scope);
+  uint32_t limit=is_cold?(uint32_t)number(4):UINT32_MAX;
   if (fd<0) return scope==SCOPE_SEGMENTS?ENOENT:EINVAL;
-  /* A new open file description avoids shared directory offsets with dup(). */
-  int copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-  if (copy<0) return errno;
-  DIR *dir=fdopendir(copy); if (!dir) { int e=errno; close(copy); return e; }
-  put(0,4); uint32_t count=0; struct dirent *ent; int e=0;
+  if (continuation>1 || !limit || (is_cold && (!cold.source ||
+      !(scope==SCOPE_ROOT || scope==SCOPE_SEGMENTS || scope==SCOPE_EPOCH)))) return EINVAL;
+  int e=0; struct stat now;
+  if (!continuation) {
+    if (listing) return EBUSY;
+    int copy=openat(fd,".",O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+    if (copy<0) return errno;
+    listing=fdopendir(copy);
+    if (!listing) { e=errno; close(copy); return e; }
+    listing_scope=scope; listing_cold=is_cold;
+    if (fstat(fd,&listing_identity)<0) e=errno;
+  } else if (!listing || listing_scope!=scope || listing_cold!=is_cold) return EINVAL;
+  if (!e && fstat(fd,&now)<0) e=errno;
+  if (!e && !directory_unchanged(&listing_identity,&now)) e=ESTALE;
+  put(0,1); put(0,4); uint32_t count=0; int more=0;
+  struct dirent *ent;
   errno=0;
-  while ((ent=readdir(dir))) {
+  while (!e && (ent=readdir(listing))) {
     if (!strcmp(ent->d_name,".") || !strcmp(ent->d_name,"..")) continue;
-    if (count>=store.directory_limit) { e=EFBIG; break; }
-    size_t n=strlen(ent->d_name); struct stat s;
+    if (count==limit) { e=EFBIG; break; }
+    size_t n=strlen(ent->d_name); struct stat entry;
     if (output_n+n+55>PACKET_MAX-23) { e=EFBIG; break; }
-    if (fstatat(fd,ent->d_name,&s,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
-    put(n,2); memcpy(output+output_n,ent->d_name,n); output_n+=n; stat_out(&s); count++;
+    if (fstatat(fd,ent->d_name,&entry,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
+    put(n,2); memcpy(output+output_n,ent->d_name,n); output_n+=n; stat_out(&entry); count++;
+    if (count==1024 && count<limit) { more=1; break; }
     errno=0;
   }
   if (!e && errno) e=errno;
-  if (closedir(dir)<0 && !e) e=errno;
-  for (int i=0;i<4;i++) output[i]=(unsigned char)(count>>((3-i)*8));
+  if (!e && fstat(fd,&now)<0) e=errno;
+  if (!e && !directory_unchanged(&listing_identity,&now)) e=ESTALE;
+  if (!more || e) {
+    int close_error=close_listing();
+    if (!e) e=close_error;
+  }
+  output[0]=(unsigned char)more;
+  for (int i=0;i<4;i++) output[1+i]=(unsigned char)(count>>((3-i)*8));
   return e;
 }
+static int cold_list_directory(void) { return list_page(1); }
+static int list_directory(void) { return list_page(0); }
 static int open_read(void) {
   if (store.read_fd>=0 || !need(1)) return EBUSY;
   store.read_scope=(int)number(1); int fd=scope_fd(store.read_scope);
@@ -1256,12 +1288,74 @@ static int validate_read(void) {
   if (e) return e;
   return same(&now,&store.read_identity) && now.st_size==store.read_identity.st_size ? 0 : ESTALE;
 }
+/* Copy-on-write copies have independent inodes and link counts. Reclamation
+ * of the predecessor therefore cannot invalidate the new epoch or its readers.
+ * Unsupported filesystems fall back to a bounded positional copy. */
+static int v2_clone(void) {
+  if (!need(1)) return EPROTO;
+  int scope=(int)number(1), e;
+  char name[256];
+  e=string(name,sizeof(name));
+  if (e) return e;
+  if ((scope!=SCOPE_CANDIDATE && scope!=SCOPE_CANDIDATE_SEGMENTS) ||
+      !basename_ok(name) || (scope==SCOPE_CANDIDATE && strcmp(name,"RECOVERY")) ||
+      (scope==SCOPE_CANDIDATE_SEGMENTS && !canonical(name)) ||
+      pending_epoch.fd<0 || pending_epoch.write_fd>=0) return EINVAL;
+  e=validate_read(); if (e) return e;
+  int dir=scope_fd(scope), out=-1, cloned=0;
+#ifdef __APPLE__
+  if (fclonefileat(store.read_fd,dir,name,0)==0) cloned=1;
+  else if (errno!=ENOTSUP && errno!=EXDEV && errno!=EINVAL) return errno;
+  if (cloned) out=openat(dir,name,O_RDWR|O_NOFOLLOW|O_CLOEXEC);
+#endif
+  if (!cloned) {
+    out=openat(dir,name,O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    if (out<0) return errno;
+#ifdef __linux__
+    if (ioctl(out,FICLONE,store.read_fd)==0) cloned=1;
+    else if (errno!=EOPNOTSUPP && errno!=EXDEV && errno!=EINVAL && errno!=ENOTTY) {
+      e=errno; close(out); return e;
+    }
+#endif
+  }
+  if (out<0) return errno;
+  struct stat identity;
+  e=checked_regular(out,dir,name,&identity);
+  unsigned char *buffer=NULL;
+  if (!e && !cloned) {
+    buffer=malloc(READBACK_VERIFY_CHUNK_BYTES);
+    if (!buffer) e=ENOMEM;
+    for (off_t offset=0; !e && offset<store.read_identity.st_size;) {
+      size_t size=(uint64_t)(store.read_identity.st_size-offset)>READBACK_VERIFY_CHUNK_BYTES?
+        READBACK_VERIFY_CHUNK_BYTES:(size_t)(store.read_identity.st_size-offset);
+      ssize_t got=pread(store.read_fd,buffer,size,offset);
+      if (got<0) { e=errno; break; }
+      if ((size_t)got!=size) { e=EIO; break; }
+      size_t written=0;
+      while (!e && written<size) {
+        ssize_t n=pwrite(out,buffer+written,size-written,offset+(off_t)written);
+        if (n<0) { if (errno==EINTR) continue; e=errno; }
+        else if (!n) e=EIO;
+        else written+=(size_t)n;
+      }
+      offset+=(off_t)size;
+    }
+    free(buffer);
+  }
+  if (!e) e=validate_read();
+  if (!e && fsync(out)<0) e=errno;
+  if (close(out)<0 && !e) e=errno;
+  if (!e) { put((uint64_t)cloned,1); e=check_paths(); }
+  return e;
+}
+
 static int read_at(void) {
   if (!need(12)) return EPROTO;
   uint64_t off=number(8), n=number(4);
   if (n>IO_BODY_MAX || n>sizeof(output) || off>INT64_MAX ||
       n>(uint64_t)INT64_MAX-off ||
-      (!cold.source && (off>SEGMENT_MAX_BYTES || off+n>SEGMENT_MAX_BYTES))) return EFBIG;
+      (!cold.source && strcmp(store.read_name,"RECOVERY") &&
+       (off>SEGMENT_MAX_BYTES || off+n>SEGMENT_MAX_BYTES))) return EFBIG;
   int e=validate_read(); if (e) return e;
 #ifdef TAY_TEST_FAULTS
   if (fault_now && fault_action==FAULT_SHORT_IO && n) n=fault_short<n?fault_short:n-1;
@@ -1497,6 +1591,7 @@ static int dispatch(unsigned op) {
     case V2_SPACE: return v2_space();
     case V2_RECLAIM: return v2_reclaim();
     case V2_ABORT: return v2_abort();
+    case V2_CLONE: return v2_clone();
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
       if (store.segments_fd>=0) return EEXIST;
@@ -1553,12 +1648,15 @@ static int validate_request(unsigned op) {
   char name[PATH_MAX]; int e=0;
   switch (op) {
     case ACQUIRE: case ACQUIRE_EXISTING: case ACQUIRE_IF_MISSING:
-      if (!need(op==ACQUIRE_EXISTING?6:2)) return EPROTO;
-      pos+=op==ACQUIRE_EXISTING?6:2; e=string(name,sizeof(name)); break;
-    case LIST: case SYNC_DIR:
+      if (!need(2)) return EPROTO;
+      pos+=2; e=string(name,sizeof(name)); break;
+    case LIST:
+      if (!need(2)) return EPROTO;
+      pos+=2; break;
+    case SYNC_DIR:
       if (!need(1)) return EPROTO;
       pos++; break;
-    case OPEN_READ: case CREATE_STAGE:
+    case OPEN_READ: case CREATE_STAGE: case V2_CLONE:
       if (!need(1)) return EPROTO;
       pos++; e=string(name,256); break;
     case V2_SELECT: case V2_BEGIN: case V2_PUBLISH_EPOCH:
@@ -1594,8 +1692,8 @@ static int validate_request(unsigned op) {
       break;
     }
     case COLD_LIST:
-      if (!need(5)) return EPROTO;
-      pos+=5; break;
+      if (!need(6)) return EPROTO;
+      pos+=6; break;
     case READ_AT:
       if (!need(12)) return EPROTO;
       pos+=12; break;
@@ -1698,6 +1796,7 @@ int main(void) {
     if (!e) { pos=REQUEST_HEADER_BYTES; e=dispatch(op); }
     if (!e && pos!=input_n) e=EPROTO;
     if (!e && store.acquired) e=check_paths();
+    if (e && (op==LIST || op==COLD_LIST)) (void)close_listing();
     if (e && failure_poisons(op)) store.poisoned=1;
 #ifdef TAY_TEST_FAULTS
     if (fault_now && fault_action==FAULT_HELPER_CRASH_AFTER_CALL)

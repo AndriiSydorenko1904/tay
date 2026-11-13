@@ -3,13 +3,13 @@ defmodule Tay.Engine.AdmissionTest do
   alias Tay.Engine.{Admission, Config, Lifecycle}
   alias Tay.Test.EngineHelpers, as: H
   @name __MODULE__
-  setup do
+  setup context do
     {:ok, config} =
       Config.new(
         data_dir: "tmp/unused-admission",
         name: @name,
         durability: :write,
-        client_slots: 1,
+        client_slots: Map.get(context, :slots, 1),
         client_bytes: 1024
       )
 
@@ -20,6 +20,28 @@ defmodule Tay.Engine.AdmissionTest do
     {:ok, meta} = Admission.metadata(@name)
     on_exit(fn -> if Process.alive?(guardian), do: GenServer.stop(guardian) end)
     %{guardian: guardian, generation: generation, meta: meta}
+  end
+
+  @tag slots: 2
+  test "requests share the byte pool instead of dividing it per slot", %{
+    meta: meta,
+    guardian: guardian
+  } do
+    for _ <- 1..2 do
+      caller =
+        Task.async(fn -> Admission.request(@name, meta, :body, 768, :insert, "id", 2_000) end)
+
+      assert_receive {:command, _, {slot, token}, :body, from}
+      assert Tay.status(name: @name).client_bytes_used == 768
+
+      assert {:error, %{reason: :client_bytes}} =
+               Admission.request(@name, meta, :other, 400, :insert, "other", 100)
+
+      assert Tay.status(name: @name).client_slots_used == 1
+      send(guardian, {:completed, self(), slot, token, from, {:ok, :accepted}, %{}})
+      assert {:ok, :accepted} = Task.await(caller)
+      assert Tay.status(name: @name).client_bytes_used == 0
+    end
   end
 
   test "bytes and count are reserved before payload; submitted timeout does not release", %{

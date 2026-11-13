@@ -12,7 +12,6 @@ Code.require_file("harness.exs", __DIR__)
       args_bytes: :integer,
       clients: :integer,
       client_slots: :integer,
-      group_commit_interval_ms: :integer,
       deadline_ms: :integer,
       rotation_segments: :integer,
       replay_segments: :string
@@ -23,13 +22,31 @@ if invalid != [] or arguments != [], do: raise("unknown benchmark argument")
 
 scenario =
   case Keyword.get(options, :scenario, "lifecycle") do
-    "lifecycle" -> :lifecycle
-    "rotation" -> :rotation
-    "replay" -> :replay
-    "schedule" -> :schedule
-    "reserve" -> :reserve
-    "group_commit" -> :group_commit
-    _ -> raise("scenario must be lifecycle, rotation, replay, schedule, reserve, or group_commit")
+    "lifecycle" ->
+      :lifecycle
+
+    "rotation" ->
+      :rotation
+
+    "replay" ->
+      :replay
+
+    "schedule" ->
+      :schedule
+
+    "reserve" ->
+      :reserve
+
+    "group_commit" ->
+      :group_commit
+
+    "compaction" ->
+      :compaction
+
+    _ ->
+      raise(
+        "scenario must be lifecycle, rotation, replay, schedule, reserve, group_commit, or compaction"
+      )
   end
 
 mode =

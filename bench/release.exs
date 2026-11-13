@@ -130,7 +130,12 @@ defmodule Tay.ReleaseBench do
     {:ok, _} = Tay.Storage.initialize(storage)
 
     options =
-      storage ++
+      if(
+        Mix.env() == :prod and
+          Version.match?(Application.spec(:tay, :vsn) |> to_string(), ">= 2.0.0"),
+        do: Keyword.delete(storage, :durability),
+        else: storage
+      ) ++
         [
           name: @name,
           executor_socket: nil,

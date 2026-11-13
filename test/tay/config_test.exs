@@ -8,8 +8,7 @@ defmodule Tay.ConfigTest do
             %Config{
               data_dir: nil,
               queues: [default: 10],
-              durability: :persistent,
-              journal: [batch: [max_events: 1, interval_ms: 0]]
+              durability: :persistent
             }} = Config.new([])
 
     assert {:ok, %Config{data_dir: nil}} = Config.new(data_dir: nil)
@@ -57,31 +56,11 @@ defmodule Tay.ConfigTest do
              Config.new(typo: true)
   end
 
-  test "validates selective durability and global journal batching" do
-    assert {:ok,
-            %Config{
-              durability: :volatile,
-              journal: [batch: [max_events: 100, interval_ms: 10]]
-            }} =
-             Config.new(
-               durability: :volatile,
-               journal: [batch: [max_events: 100, interval_ms: 10]]
-             )
+  test "validates default job durability" do
+    assert {:ok, %Config{durability: :volatile}} = Config.new(durability: :volatile)
 
     for durability <- [:sync, :write, nil, "persistent"] do
-      assert {:error, {:invalid_config, :durability, _}} =
-               Config.new(durability: durability)
-    end
-
-    for journal <- [
-          [],
-          [batch: []],
-          [batch: [max_events: 0, interval_ms: 10]],
-          [batch: [max_events: 1, interval_ms: -1]],
-          [batch: [max_events: 1, interval_ms: 10, extra: true]],
-          [batch: [max_events: 1, interval_ms: 10], extra: true]
-        ] do
-      assert {:error, {:invalid_config, :journal, _}} = Config.new(journal: journal)
+      assert {:error, {:invalid_config, :durability, _}} = Config.new(durability: durability)
     end
   end
 

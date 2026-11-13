@@ -186,7 +186,7 @@ defmodule Tay.Engine.PublicMutationTest do
                  @name,
                  meta,
                  {operation, c.raw, c.revision},
-                 meta.slot_bytes + 1,
+                 meta.client_bytes + 1,
                  operation,
                  c.id,
                  30,

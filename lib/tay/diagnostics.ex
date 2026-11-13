@@ -108,7 +108,6 @@ defmodule Tay.Diagnostics do
       durability: config.durability,
       validated_filesystem: config.validated_filesystem,
       timeout: config.storage_timeout,
-      max_directory_entries: config.recovery.max_directory_entries,
       deadline: System.monotonic_time(:millisecond) + config.recovery.deadline_ms
     ]
 

@@ -155,7 +155,6 @@ defmodule Tay.Storage.V2VMCrashTest do
       current: recovered.current,
       jobs: %{},
       frontier: recovered.next_sequence - 1,
-      rotation_target_bytes: 67_108_864,
       candidate_limits: %{},
       value_limits: Tay.Event.Value.defaults()
     }
@@ -184,7 +183,7 @@ defmodule Tay.Storage.V2VMCrashTest do
       Tay.Storage.V2.Publisher.publish(native, %{
         store_id: recovered.store_id, epoch_id: recovered.epoch_id,
         current: recovered.current, jobs: %{}, frontier: recovered.next_sequence - 1,
-        rotation_target_bytes: 67_108_864, candidate_limits: %{},
+        candidate_limits: %{},
         value_limits: Tay.Event.Value.defaults()
       })
       IO.puts("UNREACHED")
@@ -200,7 +199,7 @@ defmodule Tay.Storage.V2VMCrashTest do
         store_id: recovered.store_id, epoch_id: recovered.epoch_id,
         current: recovered.current, jobs: recovered.candidate.jobs,
         frontier: recovered.next_sequence - 1,
-        rotation_target_bytes: 67_108_864, candidate_limits: %{},
+        candidate_limits: %{},
         value_limits: Tay.Event.Value.defaults()
       })
       :ok = Tay.Storage.Native.fault(native, site, 1, :vm_crash_after)
@@ -221,7 +220,7 @@ defmodule Tay.Storage.V2VMCrashTest do
         store_id: recovered.store_id, epoch_id: recovered.epoch_id, current: recovered.current,
         jobs: recovered.candidate.jobs, frontier: recovered.next_sequence - 1,
         terminal_retention: {:hours, 1}, captured_at: 3_600_100,
-        rotation_target_bytes: 67_108_864, candidate_limits: %{}, value_limits: Tay.Event.Value.defaults()
+        candidate_limits: %{}, value_limits: Tay.Event.Value.defaults()
       })
       Tay.Storage.V2.Reclaimer.predecessor(native, second.recovered)
       IO.puts("UNREACHED")

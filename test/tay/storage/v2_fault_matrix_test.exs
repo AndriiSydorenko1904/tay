@@ -62,7 +62,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
           current: File.read!(Path.join(path, "CURRENT")),
           jobs: %{},
           frontier: 0,
-          rotation_target_bytes: 67_108_864,
           candidate_limits: %{},
           value_limits: Tay.Event.Value.defaults()
         })
@@ -198,11 +197,11 @@ defmodule Tay.Storage.V2FaultMatrixTest do
   end
 
   test "candidate admission bounds actual bytes across empty, rotated and large-snapshot stores" do
-    for {count, arg_bytes, target} <- [
-          {0, 0, 67_108_864},
-          {1, 0, 67_108_864},
-          {20, 900_000, Segment.min_rotation_bytes()},
-          {3, 900_000, Segment.min_rotation_bytes()}
+    for {count, arg_bytes} <- [
+          {0, 0},
+          {1, 0},
+          {80, 900_000},
+          {3, 900_000}
         ] do
       path = NativeHelpers.path()
       RecoveryHelpers.store(path)
@@ -215,7 +214,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
           store_id: store_id(path),
           jobs: jobs,
           frontier: 0,
-          rotation_target_bytes: target,
           candidate_limits: %{},
           value_limits: Tay.Event.Value.defaults()
         })
@@ -225,7 +223,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       assert published.candidate_bytes == actual_candidate_bytes
       assert published.admitted_candidate_bytes >= actual_candidate_bytes
       assert map_size(published.recovered.candidate.jobs) == count
-      if count == 20, do: assert(length(published.recovered.manifest.base_segments) > 1)
+      if count == 80, do: assert(length(published.recovered.manifest.base_segments) > 1)
       assert :ok = Native.shutdown(native)
       File.rm_rf!(path)
     end
@@ -265,6 +263,7 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       :current,
       :manifest,
       :base_digest,
+      :manifest_base_digest,
       :tail_sequence,
       :tail_mutation,
       :epoch_extra,
@@ -297,6 +296,26 @@ defmodule Tay.Storage.V2FaultMatrixTest do
 
         :base_digest ->
           flip_first_byte(Path.join(segments, base_name))
+
+        :manifest_base_digest ->
+          manifest = published.recovered.manifest
+          [base] = manifest.base_segments
+          <<first, rest::binary>> = base.digest
+          base = %{base | digest: <<Bitwise.bxor(first, 1), rest::binary>>}
+
+          {:ok, manifest_bytes} =
+            Authority.encode_manifest(%{manifest | base_segments: [base]})
+
+          File.write!(Path.join(epoch, "MANIFEST"), manifest_bytes)
+
+          {:ok, current} =
+            Authority.encode_current(%{
+              store_id: source.store_id,
+              epoch_id: published.epoch_id,
+              manifest_digest: Authority.manifest_digest(manifest_bytes)
+            })
+
+          File.write!(Path.join(path, "CURRENT"), current)
 
         :tail_sequence ->
           {:ok, wrong_header} =
@@ -334,6 +353,11 @@ defmodule Tay.Storage.V2FaultMatrixTest do
       assert {:error, _} = V2Reader.recover(reopened, Reducer.candidate()),
              "accepted #{corruption}"
 
+      if corruption == :manifest_base_digest do
+        assert {:error, :base_digest} = V2Reader.recover(reopened, Reducer.candidate())
+        assert {:error, :base_digest} = V2Reader.recover_physical(reopened)
+      end
+
       assert :ok = Native.shutdown(reopened)
       assert RecoveryHelpers.snapshot(path) == before
       File.rm_rf!(path)
@@ -352,7 +376,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
           store_id: store_id(path),
           jobs: generated_jobs(2, 0),
           frontier: 0,
-          rotation_target_bytes: 67_108_864,
           candidate_limits: %{},
           value_limits: Tay.Event.Value.defaults()
         })
@@ -431,6 +454,159 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     end
   end
 
+  test "published recovery index survives reopen and authenticates addressed snapshots" do
+    path = NativeHelpers.path()
+    on_exit(fn -> File.rm_rf!(path) end)
+    RecoveryHelpers.store(path)
+    {:ok, native} = RecoveryHelpers.open(path)
+    assert :ok = enable(native, path)
+
+    source =
+      Map.merge(current_source(path), %{
+        store_id: store_id(path),
+        jobs: generated_jobs(130, 2048),
+        frontier: 0,
+        candidate_limits: %{},
+        value_limits: Tay.Event.Value.defaults()
+      })
+
+    assert {:ok, published} = Publisher.publish(native, source)
+    descriptor = published.recovered.manifest.recovery_index
+    assert descriptor.bytes > 0
+    assert :ok = Native.shutdown(native)
+    {:ok, reopened} = reopen(path)
+    assert {:ok, recovered} = V2Reader.recover(reopened, Reducer.candidate())
+    assert recovered.manifest.recovery_index == descriptor
+
+    for n <- [1, 64, 65, 130] do
+      id = <<n::128>>
+      assert {:ok, job} = Tay.Storage.V2.RecoveryIndex.fetch(reopened, descriptor, id)
+      assert job.id == id
+      assert job.definition == recovered.candidate.jobs[id].definition
+      assert job.revision == recovered.candidate.jobs[id].revision
+    end
+
+    assert :not_found = Tay.Storage.V2.RecoveryIndex.fetch(reopened, descriptor, <<131::128>>)
+    assert :ok = Native.shutdown(reopened)
+
+    epoch = Path.join([path, "epochs", "e-" <> Base.encode16(published.epoch_id, case: :lower)])
+    flip_first_byte(Path.join(epoch, "RECOVERY"))
+    before = RecoveryHelpers.snapshot(path)
+    {:ok, damaged} = reopen(path)
+    assert :ok = Native.v2_select(damaged, published.epoch_id)
+
+    assert {:error, :index_digest} =
+             Tay.Storage.V2.RecoveryIndex.fetch(damaged, descriptor, <<1::128>>)
+
+    assert {:ok, %{id: <<130::128>>}} =
+             Tay.Storage.V2.RecoveryIndex.fetch(damaged, descriptor, <<130::128>>)
+
+    assert {:error, :index_digest} =
+             V2Reader.recover(damaged, Reducer.candidate(), selected: true)
+
+    assert :ok = Native.shutdown(damaged)
+    assert RecoveryHelpers.snapshot(path) == before
+  end
+
+  test "index write refusal preserves CURRENT and the previous recoverable generation" do
+    path = NativeHelpers.path()
+    on_exit(fn -> File.rm_rf!(path) end)
+    {_id, source} = one_job_source(path)
+    current = File.read!(Path.join(path, "CURRENT"))
+    {:ok, native} = RecoveryHelpers.open(path)
+    assert :ok = enable(native, path)
+    # Header, snapshot, footer, then first RECOVERY page.
+    assert :ok = Native.fault(native, :write, 4, :syscall_error, 28)
+    assert {:error, _} = Publisher.publish(native, source)
+    Native.shutdown(native)
+    assert File.read!(Path.join(path, "CURRENT")) == current
+    {:ok, reopened} = reopen(path)
+    assert {:ok, %{candidate: %{jobs: jobs}}} = V2Reader.recover(reopened, Reducer.candidate())
+    assert jobs == %{}
+    assert :ok = Native.shutdown(reopened)
+  end
+
+  test "authenticated index with a wrong snapshot location fails independent replay" do
+    path = NativeHelpers.path()
+    on_exit(fn -> File.rm_rf!(path) end)
+    {_id, source} = one_job_source(path)
+    {:ok, native} = RecoveryHelpers.open(path)
+    assert :ok = enable(native, path)
+    assert {:ok, published} = Publisher.publish(native, source)
+    assert :ok = Native.shutdown(native)
+    manifest = published.recovered.manifest
+    epoch = Path.join([path, "epochs", "e-" <> Base.encode16(published.epoch_id, case: :lower)])
+    index_file = Path.join(epoch, "RECOVERY")
+    {:ok, page} = index_file |> File.read!() |> Tay.Event.Value.decode()
+    [[id, pointer]] = page["leaf"]
+
+    {:ok, page_bytes} =
+      Tay.Event.Value.encode(%{
+        page
+        | "leaf" => [[id, %{pointer | "offset" => pointer["offset"] + 1}]]
+      })
+
+    {:ok, root} = Tay.Storage.DiskIndex.decode_root(manifest.recovery_index.root)
+
+    {:ok, root_bytes} =
+      Tay.Storage.DiskIndex.encode_root(%{root | digest: :crypto.hash(:sha256, page_bytes)})
+
+    File.write!(index_file, page_bytes)
+
+    {:ok, manifest_bytes} =
+      Authority.encode_manifest(%{
+        manifest
+        | recovery_index: %{bytes: byte_size(page_bytes), root: root_bytes}
+      })
+
+    File.write!(Path.join(epoch, "MANIFEST"), manifest_bytes)
+
+    {:ok, current} =
+      Authority.encode_current(%{
+        store_id: source.store_id,
+        epoch_id: published.epoch_id,
+        manifest_digest: Authority.manifest_digest(manifest_bytes)
+      })
+
+    File.write!(Path.join(path, "CURRENT"), current)
+    before = RecoveryHelpers.snapshot(path)
+    {:ok, reopened} = reopen(path)
+    assert {:error, :recovery_index_location} = V2Reader.recover(reopened, Reducer.candidate())
+    assert :ok = Native.shutdown(reopened)
+    assert RecoveryHelpers.snapshot(path) == before
+  end
+
+  test "legacy checkpoint without a recovery index remains readable" do
+    path = NativeHelpers.path()
+    on_exit(fn -> File.rm_rf!(path) end)
+    {id, source} = one_job_source(path)
+    {:ok, native} = RecoveryHelpers.open(path)
+    assert :ok = enable(native, path)
+    assert {:ok, published} = Publisher.publish(native, source)
+    assert :ok = Native.shutdown(native)
+    epoch = Path.join([path, "epochs", "e-" <> Base.encode16(published.epoch_id, case: :lower)])
+    manifest = Map.delete(published.recovered.manifest, :recovery_index)
+    {:ok, bytes} = Authority.encode_manifest(manifest)
+    File.write!(Path.join(epoch, "MANIFEST"), bytes)
+
+    {:ok, pointer} =
+      Authority.encode_current(%{
+        store_id: source.store_id,
+        epoch_id: published.epoch_id,
+        manifest_digest: Authority.manifest_digest(bytes)
+      })
+
+    File.write!(Path.join(path, "CURRENT"), pointer)
+    {:ok, orphaned} = reopen(path)
+    assert {:error, :recovery_index_topology} = V2Reader.recover(orphaned, Reducer.candidate())
+    assert :ok = Native.shutdown(orphaned)
+    File.rm!(Path.join(epoch, "RECOVERY"))
+    {:ok, reopened} = reopen(path)
+    assert {:ok, %{candidate: %{jobs: jobs}}} = V2Reader.recover(reopened, Reducer.candidate())
+    assert jobs[id].revision == 1
+    assert :ok = Native.shutdown(reopened)
+  end
+
   defp flip_first_byte(path) do
     <<first, rest::binary>> = File.read!(path)
     File.write!(path, <<Bitwise.bxor(first, 1), rest::binary>>)
@@ -478,7 +654,8 @@ defmodule Tay.Storage.V2FaultMatrixTest do
     ) +
       Enum.sum(
         Enum.map(
-          [Path.join(epoch, "MANIFEST"), Path.join(path, "CURRENT")],
+          Enum.map(Enum.reject(File.ls!(epoch), &(&1 == "segments")), &Path.join(epoch, &1)) ++
+            [Path.join(path, "CURRENT")],
           &File.stat!(&1).size
         )
       )
@@ -496,7 +673,6 @@ defmodule Tay.Storage.V2FaultMatrixTest do
        store_id: store_id(path),
        jobs: %{id => %{job | id: id}},
        frontier: 0,
-       rotation_target_bytes: 67_108_864,
        candidate_limits: %{},
        value_limits: Tay.Event.Value.defaults()
      })}

@@ -176,7 +176,7 @@ a new output for each run:
 | --- | --- | --- |
 | `lifecycle` | `--jobs 100 --args-bytes 1024 --clients 8` | Insert ACK RTT, start/finish Writer receipts, callback delay, queue service counts, bytes/job, private ETS bytes and cold restart |
 | `schedule` | `--jobs 20 --args-bytes 1024 --clients 8` | Idle and insertion-load due-time lag overall/per queue; actual in-flight client-call overlap; counted known client-slot refusals |
-| `rotation` | `--rotation-segments 2` | Organic minimum-target rotation using actual insertions, 262,000-byte text body plus realistic bounded args metadata; threshold remains 16,777,352 bytes |
+| `rotation` | `--rotation-segments 2` | Organic rotation using actual insertions and the storage-owned segment target, with 262,000-byte text bodies plus args metadata |
 | `replay` | `--replay-segments 1,10,100 --args-bytes 1024` | Full real Engine recovery and sampled memory for **compact manually rotated** histories, one job per segment |
 | `reserve` | no additional required arguments | Real pre-I/O 3,000-byte history-budget refusal while a live callback holds its outcome reserve; actual finish still commits |
 
@@ -247,24 +247,21 @@ Focused harness checks, intentionally without organic large rotation:
 mix test test/tay/qualification/benchmark_test.exs --warnings-as-errors
 ```
 
-## Group commit comparison
+## Automatic group commit
 
-On a validated Linux filesystem, run the same concurrent enqueue workload for
-all supported comparison points. Each report includes throughput plus the
-existing nearest-rank enqueue RTT `p50`, `p95`, and `p99` measurements:
+On a validated Linux filesystem, compare the same workload at different client
+concurrency levels. Batching itself is automatic:
 
 ```sh
-for interval in 0 1 5 10 50 100 1000; do
+for clients in 1 8 32 64; do
   MIX_ENV=prod mix run --no-start bench/run.exs --scenario group_commit --mode sync \
-    --validated-filesystem --path "/validated/local/group-${interval}" \
-    --output "/validated/local/group-${interval}.json" --jobs 20000 --clients 64 \
-    --group-commit-interval-ms "$interval"
+    --validated-filesystem --path "/validated/local/group-${clients}" \
+    --output "/validated/local/group-${clients}.json" --jobs 20000 --clients "$clients"
 done
 ```
 
-Every path and output file must be new. Compare
-`measurements.enqueues_per_second` and
-`measurements.insert_roundtrip_us.{p50,p95,p99}` across the seven reports.
+Every path and output file must be new. Compare throughput and enqueue RTT
+across the resulting reports; there is no batch-size or interval option.
 
 The final qualification report must retain exact commands, outputs, physical
 fixture hashes and platform evidence. Publish only measured envelopes and leave
@@ -353,3 +350,20 @@ Optional `--build-root` and `--deps-root` select isolated, already-compiled coho
 directories, each containing `baseline` and `candidate` children. Sources are
 never rewritten. `bench/release.exs` also supports smaller direct smoke runs,
 including `--warmup-jobs`, while reporting their exact configuration.
+
+## Checkpoint and compaction measurement
+
+```sh
+mix run --no-start bench/run.exs --scenario compaction --mode write \
+  --path /private/tmp/tay-compaction-new --jobs 5000 --args-bytes 1024 \
+  --output /private/tmp/tay-compaction-new.json
+```
+
+This runs real completed jobs, publishes three retained checkpoints, then
+restarts and checks history lookup. Compare caller time, complete admission pause,
+publication-only time, candidate/reused/rewritten bytes and restart memory/time.
+Passes two and three measure an unchanged archive. They do not establish
+incremental compaction performance with a continuously changing tail. For Linux
+production measurements use `MIX_ENV=prod --mode sync --validated-filesystem`
+with the environment prefix before `mix` and the flags after the script name,
+on an independently validated local filesystem. Use new paths for every run.

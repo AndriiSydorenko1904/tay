@@ -4,7 +4,7 @@ defmodule Tay.Storage.RecordIsolationTest do
   alias Tay.Test.RecordHelpers, as: H
 
   test "insertion configuration and semantic registry environment cannot change physical results" do
-    keys = [:max_insert_payload_bytes, :supported_schemas]
+    keys = [:supported_schemas]
     previous = for key <- keys, do: {key, Application.fetch_env(:tay, key)}
 
     on_exit(fn ->
@@ -17,7 +17,6 @@ defmodule Tay.Storage.RecordIsolationTest do
     end)
 
     # Test-only environment sentinels; no settings are added to Tay.Config.
-    Application.put_env(:tay, :max_insert_payload_bytes, 0)
     Application.put_env(:tay, :supported_schemas, %{})
 
     for id <- ["F02", "F07", "F09"] do

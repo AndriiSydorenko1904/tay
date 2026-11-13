@@ -37,7 +37,6 @@ defmodule Tay.Storage.Writer.Compaction do
           schedules: candidate.schedules,
           results: candidate.results,
           frontier: state.next_sequence - 1,
-          rotation_target_bytes: state.options.rotation_target_bytes,
           candidate_limits: state.candidate_limits,
           value_limits: state.value_limits,
           terminal_retention: retention,

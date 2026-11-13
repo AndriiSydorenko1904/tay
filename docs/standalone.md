@@ -25,7 +25,6 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_INITIALIZE_IF_MISSING` | `false` | `true`, `TRUE`, or `1` permits initialization only when the Store root is genuinely absent. |
 | `TAY_DEFAULT_QUEUE_CONCURRENCY` | `10` | Maximum concurrently executing jobs in the standalone `default` queue (`1..65536`). Actual execution is also bounded by registered worker capacity. |
 | `TAY_CALLER_TIMEOUT_MS` | `5000` | Maximum time an admitted Engine call may wait for its reply. A timeout after submission is reported as `unknown_outcome`; reconcile with the same job ID. |
-| `TAY_GROUP_COMMIT_INTERVAL_MS` | `0` | Durable enqueue group-commit window in milliseconds (`0..1000`). `0` preserves immediate fsync behavior. Invalid values stop startup. |
 | `TAY_RATE_LIMITS` | `{}` | JSON queue/task execution limits; see [operations](operations.md#execution-rate-limits). Monotonic fixed windows reset on Engine restart. |
 | `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Checkpoints reconstruct a candidate from sealed on-disk history at a durable frontier while execution continues, then catch up concurrent mutations. They do not copy Engine ETS state. Recovery replays the resulting snapshot plus its tail. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Shared operational memory budget for active jobs, schedules, retained results and admitted payloads, including reserved headroom. It is not a process/container RSS ceiling. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`; suffixes use binary multiples. |
@@ -38,7 +37,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_DASHBOARD_SECRET_KEY_BASE` | unset | At least 64 random bytes; required when dashboard is enabled. |
 
 `TAY_DURABILITY` is intentionally not an environment setting. The standalone
-runtime pins `durability: :sync` and checks for a supported filesystem type before writing;
+runtime uses fixed sync storage durability and checks for a supported filesystem type before writing;
 an unnoticed override to `:write` would weaken the production durability
 contract. This type check does not certify the storage device's power-loss
 behavior; operators still need to validate their deployment. Embedded Elixir applications can configure their Engines explicitly,
@@ -55,17 +54,11 @@ per-UID `/tmp` directory. The Python SDK discovers `/run/tay/tay.sock` from the 
 volume mounted into both containers (read-only in the worker); network sharing
 alone does not make Unix socket files visible across containers.
 
-Concurrent persistent commands are flushed when the global batch reaches
-`max_events` or its `interval_ms` expires, whichever happens first. They are
-written in arrival order and acknowledged together only after their batch fsync
-succeeds. Batching does not change recovery, capacity accounting, or failure
-semantics; a write/fsync error fails the generation without returning success
-for that batch. Embedded Engines use
-`journal: [batch: [max_events: n, interval_ms: milliseconds]]`, supplied through
-the `:tay` application configuration or as an Engine override. Standalone maps
-`TAY_GROUP_COMMIT_INTERVAL_MS` to `journal.batch.interval_ms`, with
-`journal.batch.max_events` set to 64 independently of admission slots.
-`durability: :write` remains immediate.
+Strict journal batching is automatic. Commands already admitted together are
+written in arrival order and acknowledged only after their batch fsync succeeds.
+There is no configurable batch size or waiting interval. A write/fsync error
+fails the generation without returning success for that batch. Explicit
+`durability: :write` remains immediate development behavior.
 
 `TAY_MAX_STATE_BYTES` uses binary multipliers: `KB` is 1,024 bytes, `MB` is
 1,024 KB, and `GB` is 1,024 MB. For example, `5GB` is `5_368_709_120` bytes.
@@ -94,7 +87,7 @@ Tay deliberately does not interpret a pre-existing empty directory as a
 missing Store. Docker creates a named-volume mount root before the process
 starts, so mount the volume at `/var/lib/tay` and set
 `TAY_DATA_DIR=/var/lib/tay/store`, as in
-[`compose.yml`](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.1/compose.yml).
+[`compose.yml`](https://github.com/AndriiSydorenko1904/tay/blob/v2.0.0/compose.yml).
 The image creates both directory targets with ownership `10001:10001`; an empty
 Docker named volume inherits that ownership and does not need a root init
 container. Bind mounts and volume drivers that preserve different ownership
@@ -149,7 +142,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/andriisydorenko1904/tay:1.8.1
+  ghcr.io/andriisydorenko1904/tay:2.0.0
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -157,7 +150,7 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v1.8.1/clients/python).
+[Python client guide](https://github.com/AndriiSydorenko1904/tay/tree/v2.0.0/clients/python).
 
 The health check succeeds when the Engine reports `ready` or is performing a
 normal online checkpoint in `compacting/preparing` or `compacting/switching`,

@@ -1,6 +1,6 @@
 defmodule Tay.Engine.Admission do
   @moduledoc """
-  Fixed-slot, fixed-byte-quota cooperative client admission. No payload is sent
+  Fixed-slot admission with a shared in-flight byte budget. No payload is sent
   before a monitored reservation is granted. Submitted slots outlive callers.
   The public ETS table holds only reservation/status metadata, never job state.
   It is not a security boundary against hostile code in the same VM.
@@ -36,8 +36,8 @@ defmodule Tay.Engine.Admission do
          client_slots: m.slots,
          client_slots_used: m.slots - states.free,
          client_slot_states: states,
-         client_byte_capacity: m.slots * m.slot_bytes,
-         slot_byte_limit: m.slot_bytes,
+         client_byte_capacity: m.client_bytes,
+         client_bytes_used: Tay.State.Memory.used(m.client_memory),
          freshness: :bounded_snapshot
        })}
     end
@@ -128,12 +128,19 @@ defmodule Tay.Engine.Admission do
           0
       end
 
-    with true <- max(bytes, charged) <= meta.slot_bytes || {:error, :client_bytes},
+    with true <- max(bytes, charged) <= meta.client_bytes || {:error, :client_bytes},
          {:ok, permit} <- claim(name, meta, timeout, operation) do
       try do
-        case GenServer.call(meta.guardian, {:reserve, meta.generation, permit, charged}, timeout) do
+        case GenServer.call(
+               meta.guardian,
+               {:reserve, meta.generation, permit, charged, max(bytes, charged)},
+               timeout
+             ) do
           :ok ->
             submit(meta, permit, payload, operation, id, timeout, expected_revision)
+
+          {:error, :client_bytes} ->
+            {:error, Error.new(:capacity, :client_bytes, id, operation, expected_revision)}
 
           {:error, :retained_bytes} ->
             {:error, Error.new(:capacity, :retained_bytes, id, operation, expected_revision)}

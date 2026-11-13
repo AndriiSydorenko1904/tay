@@ -8,7 +8,6 @@ defmodule Tay.Engine.ConfigTest do
 
     assert Enum.sort(Keyword.keys(config.recovery)) ==
              Enum.sort([
-               :max_directory_entries,
                :deadline_ms
              ])
 
@@ -28,11 +27,9 @@ defmodule Tay.Engine.ConfigTest do
     base = [data_dir: "tmp/config-only", durability: :write]
     assert {:ok, c} = Config.new(base)
     assert c.initialize == :never
-    assert c.journal_batch == %{max_events: 1, interval_ms: 0}
 
     assert {:ok, %{initialize: :if_missing}} = Config.new(base ++ [initialize: :if_missing])
 
-    assert c.max_insert_payload_bytes == 1_048_576
     assert c.value_limits == Tay.Event.Value.defaults()
 
     assert is_binary(c.executor_socket)
@@ -44,15 +41,11 @@ defmodule Tay.Engine.ConfigTest do
     refute disabled.executor_socket_private_directory
 
     for extra <- [
-          [max_insert_payload_bytes: 0],
-          [max_insert_payload_bytes: 16_777_217],
           [max_insert_args_bytes: 4],
           [max_insert_args_bytes: 16_777_217],
           [insert_value_depth: 0],
           [insert_value_nodes: 0],
           [insert_depth: 32],
-          [rotation_target_bytes: 1],
-          [rotation_target_bytes: 1_073_741_825],
           [
             recovery: [event_limits: %{depth: 31, output_nodes: 10_000, binary_bytes: 16_777_216}]
           ],
@@ -62,15 +55,13 @@ defmodule Tay.Engine.ConfigTest do
           [workers: %{"" => __MODULE__}],
           [workers: %{"w" => "Elixir.NeverFromDisk"}],
           [client_slots: 0],
-          [client_bytes: 1],
+          [client_bytes: 0],
           [caller_timeout: :infinity],
           [initialize: :always],
           [initialize: true],
           [bootstrap: true]
         ],
         do: assert({:error, %Tay.Error{kind: :invalid}} = Config.new(Keyword.merge(base, extra)))
-
-    assert {:ok, _} = Config.new(base ++ [max_insert_payload_bytes: 1])
 
     assert {:error, _} =
              Config.new(base ++ [executor_socket: Path.expand("tmp/config-only/tay.sock")])
@@ -110,38 +101,6 @@ defmodule Tay.Engine.ConfigTest do
         ],
         value <- [0, 1, 10_000] do
       assert {:error, %Tay.Error{kind: :invalid}} = Config.new(base ++ [{key, value}])
-    end
-  end
-
-  test "journal batching uses the shared shape and an Engine override preserves max_events" do
-    previous = Application.fetch_env(:tay, :journal)
-
-    on_exit(fn ->
-      case previous do
-        {:ok, value} -> Application.put_env(:tay, :journal, value)
-        :error -> Application.delete_env(:tay, :journal)
-      end
-    end)
-
-    Application.put_env(:tay, :journal, batch: [max_events: 100, interval_ms: 10])
-    base = [data_dir: "tmp/config-only", durability: :write]
-    assert {:ok, %{journal_batch: %{max_events: 100, interval_ms: 10}}} = Config.new(base)
-
-    assert {:ok, %{journal_batch: %{max_events: 7, interval_ms: 25}}} =
-             Config.new(
-               base ++ [client_slots: 2, journal: [batch: [max_events: 7, interval_ms: 25]]]
-             )
-
-    assert Application.get_env(:tay, :journal) == [batch: [max_events: 100, interval_ms: 10]]
-
-    for journal <- [
-          [batch: [max_events: 0, interval_ms: 10]],
-          [batch: [max_events: 2, interval_ms: -1]],
-          [batch: [max_events: 2, interval_ms: 1_001]],
-          [batch: [max_events: 2, interval_ms: 25, unknown: true]],
-          [batch: [max_events: 2, interval_ms: 25], batch: [max_events: 2, interval_ms: 25]]
-        ] do
-      assert {:error, %Tay.Error{kind: :invalid}} = Config.new(base ++ [journal: journal])
     end
   end
 

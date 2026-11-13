@@ -31,7 +31,8 @@ defmodule Tay.Engine.Lifecycle do
       guardian: self(),
       generation: make_ref(),
       slots: config.client_slots,
-      slot_bytes: config.slot_bytes,
+      client_bytes: config.client_bytes,
+      client_memory: Tay.State.Memory.new(config.client_bytes),
       timeout: config.caller_timeout,
       value_limits: config.value_limits,
       status: %{state: :recovering, durability: config.durability, jobs: 0, blocked_jobs: 0}
@@ -198,11 +199,14 @@ defmodule Tay.Engine.Lifecycle do
   def handle_call({:reserve, generation, permit}, from, s),
     do: handle_call({:reserve, generation, permit, 0}, from, s)
 
-  def handle_call({:reserve, generation, {slot, token}, bytes}, {owner, _}, s) do
+  def handle_call({:reserve, generation, permit, bytes}, from, s),
+    do: handle_call({:reserve, generation, permit, bytes, bytes}, from, s)
+
+  def handle_call({:reserve, generation, {slot, token}, bytes, client_bytes}, {owner, _}, s) do
     case :ets.lookup(s.table, slot) do
       [{^slot, ^token, ^owner, :claimed, expires} = old] ->
         if admission_ready?(s, generation) and System.monotonic_time(:millisecond) < expires do
-          case Tay.State.Memory.reserve(s.meta.memory, bytes) do
+          case reserve_bytes(s.meta, bytes, client_bytes) do
             :ok ->
               monitor = Process.monitor(owner)
               true = Admission.cas(s.table, old, {slot, token, owner, :reserved, expires})
@@ -213,12 +217,12 @@ defmodule Tay.Engine.Lifecycle do
                  s
                  | permits: permits,
                    monitors: Map.put(s.monitors, monitor, {:owner, slot, token}),
-                   memory_permits: Map.put(s.memory_permits, {slot, token}, bytes)
+                   memory_permits: Map.put(s.memory_permits, {slot, token}, {bytes, client_bytes})
                }}
 
-            {:error, _} ->
+            {:error, reason} ->
               Admission.cas(s.table, old, {slot, nil, nil, :free, 0})
-              {:reply, {:error, :retained_bytes}, s}
+              {:reply, {:error, reason}, s}
           end
         else
           Admission.cas(s.table, old, {slot, nil, nil, :free, 0})
@@ -515,9 +519,27 @@ defmodule Tay.Engine.Lifecycle do
     end
   end
 
+  defp reserve_bytes(meta, bytes, client_bytes) do
+    case Tay.State.Memory.reserve(meta.client_memory, client_bytes) do
+      :ok ->
+        case Tay.State.Memory.reserve(meta.memory, bytes) do
+          :ok ->
+            :ok
+
+          {:error, _} ->
+            Tay.State.Memory.release(meta.client_memory, client_bytes)
+            {:error, :retained_bytes}
+        end
+
+      {:error, _} ->
+        {:error, :client_bytes}
+    end
+  end
+
   defp release(s, slot, token) do
-    {bytes, memory_permits} = Map.pop(s.memory_permits, {slot, token}, 0)
+    {{bytes, client_bytes}, memory_permits} = Map.pop(s.memory_permits, {slot, token}, {0, 0})
     Tay.State.Memory.release(s.meta.memory, bytes)
+    Tay.State.Memory.release(s.meta.client_memory, client_bytes)
     s = %{s | memory_permits: memory_permits}
 
     case :ets.lookup(s.table, slot) do
@@ -546,10 +568,13 @@ defmodule Tay.Engine.Lifecycle do
     end
   end
 
-  defp engine_command_window(%{config: %{durability: :sync} = config}) do
-    batch = config.journal_batch
-    if batch.max_events > 1 or batch.interval_ms > 0, do: config.client_slots, else: 1
-  end
+  # While callbacks are running, leave only one ingress command ahead of queue
+  # refills and settlements. Idle/import workloads can collect a larger batch.
+  defp engine_command_window(%{meta: %{status: %{running_executions: count}}}) when count > 0,
+    do: 1
+
+  defp engine_command_window(%{config: %{durability: :sync} = config}),
+    do: Tay.Engine.GroupCommit.window(config)
 
   defp engine_command_window(_), do: 1
 

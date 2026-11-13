@@ -7,6 +7,7 @@ defmodule Tay.Engine.CompactionPolicy do
   use GenServer
   alias Tay.Engine.CompactionEvents, as: Events
   alias Tay.Execution.Clock
+  @idle_poll_ms 60_000
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config)
 
@@ -26,7 +27,8 @@ defmodule Tay.Engine.CompactionPolicy do
        timer: nil,
        pending: nil,
        last_result: nil,
-       started: nil
+       started: nil,
+       last_cost_ms: 0
      })}
   end
 
@@ -36,20 +38,17 @@ defmodule Tay.Engine.CompactionPolicy do
         :ok
 
       not is_nil(summary.last_compaction_at) and
-          now - summary.last_compaction_at < config.min_interval ->
+          now - summary.last_compaction_at < 4 * Map.get(summary, :maintenance_cost_ms, 0) ->
         {:error, :cooldown}
 
-      summary.sealed_segments < config.min_sealed_segments ->
-        {:error, :too_few_segments}
-
-      summary.reclaimable_bytes < config.min_reclaimable_bytes ->
-        {:error, :not_enough_reclaimable_bytes}
-
-      summary.ratio < config.dead_ratio_threshold ->
-        {:error, :ratio_below_threshold}
+      summary.sealed_segments == 0 ->
+        {:error, :no_sealed_history}
 
       summary.reclaimable_bytes <= 0 ->
-        {:error, :below_minimum_benefit}
+        {:error, :no_reclaimable_history}
+
+      summary.reclaimable_bytes < summary.candidate_upper_bytes ->
+        {:error, :rewrite_cost}
 
       true ->
         :ok
@@ -86,7 +85,7 @@ defmodule Tay.Engine.CompactionPolicy do
 
     now = Clock.wall(s.clock)
 
-    case eligible(summary, s.config, now) do
+    case eligible(Map.put(summary, :maintenance_cost_ms, s.last_cost_ms), s.config, now) do
       :ok ->
         reason = if checkpoint_due?(summary, s.config, now), do: :checkpoint_due, else: :eligible
 
@@ -111,6 +110,12 @@ defmodule Tay.Engine.CompactionPolicy do
   end
 
   def handle_info({{:compaction_policy, token}, result}, %{pending: {:operation, token}} = s) do
+    cost =
+      case result do
+        {:ok, %{total_ms: cost}} when is_integer(cost) and cost >= 0 -> cost
+        _ -> s.last_cost_ms
+      end
+
     result = Events.result(result)
 
     case result do
@@ -119,7 +124,7 @@ defmodule Tay.Engine.CompactionPolicy do
       {:error, reason} -> Events.emit(:automatic_compaction_failed, reason)
     end
 
-    {:noreply, schedule(%{s | pending: nil, last_result: result})}
+    {:noreply, schedule(%{s | pending: nil, last_result: result, last_cost_ms: cost})}
   end
 
   def handle_info(
@@ -151,10 +156,8 @@ defmodule Tay.Engine.CompactionPolicy do
       (is_nil(last) or (now >= last and now - last >= interval))
   end
 
-  defp evaluation_interval(%{checkpoint_interval: 0, check_interval: interval}), do: interval
-
-  defp evaluation_interval(config),
-    do: min(config.check_interval, config.checkpoint_interval)
+  defp evaluation_interval(%{checkpoint_interval: 0}), do: @idle_poll_ms
+  defp evaluation_interval(config), do: min(@idle_poll_ms, config.checkpoint_interval)
 
   defp schedule(s), do: schedule(s, evaluation_interval(s.config))
 

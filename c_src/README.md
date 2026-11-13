@@ -1,4 +1,4 @@
-# Tay filesystem Port v1
+# Tay filesystem Port v2
 
 `mix compile` builds `tay_storage_helper.c` with the system C compiler into the
 application's build `priv/` directory. Releases must include that executable.
@@ -80,8 +80,8 @@ The transport is Erlang Port `{packet, 4}`: a uint32 big-endian length excluding
 those four bytes. Maximum packet length is 16,785,436 bytes. All integers below
 are unsigned big-endian. No ETF, text command parser, shell, or dynamic atoms.
 
-Request: `version:u8=1 | opcode:u8 | request_id:u64 | body`.
-Reply: `version:u8=1 | opcode:u8 | request_id:u64 | status:u8 | errno:u32 |
+Request: `version:u8=2 | opcode:u8 | request_id:u64 | body`.
+Reply: `version:u8=2 | opcode:u8 | request_id:u64 | status:u8 | errno:u32 |
 written:u64 | body`. Status 0 is success, status 1 a reported error. Replies
 must match the outstanding request exactly. An error body is a bounded ASCII
 reason identifier; `errno` retains the OS-specific numeric code. `written`
@@ -112,7 +112,7 @@ wire-stable; their numeric ordering is not used to classify behavior.
 | Opcode | Request body | Success body |
 | --- | --- | --- |
 | 1 acquire | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64 |
-| 2 list | scope | count:u32, repeated(name:str, identity) |
+| 2 list | scope:u8, continuation:u8 | more:u8, count:u32, repeated(name:str, identity) |
 | 3 mkdir segments | empty | empty |
 | 4 open read | scope, name:str | identity |
 | 5 positional read | offset:u64, length:u32 | up to length raw bytes |
@@ -128,7 +128,7 @@ wire-stable; their numeric ordering is not used to classify behavior.
 | 15 diagnostics | empty | helper_pid:u64, write_kind:u8, read_open:u8, filesystem_type:u64, ancestor_syncs:u32 |
 | 16 sync read-only file | empty | empty |
 | 17 shutdown | empty | empty, after all FDs close and lock releases; then exit |
-| 18 acquire existing | strict:u8, operator_validated:u8, max_directory_entries:u32, absolute_path:str | root_created:u8=0, filesystem_type:u64, helper_pid:u64; inspection-only session |
+| 18 acquire existing | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8=0, filesystem_type:u64, helper_pid:u64; inspection-only session |
 | 19 enable mutations | empty | empty, after deferred barriers; same helper and lock |
 | 38 acquire if missing | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64; mutation session only when the root was created |
 | 39 abort v2 candidate | — | closes private candidate/read descriptors while preserving the authoritative source |
@@ -164,9 +164,10 @@ production build.
 
 Opcode 18 opens only existing, no-follow directories and the existing lock;
 it never bootstraps, creates or syncs anything. A missing existing lock is an
-operational ownership failure. Enumeration has the caller's nonzero uint32
-entry budget as well as the unchanged packet cap; overflow returns no partial
-inventory. Inspection permits list/read-only open/pread/close/check/info/shutdown
+operational ownership failure. Enumeration uses a pinned directory cursor and bounded pages without a total
+entry quota. A changed directory rejects the inventory; no partial list is
+returned by the Elixir API. The cold-copy inventory still honors its separate
+explicit copy budget across pages. Inspection permits list/read-only open/pread/close/check/info/shutdown
 only. Mutating opcodes and reacquisition are refused, not routed through opcode 1.
 
 The same Writer owns the same Port and lock through physical preflight,
@@ -241,7 +242,7 @@ close order, first-error handling, and fault sites remain part of the contract.
 `Tay.Storage.Native.Codec` owns Port framing, operation numbers, and metadata
 encoding/decoding. `Tay.Storage.Native` owns the process/Port lifetime, deadlines,
 and uncertain outcomes; it never retries an uncertain filesystem mutation.
-Frozen packets in `test/fixtures/native/port_v1.json` cover every opcode and
+Frozen packets in `test/fixtures/native/port_v2.json` cover every opcode and
 are exercised against the codec and C helpers. Production refuses the test-only
 fault opcode; the fault-enabled helper has a separate fixture. Argument packing
 from delegated Native APIs is compared to the same frozen bodies. Truncated
@@ -251,7 +252,7 @@ Native, Store-v2 and cold-copy integration suites cover successful filesystem
 operations and their fault paths.
 
 Successful payloads are frozen separately in
-`test/fixtures/native/port_v1_success.json`: bounded reads (including EOF),
+`test/fixtures/native/port_v2_success.json`: bounded reads (including EOF),
 directory entries, file identities, write receipts, owner information and free
 space. Tests compare codec and Native API decoding to these packets, and run
 requests in real production-helper ownership sessions. Only OS-generated
@@ -267,3 +268,18 @@ a bitwise oracle. It runs outside BEAM; the NIF argument/scheduling wrappers are
 covered by ExUnit. Qualification runs 100,000 mutations on both supported OSes. The same harness
 also exposes `LLVMFuzzerTestOneInput` for coverage-guided builds with
 `-fsanitize=fuzzer,address,undefined` on a toolchain providing libFuzzer.
+
+Protocol v2 removes the acquisition directory-count argument. List and cold-list
+requests add a continuation byte; replies prepend a `more` byte. The helper
+keeps a directory cursor between pages and verifies directory identity and
+mtime/ctime before and after each page. Cold-list appends its remaining copy
+budget as u32. Archived v1 fixture files remain historical evidence; mixed
+helper/client protocol versions are refused without acquisition fallback.
+
+Protocol v2 opcode 40 clones an already pinned source file into a private
+candidate (`RECOVERY` or a canonical segment). APFS `fclonefileat` and Linux
+`FICLONE` create independent inodes; unsupported filesystems use a bounded 1 MiB
+positional copy. The owner validates source identity before/after, exclusively
+creates the destination and syncs it before returning. Publication still syncs
+candidate directories and authority in the normal order. No hard links or
+shared-path reclamation exceptions are introduced.

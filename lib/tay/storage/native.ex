@@ -11,8 +11,7 @@ defmodule Tay.Storage.Native do
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
   @type t :: %__MODULE__{}
 
-  @default_max_directory_entries 100_000
-  @max_directory_entries_limit 4_294_967_295
+  @max_copy_entries 4_294_967_295
 
   @doc "Acquires only existing ownership objects; no creation or sync is allowed."
   def open_existing(path, options \\ []) do
@@ -22,15 +21,12 @@ defmodule Tay.Storage.Native do
         :validated_filesystem,
         :test_helper,
         :timeout,
-        :max_directory_entries,
         :deadline
       ] ++ test_existing_option_keys()
 
     if valid_open_options?(path, options) and Path.expand(path) != "/" and
          length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
          Enum.all?(Keyword.keys(options), &(&1 in allowed)) and
-         is_integer(Keyword.get(options, :max_directory_entries, @default_max_directory_entries)) and
-         Keyword.get(options, :max_directory_entries, @default_max_directory_entries) in 1..@max_directory_entries_limit and
          (is_nil(Keyword.get(options, :deadline)) or is_integer(Keyword.get(options, :deadline))) do
       do_open(path, options, :acquire_existing)
     else
@@ -147,15 +143,9 @@ defmodule Tay.Storage.Native do
     mode = if Keyword.get(options, :durability, :sync) == :sync, do: 1, else: 0
     validated = if Keyword.get(options, :validated_filesystem, false), do: 1, else: 0
 
-    budget =
-      if operation == :acquire_existing,
-        do: <<Keyword.get(options, :max_directory_entries, @default_max_directory_entries)::32>>,
-        else: <<>>
-
     result =
       with :ok <- before_acquire(native, options),
-           do:
-             request(native, operation, <<mode, validated, budget::binary, string(path)::binary>>)
+           do: request(native, operation, <<mode, validated, string(path)::binary>>)
 
     case result do
       {:ok, bytes, 0} ->
@@ -299,12 +289,34 @@ defmodule Tay.Storage.Native do
     end
   end
 
-  def list(native, scope) do
-    case request(native, :list, <<scope(scope)>>) do
-      {:ok, <<count::32, bytes::binary>>, 0} ->
-        case entries(bytes, count, [], false) do
-          {:ok, entries} -> {:ok, entries}
-          _ -> uncertain(native, :invalid_directory_reply)
+  def list(native, scope), do: list_pages(native, :list, scope, 0, [], nil)
+
+  defp list_pages(native, operation, scope, continuation, chunks, remaining) do
+    body =
+      <<scope(scope), continuation>> <>
+        if(operation == :cold_list, do: <<remaining::32>>, else: <<>>)
+
+    case request(native, operation, body) do
+      {:ok, <<more, count::32, bytes::binary>>, 0} when more in [0, 1] ->
+        case entries(bytes, count, [], cold?(native)) do
+          {:ok, page} ->
+            chunks = [page | chunks]
+
+            if more == 0 do
+              {:ok, chunks |> Enum.reverse() |> List.flatten()}
+            else
+              list_pages(
+                native,
+                operation,
+                scope,
+                1,
+                chunks,
+                if(is_integer(remaining), do: remaining - count, else: nil)
+              )
+            end
+
+          _ ->
+            uncertain(native, :invalid_directory_reply)
         end
 
       {:error, _} = error ->
@@ -329,21 +341,8 @@ defmodule Tay.Storage.Native do
 
   @doc false
   def cold_list(native, scope, remaining)
-      when is_integer(remaining) and remaining in 1..@max_directory_entries_limit do
-    case request(native, :cold_list, <<scope(scope)::8, remaining::32>>) do
-      {:ok, <<count::32, bytes::binary>>, 0} ->
-        case entries(bytes, count, [], true) do
-          {:ok, entries} -> {:ok, entries}
-          _ -> uncertain(native, :invalid_directory_reply)
-        end
-
-      {:error, _} = error ->
-        error
-
-      _ ->
-        uncertain(native, :invalid_directory_reply)
-    end
-  end
+      when is_integer(remaining) and remaining in 1..@max_copy_entries,
+      do: list_pages(native, :cold_list, scope, 0, [], remaining)
 
   def cold_list(_native, _scope, _remaining),
     do: {:error, %{kind: :native_argument, reason: :invalid_cold_list_limit}}
@@ -378,6 +377,15 @@ defmodule Tay.Storage.Native do
     do: empty(native, :v2_select, string("e-" <> Base.encode16(epoch_id, case: :lower)))
 
   def v2_select(_, _), do: {:error, %{kind: :native_argument, reason: :epoch_id}}
+
+  @doc false
+  def v2_clone(native, target_scope, name) do
+    case request(native, :v2_clone, <<scope(target_scope), string(name)::binary>>) do
+      {:ok, <<cloned>>, 0} when cloned in [0, 1] -> {:ok, cloned == 1}
+      {:error, _} = error -> error
+      _ -> uncertain(native, :invalid_clone_reply)
+    end
+  end
 
   @doc "Creates a private candidate epoch and its segments directory under the held lock."
   def v2_begin(native, nonce) when is_binary(nonce) and byte_size(nonce) == 16,

@@ -71,6 +71,23 @@ defmodule Tay.Qualification.BenchmarkTest do
     end
   end
 
+  test "compaction reports reused bytes, complete pause and an indexed restart", %{path: path} do
+    result =
+      Harness.run(:compaction, %{path: path, mode: :write, jobs: 4, args_bytes: 32, clients: 2})
+
+    assert result.measurements.jobs == 4
+    assert length(result.measurements.passes) == 3
+
+    for pass <- result.measurements.passes do
+      assert pass.candidate_bytes == pass.reused_bytes + pass.rewritten_bytes
+      assert pass.total_ms >= pass.publication_total_ms
+      assert pass.pause_ms >= pass.publication_pause_ms
+    end
+
+    assert result.measurements.restart.within_configured_deadline
+    assert is_binary(Stats.json(result))
+  end
+
   test "small lifecycle observes real ACK, callback and three durable event receipts", %{
     path: path
   } do

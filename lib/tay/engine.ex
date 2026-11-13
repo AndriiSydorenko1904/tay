@@ -46,7 +46,12 @@ defmodule Tay.Engine do
              Config.storage(config) ++ [lifecycle_observer: guardian],
              %{
                codec: Event,
-               initial_acc: Transition.candidate(config.candidate_limits, config.value_limits),
+               initial_acc:
+                 Map.put(
+                   Transition.candidate(config.candidate_limits, config.value_limits),
+                   :indexed_recovery,
+                   true
+                 ),
                reducer: &CompactionReplay.reduce/3,
                options: config.recovery
              }
@@ -64,7 +69,16 @@ defmodule Tay.Engine do
              guardian,
              {:compaction_retention, self(), config.compaction.terminal_retention}
            ),
-         {:ok, terminal_store} <- TerminalStore.open(config.name, config.data_dir, candidate.jobs) do
+         {:ok, terminal_store} <-
+           TerminalStore.open(config.name, config.data_dir, candidate.jobs,
+             loader:
+               OnlineCheckpoint.loader(
+                 writer,
+                 summary.admission_ref,
+                 summary.epoch_id,
+                 summary.recovery_index
+               )
+           ) do
       case activation_capability(summary) do
         {:error, error} ->
           TerminalStore.close(terminal_store)
@@ -336,7 +350,7 @@ defmodule Tay.Engine do
         send(guardian, {:online_compaction_unsupported, self(), token})
         {:noreply, s}
 
-      not is_nil(expected_source) and expected_source != {s.epoch_id, s.next_sequence} ->
+      not compaction_source_current?(expected_source, s) ->
         send(guardian, {:operation_source_changed, self(), token})
         {:noreply, s}
 
@@ -432,7 +446,7 @@ defmodule Tay.Engine do
           send(guardian, {:operation_policy_draining, self(), token})
           {:noreply, s}
 
-        not is_nil(expected_source) and expected_source != {s.epoch_id, s.next_sequence} ->
+        not compaction_source_current?(expected_source, s) ->
           send(guardian, {:operation_source_changed, self(), token})
           {:noreply, s}
 
@@ -745,7 +759,7 @@ defmodule Tay.Engine do
              "eligible_at" => definition["scheduled_at"] || at
            }
          },
-         {:ok, {1, 1, payload}} <- Event.encode(event, c.value_limits, c.max_insert_payload_bytes),
+         {:ok, {1, 1, payload}} <- Event.encode(event, c.value_limits),
          {:ok, job, next} <-
            Persistence.commit(s, nil, event, {:durability, durability, payload}) do
       {{:ok, ProjectionState.view(next, job)}, next}
@@ -786,7 +800,24 @@ defmodule Tay.Engine do
     %{s | memory_reclaim: {timer, token}}
   end
 
+  defp compaction_source_current?(nil, _state), do: true
+
+  defp compaction_source_current?({:checkpoint, {epoch, sequence}}, state) do
+    # Periodic checkpoints capture the actual frontier when they start. New
+    # appends within the estimated epoch must not starve that capture, while an
+    # epoch switch or a future/stale-generation estimate still refuses work.
+    epoch == state.epoch_id and is_integer(sequence) and sequence >= 1 and
+      sequence <= state.next_sequence
+  end
+
+  defp compaction_source_current?(source, state),
+    do: source == {state.epoch_id, state.next_sequence}
+
   defp same_source_epoch?(nil, _epoch_id), do: true
+
+  defp same_source_epoch?({:checkpoint, source}, epoch_id),
+    do: same_source_epoch?(source, epoch_id)
+
   defp same_source_epoch?({epoch_id, _sequence}, epoch_id), do: true
   defp same_source_epoch?(_expected_source, _epoch_id), do: false
 

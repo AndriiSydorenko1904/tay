@@ -8,7 +8,7 @@ defmodule Tay.Storage.Native.SuccessContractTest do
   @file_bytes "0123456789abcdef0123456789abcdef0123456789ab"
 
   defp fixtures do
-    Path.expand("../../fixtures/native/port_v1_success.json", __DIR__)
+    Path.expand("../../fixtures/native/port_v2_success.json", __DIR__)
     |> File.read!()
     |> Jason.decode!()
   end
@@ -82,7 +82,7 @@ defmodule Tay.Storage.Native.SuccessContractTest do
         assert port == native.port
         assert {:ok, payload, written} = Codec.decode_reply(reply, op, f["id"])
         payload = normalize_host_fields(payload, f, native, path)
-        normalized = <<1, f["opcode"], f["id"]::64, 0, 0::32, written::64, payload::binary>>
+        normalized = <<2, f["opcode"], f["id"]::64, 0, 0::32, written::64, payload::binary>>
         assert normalized == bytes(f["reply"]), f["name"]
       after
         Native.shutdown(native)
@@ -120,14 +120,14 @@ defmodule Tay.Storage.Native.SuccessContractTest do
   end
 
   defp normalize_host_fields(
-         <<1::32, n::16, name::binary-size(n), identity::binary>>,
+         <<0, 1::32, n::16, name::binary-size(n), identity::binary>>,
          %{"decoder" => "entries"},
          _,
          path
        ) do
     assert name == @canonical
     verify_identity(identity, path <> "/segments/" <> name)
-    <<1::32, n::16, name::binary, normalize_identity(identity)::binary>>
+    <<0, 1::32, n::16, name::binary, normalize_identity(identity)::binary>>
   end
 
   defp normalize_host_fields(payload, %{"decoder" => "info"}, native, path) do
@@ -180,7 +180,7 @@ defmodule Tay.Storage.Native.SuccessContractTest do
     end
   end
 
-  defp decode(%{"decoder" => "entries"}, <<count::32, payload::binary>>),
+  defp decode(%{"decoder" => "entries"}, <<0, count::32, payload::binary>>),
     do: Codec.entries(payload, count, [], false)
 
   defp decode(%{"decoder" => "entries"}, _), do: :error

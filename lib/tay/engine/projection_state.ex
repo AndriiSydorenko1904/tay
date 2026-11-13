@@ -88,7 +88,6 @@ defmodule Tay.Engine.ProjectionState do
       terminal_state_bytes_charged: state.terminal_budget.bytes + volatile_terminal.bytes,
       volatile_jobs: MapSet.size(state.volatile_ids),
       default_job_durability: state.config.job_durability,
-      journal_batch: state.config.journal_batch,
       max_state_bytes: state.config.max_state_bytes,
       startup_state_bytes_budget: 3 * state.config.max_state_bytes,
       running_executions: map_size(state.running),

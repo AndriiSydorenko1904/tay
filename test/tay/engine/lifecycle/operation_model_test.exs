@@ -94,7 +94,12 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
 
   test "late online completion releases the slot without replying twice" do
     from = {self(), make_ref()}
-    operation = operation(:compact, :compacting, from)
+
+    operation = %{
+      operation(:compact, :compacting, from)
+      | started_at: System.monotonic_time(:millisecond)
+    }
+
     state = state(operation)
     {:noreply, expired} = Lifecycle.handle_info({:operation_deadline, operation.token}, state)
     {_, ref} = from
@@ -103,7 +108,7 @@ defmodule Tay.Engine.Lifecycle.OperationModelTest do
     assert {:noreply, completed} =
              Lifecycle.handle_info(
                {:online_compaction_result, self(), operation.token,
-                {:ok, %{terminal_retention: {:hours, 24}}}},
+                {:ok, %{terminal_retention: {:hours, 24}, pause_ms: 0, total_ms: 0}}},
                expired
              )
 

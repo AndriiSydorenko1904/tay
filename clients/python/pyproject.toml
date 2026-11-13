@@ -31,7 +31,7 @@ classifiers = [
 http-pkcs12 = ["cryptography>=42"]
 
 [project.urls]
-Documentation = "https://github.com/AndriiSydorenko1904/tay/tree/v1.8.1/clients/python"
+Documentation = "https://github.com/AndriiSydorenko1904/tay/tree/v2.0.0/clients/python"
 Issues = "https://github.com/AndriiSydorenko1904/tay/issues"
 Source = "https://github.com/AndriiSydorenko1904/tay"
 

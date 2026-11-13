@@ -4,9 +4,10 @@ defmodule Tay.State.TerminalStore do
   @terminal [:completed, :cancelled, :discarded]
   @slots 0..3
 
-  defstruct [:table, :file, :registry, :slot, :order, :counts]
+  defstruct [:table, :file, :registry, :slot, :order, :counts, :loader]
 
-  def open(name, data_dir, jobs) when is_atom(name) and is_binary(data_dir) and is_map(jobs) do
+  def open(name, data_dir, jobs, options \\ [])
+      when is_atom(name) and is_binary(data_dir) and is_map(jobs) do
     :ok = File.mkdir_p(Path.dirname(data_dir))
 
     Enum.reduce_while(@slots, {:error, :terminal_projection_unavailable}, fn slot, _error ->
@@ -28,7 +29,8 @@ defmodule Tay.State.TerminalStore do
                 registry: name,
                 slot: slot,
                 order: order,
-                counts: counts
+                counts: counts,
+                loader: Keyword.get(options, :loader)
               }}}
           else
             error ->
@@ -63,9 +65,9 @@ defmodule Tay.State.TerminalStore do
     result
   end
 
-  def get(%__MODULE__{table: table}, id) do
+  def get(%__MODULE__{table: table} = store, id) do
     case :dets.lookup(table, id) do
-      [{^id, job}] -> job
+      [{^id, job}] -> resolve(store, job)
       [] -> nil
     end
   end
@@ -98,8 +100,38 @@ defmodule Tay.State.TerminalStore do
     %{jobs: Enum.reverse(jobs), total_count: total}
   end
 
-  def fold(%__MODULE__{table: table}, fun, accumulator),
-    do: :dets.foldl(fn {_id, job}, acc -> fun.(job, acc) end, accumulator, table)
+  def fold(%__MODULE__{table: table} = store, fun, accumulator),
+    do: :dets.foldl(fn {_id, job}, acc -> fun.(resolve(store, job), acc) end, accumulator, table)
+
+  defp resolve(%{loader: loader}, %{cold: true, id: id} = summary) when is_function(loader, 1) do
+    case loader.(id) do
+      {:ok, job} -> Map.put(job, :charge, summary.charge)
+      error -> exit({:checkpoint_read_failed, error})
+    end
+  end
+
+  defp resolve(_store, job), do: job
+
+  # Live commands have already applied the caught-up tail to this projection.
+  # Remove expired IDs using only metadata; retained argument bodies and indexes
+  # need no rewrite. Cold summaries are rebound to the newly published epoch.
+  def rebase(store, retained, loader) do
+    :ets.foldl(
+      fn {key, {id, state, queue, worker}}, :ok ->
+        unless Map.has_key?(retained, id) do
+          :ok = :dets.delete(store.table, id)
+          :ets.delete(store.order, key)
+          increment(store.counts, state, queue, worker, -1)
+        end
+
+        :ok
+      end,
+      :ok,
+      store.order
+    )
+
+    %{store | loader: loader}
+  end
 
   defp open_file(file),
     do: :dets.open_file(make_ref(), file: String.to_charlist(file), type: :set, repair: :force)
@@ -231,7 +263,7 @@ defmodule Tay.State.TerminalStore do
     acc =
       if matches_metadata?(id, state, queue, worker, query) do
         case :dets.lookup(store.table, id) do
-          [{^id, job}] -> [job | acc]
+          [{^id, job}] -> [resolve(store, job) | acc]
           [] -> acc
         end
       else

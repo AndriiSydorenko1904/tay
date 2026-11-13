@@ -43,7 +43,7 @@ defmodule Tay.Engine.CapacityTest do
         | segment: %{
             state.segment
             | id: Segment.max_id(),
-              bytes: state.config.rotation_target_bytes,
+              bytes: Segment.rotation_bytes(),
               count: 1
           }
       }
@@ -61,8 +61,6 @@ defmodule Tay.Engine.CapacityTest do
   test "live insertion crosses minimum rotation target with exact receipts and full restart equivalence",
        %{path: path} do
     options = [
-      rotation_target_bytes: Segment.min_rotation_bytes(),
-      max_insert_payload_bytes: 2_097_152,
       client_slots: 4,
       client_bytes: 8_388_608
     ]
@@ -71,7 +69,7 @@ defmodule Tay.Engine.CapacityTest do
     args = %{"text" => String.duplicate("x", 1_048_576)}
 
     jobs =
-      for _ <- 1..16 do
+      for _ <- 1..(div(Segment.rotation_bytes(), byte_size(args["text"])) + 1) do
         {:ok, job} = Tay.insert(EngineWorker.new(args), name: @name, timeout: 30_000)
         job
       end

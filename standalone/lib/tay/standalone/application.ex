@@ -15,8 +15,6 @@ defmodule Tay.Standalone.Application do
             Tay.child_spec(
               data_dir: config.data_dir,
               initialize: config.initialize,
-              durability: :sync,
-              journal: config.journal,
               validated_filesystem: true,
               workers: %{},
               queues: [default: config.default_queue_concurrency],

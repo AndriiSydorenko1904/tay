@@ -17,7 +17,7 @@ defmodule Tay.Engine.Supervisor do
       [{Tay.Engine.Lifecycle, config}] ++
         if(config.execution, do: [runtime_spec(config)], else: []) ++
         [engine_spec(config)] ++
-        if(config.compaction.enabled, do: [{Tay.Engine.CompactionPolicy, config}], else: [])
+        if(config.compaction.automatic, do: [{Tay.Engine.CompactionPolicy, config}], else: [])
 
     # No component may restart beneath surviving indexes. Guardian failure
     # terminates this runtime group; Engine failure leaves a closed diagnosis.

@@ -3,7 +3,7 @@ Code.require_file("mix_helpers/tay_native_editor.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "1.8.1"
+  @version "2.0.0"
   @source_url "https://github.com/AndriiSydorenko1904/tay"
 
   def project do
@@ -25,11 +25,11 @@ defmodule Tay.MixProject do
         plt_add_apps: [:mix]
       ],
       deps: [
-        {:telemetry, "~> 1.3"},
-        {:telemetry_metrics, "~> 1.1"},
+        {:telemetry, "~> 1.4"},
+        {:telemetry_metrics, "~> 1.2"},
         {:bandit, "~> 1.14.1"},
-        {:phoenix, "~> 1.8.14"},
-        {:phoenix_live_view, "~> 1.2.11"},
+        {:phoenix, "~> 1.8"},
+        {:phoenix_live_view, "~> 1.2"},
         {:phoenix_html, "~> 4.4"},
         {:jason, "~> 1.4"},
         {:floki, ">= 0.38.0", only: :test},

@@ -111,7 +111,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   test "periodic checkpoint captures idle state and recovery replays its tail", %{path: path} do
     root =
       start(path,
-        compaction: [checkpoint_interval: 10, check_interval: 60_000]
+        compaction: [checkpoint_interval: 10]
       )
 
     checkpointed = insert(%{"checkpointed" => true}, scheduled_at: 100_000)
@@ -160,12 +160,63 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     assert :sys.get_state(recovered_engine).events_since_checkpoint == 2
   end
 
+  test "periodic checkpoint includes appends made after its policy estimate", %{path: path} do
+    root = start(path, compaction: [checkpoint_interval: 60_000])
+    original = insert(%{"original" => true}, scheduled_at: 1_000_000)
+    engine = :sys.get_state(@name).engine
+    source_epoch = :sys.get_state(engine).epoch_id
+    p = policy(root)
+    owner = self()
+
+    :ok =
+      :sys.install(
+        p,
+        {fn
+           :waiting, {:in, {:policy_estimate, _, {:ok, summary}}}, _ ->
+             send(owner, {:estimate_barrier, self(), summary.source})
+
+             receive do
+               :continue -> :ok
+             after
+               5_000 -> raise "policy estimate barrier timed out"
+             end
+
+             :observing
+
+           state, _, _ ->
+             state
+         end, :waiting}
+      )
+
+    on_exit(fn -> send(p, :continue) end)
+    ExecutionHelpers.set_clock(60_100)
+    evaluate(p)
+    assert_receive {:estimate_barrier, ^p, {^source_epoch, estimated_sequence}}, 5_000
+    appended = insert(%{"appended" => true}, scheduled_at: 1_000_000)
+    assert :sys.get_state(engine).next_sequence > estimated_sequence
+    send(p, :continue)
+
+    assert EngineHelpers.eventually(fn -> match?({:ok, _}, :sys.get_state(p).last_result) end)
+    checkpoint_epoch = :sys.get_state(engine).epoch_id
+    refute checkpoint_epoch == source_epoch
+    assert :sys.get_state(engine).events_since_checkpoint == 0
+
+    EngineHelpers.stop(root)
+    start(path, compaction: false)
+
+    for job <- [original, appended] do
+      assert {:ok, recovered} = Tay.get_job(job.id, name: @name)
+      assert recovered.definition == job.definition
+      assert recovered.state == :scheduled
+    end
+  end
+
   test "periodic checkpoint snapshots active jobs and recovery starts from that epoch", %{
     path: path
   } do
     root =
       start(path,
-        compaction: [checkpoint_interval: 10, check_interval: 60_000]
+        compaction: [checkpoint_interval: 10]
       )
 
     assert {:ok, _} = Tay.compact(name: @name, timeout: 60_000)
@@ -343,8 +394,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     start(path,
       compaction: false,
       writer_hook: hook,
-      client_slots: 32,
-      max_insert_payload_bytes: 2_097_152
+      client_slots: 32
     )
 
     insert(%{"seed" => true}, scheduled_at: 100_000)
@@ -1002,7 +1052,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   test "fresh terminal count does not wake automatic compaction", %{
     path: path
   } do
-    start(path, compaction: [check_interval: 60_000, min_interval: 60_000])
+    start(path, compaction: [])
 
     for at <- 1..3 do
       ExecutionHelpers.set_clock(at)
@@ -1159,6 +1209,25 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     )
 
     assert EngineHelpers.eventually(fn -> :sys.get_state(@name).operation == nil end)
+
+    engine = :sys.get_state(@name).engine
+    %{epoch_id: epoch, next_sequence: sequence} = :sys.get_state(engine)
+
+    for {estimate_generation, source, reason} <- [
+          {make_ref(), {epoch, sequence}, :checkpoint_due},
+          {generation, {nil, sequence}, :checkpoint_due},
+          {generation, {epoch, sequence + 1}, :checkpoint_due},
+          {generation, {epoch, sequence - 1}, :eligible}
+        ] do
+      GenServer.cast(
+        @name,
+        {:automatic_compaction, p, make_ref(), estimate_generation, source, reason}
+      )
+
+      assert EngineHelpers.eventually(fn -> :sys.get_state(@name).operation == nil end)
+      assert :sys.get_state(engine).epoch_id == epoch
+    end
+
     refute_receive {:drain_barrier, _}
     assert :sys.get_state(@name).meta.generation == generation
     assert File.exists?(Path.join(path, "CURRENT"))
@@ -1297,7 +1366,6 @@ defmodule Tay.Engine.CompactionRuntimeTest do
   } do
     root =
       start(path,
-        compaction: [min_reclaimable_bytes: 1],
         test_execution: true,
         workers: %{"worker.v1" => EngineWorker, "execution.test.v1" => Tay.Test.ExecutionWorker}
       )
@@ -1331,7 +1399,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     evaluate(p)
 
     assert EngineHelpers.eventually(fn ->
-             :sys.get_state(p).last_result == {:deferred, :not_enough_reclaimable_bytes}
+             :sys.get_state(p).last_result == {:deferred, :no_reclaimable_history}
            end),
            inspect(:sys.get_state(p))
 
@@ -1346,13 +1414,12 @@ defmodule Tay.Engine.CompactionRuntimeTest do
     for job <- [active, completed | old], do: assert({:ok, _} = Tay.get_job(job.id, name: @name))
   end
 
-  for {target, count} <- [{16_777_352, 160}, {67_108_864, 340}] do
-    @target target
+  for count <- [340] do
     @count count
     @tag timeout: 900_000
     @tag :phase_c_workload
     @tag skip: System.get_env("TAY_PHASE_C_WORKLOAD") != "1"
-    test "default gates reclaim expired history at rotation #{target} without churn", %{
+    test "automatic maintenance reclaims expired history without churn", %{
       path: path
     } do
       owner = self()
@@ -1371,7 +1438,6 @@ defmodule Tay.Engine.CompactionRuntimeTest do
 
       root =
         start(path,
-          rotation_target_bytes: @target,
           caller_timeout: 60_000,
           writer_hook: hook,
           test_execution: true,
@@ -1472,8 +1538,7 @@ defmodule Tay.Engine.CompactionRuntimeTest do
               sampled_writer_process_bytes: peak_memory,
               sampled_writer_referenced_binary_bytes: peak_binaries,
               conservative_estimate: estimate.reclaimable_bytes,
-              retained_terminal_jobs_before: @count,
-              rotation_target_bytes: @target
+              retained_terminal_jobs_before: @count
             })
           )
       )

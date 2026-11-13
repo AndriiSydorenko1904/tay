@@ -82,7 +82,7 @@ defmodule TayQualification.Probe do
     {:unix, :linux} = :os.type()
     false = File.exists?(path)
     {:ok, _} = Tay.Storage.initialize(data_dir: path, durability: :sync, validated_filesystem: true)
-    options = [data_dir: path, durability: :sync, validated_filesystem: true, workers: %{"package.qualification.v1" => TayQualification.Worker}, queues: [default: 1]]
+    options = [data_dir: path, validated_filesystem: true, workers: %{"package.qualification.v1" => TayQualification.Worker}, queues: [default: 1]]
     {:ok, root} = start_owned(options)
     {:ok, intent} = TayQualification.Worker.new(%{"from" => "detached release"})
     {:ok, _} = Tay.insert(intent)

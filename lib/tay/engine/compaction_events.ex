@@ -13,13 +13,13 @@ defmodule Tay.Engine.CompactionEvents do
   ]
   @reasons [
     :eligible,
+    :no_sealed_history,
+    :no_reclaimable_history,
+    :rewrite_cost,
     :checkpoint_due,
     :evaluated,
     :completed,
-    :not_enough_reclaimable_bytes,
-    :ratio_below_threshold,
     :cooldown,
-    :too_few_segments,
     :active_jobs_present,
     :busy,
     :draining,
@@ -34,8 +34,7 @@ defmodule Tay.Engine.CompactionEvents do
     :unable_to_drain,
     :publication_failed,
     :unknown_outcome,
-    :delta_overloaded,
-    :below_minimum_benefit
+    :delta_overloaded
   ]
   @fields [
     :sealed_bytes,
@@ -48,8 +47,12 @@ defmodule Tay.Engine.CompactionEvents do
     :checkpoint_events,
     :source_bytes,
     :candidate_bytes,
+    :reused_bytes,
+    :rewritten_bytes,
     :reclaimed_bytes,
     :pause_ms,
+    :publication_pause_ms,
+    :publication_total_ms,
     :preparation_ms,
     :total_ms,
     :catch_up_rounds,

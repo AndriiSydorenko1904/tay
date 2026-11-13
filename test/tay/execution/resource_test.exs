@@ -44,7 +44,7 @@ defmodule Tay.Execution.ResourceTest do
           segment: %{
             s.segment
             | id: Segment.max_id(),
-              bytes: s.config.rotation_target_bytes,
+              bytes: Segment.rotation_bytes(),
               count: 1
           }
       }

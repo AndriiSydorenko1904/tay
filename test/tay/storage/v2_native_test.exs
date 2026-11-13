@@ -48,7 +48,6 @@ defmodule Tay.Storage.V2NativeTest do
       current: current,
       jobs: %{},
       frontier: 0,
-      rotation_target_bytes: 67_108_864,
       candidate_limits: %{},
       value_limits: Tay.Event.Value.defaults()
     }
@@ -328,7 +327,6 @@ defmodule Tay.Storage.V2NativeTest do
         current: recovered.current,
         jobs: recovered.candidate.jobs,
         frontier: recovered.next_sequence - 1,
-        rotation_target_bytes: 67_108_864,
         candidate_limits: %{},
         value_limits: Tay.Event.Value.defaults()
       })

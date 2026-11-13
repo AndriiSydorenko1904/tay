@@ -526,7 +526,7 @@ defmodule Tay.Engine.Persistence do
     rotate =
       state.segment.count > 0 and
         (state.segment.state == :sealed or
-           state.segment.bytes + payload_bytes + 28 + 64 > state.config.rotation_target_bytes)
+           state.segment.bytes + payload_bytes + 28 + 64 > Tay.Storage.Segment.rotation_bytes())
 
     %{
       sequence: state.next_sequence,

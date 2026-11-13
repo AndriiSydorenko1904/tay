@@ -303,7 +303,6 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
             current: rotated.v2_current,
             frontier: rotated.next_sequence - 1,
             exclude_segment_id: rotated.segment.id,
-            rotation_target_bytes: rotated.options.rotation_target_bytes,
             candidate_limits: rotated.candidate_limits,
             value_limits: rotated.value_limits,
             terminal_retention: retention,

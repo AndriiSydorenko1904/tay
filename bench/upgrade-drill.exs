@@ -38,7 +38,11 @@ defmodule Tay.UpgradeDrill do
     end
 
     options =
-      storage ++
+      if(
+        Mix.env() == :prod and Version.match?(to_string(Application.spec(:tay, :vsn)), ">= 2.0.0"),
+        do: Keyword.delete(storage, :durability),
+        else: storage
+      ) ++
         [
           executor_socket: nil,
           http_port: nil,

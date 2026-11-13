@@ -9,8 +9,6 @@ defmodule Tay.Standalone.Config do
   @default_caller_timeout_ms 5_000
   @caller_timeout_range 1..4_294_967_295
   @default_max_state_bytes 256 * 1_024 * 1_024
-  @default_journal [batch: [max_events: 64, interval_ms: 0]]
-  @journal_interval_range 0..1_000
   @default_checkpoint_interval_ms 60_000
   @checkpoint_interval_range 0..4_294_967_295
   @max_tcp_port 65_535
@@ -26,7 +24,6 @@ defmodule Tay.Standalone.Config do
             initialize: :never,
             default_queue_concurrency: @default_queue_concurrency,
             caller_timeout_ms: @default_caller_timeout_ms,
-            journal: @default_journal,
             checkpoint_interval_ms: @default_checkpoint_interval_ms,
             max_state_bytes: @default_max_state_bytes,
             rate_limits: [],
@@ -44,7 +41,6 @@ defmodule Tay.Standalone.Config do
           initialize: :never | :if_missing,
           default_queue_concurrency: pos_integer(),
           caller_timeout_ms: pos_integer(),
-          journal: keyword(),
           checkpoint_interval_ms: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
           terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
@@ -65,12 +61,12 @@ defmodule Tay.Standalone.Config do
          socket_path = socket.path,
          :ok <- outside_data_dir(socket_path, data_dir),
          :ok <- legacy_grpc_environment(environment),
+         :ok <- reject_removed_environment(environment),
          {:ok, %{ip: http_ip} = tls} <- load_http(environment, http_port),
          :ok <- require_transport(socket_path, http_port),
          {:ok, initialize} <- initialize(environment),
          {:ok, default_queue_concurrency} <- default_queue_concurrency(environment),
          {:ok, caller_timeout_ms} <- caller_timeout(environment),
-         {:ok, journal} <- journal(environment),
          {:ok, checkpoint_interval_ms} <- checkpoint_interval(environment),
          {:ok, max_state_bytes} <-
            byte_size(environment, "TAY_MAX_STATE_BYTES", @default_max_state_bytes),
@@ -89,7 +85,6 @@ defmodule Tay.Standalone.Config do
          initialize: initialize,
          default_queue_concurrency: default_queue_concurrency,
          caller_timeout_ms: caller_timeout_ms,
-         journal: journal,
          checkpoint_interval_ms: checkpoint_interval_ms,
          max_state_bytes: max_state_bytes,
          rate_limits: rate_limits,
@@ -127,6 +122,12 @@ defmodule Tay.Standalone.Config do
   end
 
   defp rate_rules(_), do: {:error, :invalid_rate_policy}
+
+  defp reject_removed_environment(environment) do
+    if Map.has_key?(environment, "TAY_GROUP_COMMIT_INTERVAL_MS"),
+      do: {:error, "TAY_GROUP_COMMIT_INTERVAL_MS was removed; journal batching is automatic"},
+      else: :ok
+  end
 
   defp legacy_grpc_environment(environment) do
     if Enum.any?(Map.keys(environment), fn key ->
@@ -262,18 +263,6 @@ defmodule Tay.Standalone.Config do
       value ->
         {:error,
          "TAY_INITIALIZE_IF_MISSING must be one of true, false, TRUE, FALSE, 1, or 0; got: #{inspect(value)}"}
-    end
-  end
-
-  defp journal(environment) do
-    with {:ok, interval} <-
-           integer_in_range(
-             environment,
-             "TAY_GROUP_COMMIT_INTERVAL_MS",
-             @default_journal[:batch][:interval_ms],
-             @journal_interval_range
-           ) do
-      {:ok, put_in(@default_journal, [:batch, :interval_ms], interval)}
     end
   end
 

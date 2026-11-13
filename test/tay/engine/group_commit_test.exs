@@ -48,13 +48,13 @@ defmodule Tay.Engine.GroupCommitTest do
     end
 
     {:ok, root} =
-      start_batched(path, 100, 20,
+      start_batched(path,
         writer_hook: hook,
         client_slots: 8
       )
 
     jobs = for n <- 1..4, do: intent!(%{"n" => n})
-    calls = Enum.map(jobs, &Task.async(fn -> Tay.insert(&1, name: @name, timeout: 2_000) end))
+    calls = admit_batch(root, jobs)
 
     assert_receive {:fsync, writer}, 1_000
     refute Enum.any?(calls, &match?({:ok, _}, Task.yield(&1, 0)))
@@ -77,13 +77,11 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   test "fsync failure returns no success for any request in the batch", %{path: path} do
-    {:ok, root} = start_batched(path, 100, 10)
+    {:ok, root} = start_batched(path)
     writer = :sys.get_state(EngineHelpers.engine(root)).writer
     :ok = Writer.inject_fault(writer, :sync, 1, :error, 5)
 
-    calls =
-      for n <- 1..3,
-          do: Task.async(fn -> Tay.insert(intent!(%{"n" => n}), name: @name, timeout: 300) end)
+    calls = admit_batch(root, for(n <- 1..3, do: intent!(%{"n" => n})), 300)
 
     results = Enum.map(calls, &Task.await(&1, 1_000))
     assert Enum.all?(results, &match?({:error, %{kind: :unknown_outcome}}, &1))
@@ -91,8 +89,8 @@ defmodule Tay.Engine.GroupCommitTest do
     EngineHelpers.stop(root)
   end
 
-  test "drain flushes a pending batch instead of waiting for its interval", %{path: path} do
-    {:ok, root} = start_batched(path, 100, 1_000)
+  test "drain completes admitted durable inserts", %{path: path} do
+    {:ok, root} = start_batched(path)
     insert = Task.async(fn -> Tay.insert(intent!(%{}), name: @name, timeout: 2_000) end)
     Process.sleep(20)
     started = System.monotonic_time(:millisecond)
@@ -102,7 +100,7 @@ defmodule Tay.Engine.GroupCommitTest do
     EngineHelpers.stop(root)
   end
 
-  test "interval zero keeps one immediate fsync per append", %{path: path} do
+  test "sequential inserts each cross their own sync barrier", %{path: path} do
     parent = self()
 
     hook = fn tag, _ ->
@@ -111,10 +109,7 @@ defmodule Tay.Engine.GroupCommitTest do
     end
 
     {:ok, root} =
-      EngineHelpers.start(path, @name,
-        journal: [batch: [max_events: 64, interval_ms: 0]],
-        writer_hook: hook
-      )
+      EngineHelpers.start(path, @name, writer_hook: hook)
 
     assert {:ok, _} = Tay.insert(intent!(%{"n" => 1}), name: @name)
     assert_receive :fsync
@@ -124,36 +119,11 @@ defmodule Tay.Engine.GroupCommitTest do
   end
 
   test "shutdown resolves pending callers without hanging", %{path: path} do
-    {:ok, root} = start_batched(path, 100, 1_000)
+    {:ok, root} = start_batched(path)
     insert = Task.async(fn -> Tay.insert(intent!(%{}), name: @name, timeout: 2_000) end)
     Process.sleep(20)
     EngineHelpers.stop(root)
     assert {:ok, _} = Task.yield(insert, 2_000)
-  end
-
-  test "max_events flushes a bounded batch before the interval", %{path: path} do
-    parent = self()
-
-    hook = fn tag, _ ->
-      if tag == :append_synced, do: send(parent, :fsync)
-      :ok
-    end
-
-    {:ok, root} = start_batched(path, 3, 1_000, writer_hook: hook, client_slots: 8)
-
-    first = Task.async(fn -> Tay.insert(intent!(%{"n" => 1}), name: @name) end)
-    second = Task.async(fn -> Tay.insert(intent!(%{"n" => 2}), name: @name) end)
-    refute_receive :fsync, 50
-    third = Task.async(fn -> Tay.insert(intent!(%{"n" => 3}), name: @name) end)
-
-    assert_receive :fsync, 500
-
-    assert Enum.all?([first, second, third], fn task ->
-             match?({:ok, {:ok, _}}, Task.yield(task, 2_000))
-           end)
-
-    refute_receive :fsync, 50
-    EngineHelpers.stop(root)
   end
 
   test "volatile insert bypasses a pending persistent journal batch", %{path: path} do
@@ -164,7 +134,7 @@ defmodule Tay.Engine.GroupCommitTest do
       :ok
     end
 
-    {:ok, root} = start_batched(path, 100, 1_000, writer_hook: hook)
+    {:ok, root} = start_batched(path, writer_hook: hook)
 
     assert {:ok, %{durability: :volatile}} =
              Tay.insert(intent!(%{}), name: @name, durability: :volatile)
@@ -173,16 +143,30 @@ defmodule Tay.Engine.GroupCommitTest do
     EngineHelpers.stop(root)
   end
 
+  defp admit_batch(root, jobs, timeout \\ 2_000) do
+    engine = EngineHelpers.engine(root)
+    :ok = :sys.suspend(engine)
+
+    try do
+      calls =
+        Enum.map(jobs, fn job ->
+          Task.async(fn -> Tay.insert(job, name: @name, timeout: timeout) end)
+        end)
+
+      assert EngineHelpers.eventually(fn ->
+               MapSet.size(:sys.get_state(@name).delivery.active) == length(jobs)
+             end)
+
+      calls
+    after
+      :sys.resume(engine)
+    end
+  end
+
   defp intent!(args) do
     {:ok, intent} = EngineWorker.new(args)
     intent
   end
 
-  defp start_batched(path, max_events, interval_ms, extra \\ []) do
-    EngineHelpers.start(
-      path,
-      @name,
-      Keyword.put(extra, :journal, batch: [max_events: max_events, interval_ms: interval_ms])
-    )
-  end
+  defp start_batched(path, extra \\ []), do: EngineHelpers.start(path, @name, extra)
 end

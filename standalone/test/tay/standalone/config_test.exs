@@ -13,8 +13,13 @@ defmodule Tay.Standalone.ConfigTest do
     assert config.initialize == :never
     assert config.default_queue_concurrency == 10
     assert config.caller_timeout_ms == 5_000
-    assert config.journal == [batch: [max_events: 64, interval_ms: 0]]
     assert config.checkpoint_interval_ms == 60_000
+  end
+
+  test "rejects the removed journal batching environment instead of ignoring it" do
+    assert {:error, message} = Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => "10"})
+    assert message =~ "was removed"
+    assert message =~ "automatic"
   end
 
   test "blank socket environment uses the same defaults as an absent value" do
@@ -48,21 +53,6 @@ defmodule Tay.Standalone.ConfigTest do
     end
   end
 
-  test "validates the durable enqueue group-commit interval" do
-    for interval <- [0, 1, 5, 10, 50, 100, 1_000] do
-      assert {:ok, config} =
-               Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => Integer.to_string(interval)})
-
-      assert config.journal[:batch][:interval_ms] == interval
-      assert config.journal[:batch][:max_events] == 64
-    end
-
-    for value <- ["-1", "1001", "1.0", " 5", "", "five"] do
-      assert {:error, message} = Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => value})
-      assert message =~ "TAY_GROUP_COMMIT_INTERVAL_MS"
-    end
-  end
-
   test "configures periodic semantic checkpoints" do
     for interval <- [0, 1_000, 60_000, 4_294_967_295] do
       assert {:ok, config} =
@@ -75,25 +65,6 @@ defmodule Tay.Standalone.ConfigTest do
       assert {:error, message} = Config.load(%{"TAY_CHECKPOINT_INTERVAL_MS" => value})
       assert message =~ "TAY_CHECKPOINT_INTERVAL_MS"
     end
-  end
-
-  if :os.type() != {:unix, :linux} do
-    @tag skip: "production Engine configuration requires Linux sync durability"
-  end
-
-  test "journal configuration reaches the Engine without the removed interval option" do
-    assert {:ok, config} = Config.load(%{"TAY_GROUP_COMMIT_INTERVAL_MS" => "25"})
-
-    assert {:ok, engine} =
-             Tay.Engine.Config.new(
-               data_dir: config.data_dir,
-               durability: :sync,
-               validated_filesystem: true,
-               journal: config.journal,
-               client_slots: 2
-             )
-
-    assert engine.journal_batch == %{max_events: 64, interval_ms: 25}
   end
 
   test "HTTP configuration disables the implicit socket but permits an explicit socket" do

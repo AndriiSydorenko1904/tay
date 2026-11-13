@@ -20,6 +20,7 @@ defmodule Tay.Storage.V2.Publication do
     :admitted_candidate_bytes,
     :epoch_id,
     :base_bytes,
+    :reused_bytes,
     :peak_memory,
     :manifest,
     :manifest_bytes,

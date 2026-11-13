@@ -1,6 +1,6 @@
 defmodule Tay.Storage.Native.Codec do
   @moduledoc """
-  Pure filesystem Port protocol v1 encoding and decoding.
+  Pure filesystem Port protocol v2 encoding and decoding.
   Correlation errors remain distinct from native I/O errors; only the Port
   owner decides when to poison a connection. No retry or process state lives here.
   """
@@ -41,6 +41,7 @@ defmodule Tay.Storage.Native.Codec do
     v2_reclaim: 37,
     acquire_if_missing: 38,
     v2_abort: 39,
+    v2_clone: 40,
     fault: 240
   }
 
@@ -48,16 +49,16 @@ defmodule Tay.Storage.Native.Codec do
   def operations, do: @ops
 
   def opcode(operation), do: Map.fetch!(@ops, operation)
-  def encode_request(operation, id, body), do: <<1, opcode(operation), id::64, body::binary>>
+  def encode_request(operation, id, body), do: <<2, opcode(operation), id::64, body::binary>>
 
   def decode_reply(bytes, operation, id) do
     op = opcode(operation)
 
     case bytes do
-      <<1, ^op, ^id::64, 0, 0::32, written::64, reply::binary>> ->
+      <<2, ^op, ^id::64, 0, 0::32, written::64, reply::binary>> ->
         {:ok, reply, written}
 
-      <<1, ^op, ^id::64, 1, errno::32, written::64, reason::binary>> ->
+      <<2, ^op, ^id::64, 1, errno::32, written::64, reason::binary>> ->
         {:error,
          %{
            kind: :native_io,

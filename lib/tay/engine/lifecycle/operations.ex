@@ -64,6 +64,7 @@ defmodule Tay.Engine.Lifecycle.Operations do
             owner: owner,
             deadline: deadline,
             stats: nil,
+            started_at: now(),
             terminal_retention: retention,
             expected_source: expected_source,
             cancel_flag: :atomics.new(1, [])
@@ -132,6 +133,7 @@ defmodule Tay.Engine.Lifecycle.Operations do
       ) do
     deadline = System.monotonic_time(:millisecond) + 900_000
     from = {policy, {:compaction_policy, token}}
+    expected_source = if reason == :checkpoint_due, do: {:checkpoint, source}, else: source
 
     with :ok <- policy_ready(s),
          true <- generation == s.meta.generation,
@@ -142,7 +144,7 @@ defmodule Tay.Engine.Lifecycle.Operations do
              {:operation, token, policy, :claimed, deadline}
            ) do
       case handle_call(
-             {:operation, generation, token, :compact, false, deadline, nil, source},
+             {:operation, generation, token, :compact, false, deadline, nil, expected_source},
              from,
              s
            ) do
@@ -212,6 +214,7 @@ defmodule Tay.Engine.Lifecycle.Operations do
         {:online_compaction_switch_requested, engine, token},
         %{engine: engine, operation: %{token: token, kind: :compact, phase: :compacting}} = s
       ) do
+    s = %{s | operation: %{s.operation | switch_at: now()}}
     s = publish(s, Map.merge(s.meta.status, %{state: :compacting, phase: :switching}))
     s = flush_commands(s)
     send(engine, {:online_compaction_switch_ack, self(), token})
@@ -226,6 +229,15 @@ defmodule Tay.Engine.Lifecycle.Operations do
       s
       |> Map.update!(:config, &put_compaction_retention(&1, stats.terminal_retention))
       |> publish(Status.transition(s.meta.status, :ready))
+
+    completed = now()
+
+    stats =
+      stats
+      |> Map.put(:publication_pause_ms, stats.pause_ms)
+      |> Map.put(:publication_total_ms, stats.total_ms)
+      |> Map.put(:pause_ms, max(0, completed - (s.operation.switch_at || s.operation.started_at)))
+      |> Map.put(:total_ms, max(0, completed - s.operation.started_at))
 
     {:noreply, finish_operation(s, {:ok, stats})}
   end

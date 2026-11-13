@@ -48,7 +48,6 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
       validated_filesystem: options.validated_filesystem,
       test_helper: options.test_helper,
       timeout: options.timeout,
-      max_directory_entries: budgets.max_directory_entries,
       deadline: deadline
     ]
 
@@ -212,13 +211,15 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
                  V2Reducer.candidate(
                    initial.limits,
                    initial.value_limits
-                 )
+                 ),
+                 indexed: Map.get(initial, :indexed_recovery, false)
                ) do
           store = view.store
           count = Enum.reduce(store.segments, 0, &(&1.count + &2))
 
           summary = %{
             scope: :candidate,
+            recovery_index: if(Map.get(view, :indexed, false), do: view.manifest.recovery_index),
             store_id: store.store_id,
             epoch_id: view.epoch_id,
             compaction_captured_at: view.manifest.captured_at,
@@ -254,7 +255,8 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
            V2Reader.recover(
              native,
              V2Reducer.candidate(view.candidate.limits, view.candidate.value_limits),
-             selected: true
+             selected: true,
+             indexed: Map.get(view, :indexed, false)
            ),
          true <- actual == view || {:error, :v2_frozen_view_changed},
          do: :ok

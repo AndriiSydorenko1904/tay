@@ -81,30 +81,36 @@ defmodule Tay.Storage.RotationTest do
     GenServer.stop(w)
   end
 
-  @tag timeout: 120_000
-  test "the maximum record fits exactly; the next record rotates before append", %{path: path} do
-    {:ok, w} = start(path, rotation_target_bytes: Segment.min_rotation_bytes())
+  @tag timeout: 180_000
+  test "maximum-size records rotate at the internal segment boundary", %{path: path} do
+    {:ok, w} = start(path)
     payload = :binary.copy(<<7>>, 16_777_216)
-    assert {:ok, %{segment_id: 1, sequence: 1}} = Writer.append(w, 1, 1, payload)
-    assert {:ok, %{segment_id: 2, sequence: 2}} = Writer.append(w, 1, 1, <<>>)
+    count = div(Segment.rotation_bytes() - 108, byte_size(payload) + 28)
+
+    for sequence <- 1..count do
+      assert {:ok, %{segment_id: 1, sequence: ^sequence}} = Writer.append(w, 1, 1, payload)
+    end
+
+    sequence = count + 1
+    assert {:ok, %{segment_id: 2, sequence: ^sequence}} = Writer.append(w, 1, 1, payload)
 
     assert File.stat!(Path.join(Tay.Test.RecoveryHelpers.segment_directory(path), canonical(1))).size ==
-             Segment.min_rotation_bytes()
+             108 + count * (byte_size(payload) + 28)
 
-    assert Writer.status(w).segment.bytes == 72
     GenServer.stop(w)
   end
 
-  @tag timeout: 120_000
-  test "lower insertion threshold after reopen does not invalidate stored bytes", %{path: path} do
+  @tag timeout: 180_000
+  test "reopen preserves records and automatic rotation policy", %{path: path} do
     {:ok, w} = start(path)
-    payload = :binary.copy(<<9>>, 8_388_608)
-    {:ok, _} = Writer.append(w, 1, 1, payload)
-    {:ok, _} = Writer.append(w, 1, 1, payload)
+    payload = :binary.copy(<<9>>, 16_777_216)
+    count = div(Segment.rotation_bytes() - 108, byte_size(payload) + 28)
+    for _ <- 1..count, do: assert({:ok, _} = Writer.append(w, 1, 1, payload))
     GenServer.stop(w)
-    {:ok, w} = start(path, rotation_target_bytes: Segment.min_rotation_bytes())
-    assert Writer.status(w).segment.count == 2
-    assert {:ok, %{sequence: 3, segment_id: 2}} = Writer.append(w, 1, 1, "rotate")
+    {:ok, w} = start(path)
+    assert Writer.status(w).segment.count == count
+    sequence = count + 1
+    assert {:ok, %{sequence: ^sequence, segment_id: 2}} = Writer.append(w, 1, 1, payload)
     GenServer.stop(w)
   end
 end

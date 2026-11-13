@@ -46,9 +46,9 @@ pre-upgrade backup to downgrade. No existing schema-1 fields are changed.
 Unreleased builds reject the removed Engine options `max_jobs`,
 `max_state_nodes`, `executor_max_results`, `group_commit_interval_ms`, and
 `compaction.max_terminal_jobs`, along with inspection's `--max-state-nodes`.
-Remove the unused count limits from configuration. Replace the old Engine
-batching option with `journal: [batch: [max_events: n, interval_ms: milliseconds]]`.
-The standalone `TAY_GROUP_COMMIT_INTERVAL_MS` environment setting remains active.
+Remove these options from configuration. Journal batching is automatic; the
+`journal.batch` configuration and standalone `TAY_GROUP_COMMIT_INTERVAL_MS`
+setting are removed too. Standalone rejects that obsolete environment setting.
 
 ## Supported runtime and storage
 
@@ -63,8 +63,8 @@ The standalone `TAY_GROUP_COMMIT_INTERVAL_MS` environment setting remains active
   claim. Windows, network/object storage, distributed store ownership, and
   unvalidated production filesystems are unsupported. Production builds do
   not silently downgrade to `:write`.
-- Strict `:sync` journal group commit is optional and defaults to an immediate
-  per-event fsync (`journal: [batch: [max_events: 1, interval_ms: 0]]`).
+- Strict `:sync` journal group commit automatically collects already admitted
+  commands without a configurable waiting window.
   Batches preserve record order and acknowledge a batch only after its fsync;
   they do not change the on-disk format or recovery compatibility.
 - External effects are at-least-once, not exactly-once. There is no live
@@ -85,7 +85,7 @@ offered callers, two queues with two credits each, 30,000 Events, and
 recovery-time, arbitrary-device, or power-loss guarantee. Validate the actual
 target and workload before deployment. That historical run used the following
 workload values and limits. Legacy job/node counts are not enforced as limits
-by Tay 1.8:
+by Tay 2.0:
 
 | Boundary | Value |
 | --- | ---: |
@@ -149,8 +149,8 @@ Unreleased builds also remove `recovery.max_decode_payload_bytes`,
 `recovery.event_limits`, `max_insert_args_bytes`, `insert_value_depth`,
 `insert_value_nodes`, and `max_segments`. These options now fail configuration
 validation. Record payloads retain the fixed 16 MiB format ceiling and common
-Value checks. Insertions use `max_insert_payload_bytes` for the complete event;
-there is no additional arguments-only byte/depth/node budget.
+Value checks. The separate `max_insert_payload_bytes` limit is also removed;
+insertions share the admission byte pool instead of a fixed per-slot allowance.
 
 The physical record decoder exposes only `Tay.Storage.Record.decode/1`.
 Its payload ceiling is fixed at 16 MiB; neither the decoder nor the segment
@@ -160,3 +160,15 @@ The Engine options `execution_batch`, `execution_wake_ms` and recovery options
 `activation_window_ms`, `activation_deadline_ms`, `io_timeout_ms` are removed.
 Use `recovery.deadline_ms` for replay/activation and `storage_timeout` for I/O.
 Batching, wakeups and recovery session expiry remain internal mechanisms.
+
+## Tay 2.0 startup and maintenance
+
+Extended checkpoint indexes enable lazy terminal-argument reads during Engine
+startup; metadata and result bodies are still loaded. Cold body corruption is
+reported when the job is addressed, while full storage inspection/publication
+checks the complete archive. Previous checkpoint/index shapes remain readable;
+new manifests are refused by older readers. Restore the pre-upgrade backup to
+downgrade. Production Engine `durability` options are removed: sync is fixed.
+See the [storage index contract](storage.md#checkpoint-location-index-20) and
+[compaction operations](operations.md#store-v2-automatic-compaction) for exact
+reuse conditions and timing/byte metric definitions.

@@ -13,8 +13,8 @@ defmodule Tay.Storage.NativeProtocolTest do
     {:ok, n} = native(path)
     port = n.port
     # MKDIR has no body. A trailing byte must not create segments/.
-    Port.command(port, <<1, 3, 123::64, 99>>)
-    assert_receive {^port, {:data, <<1, 3, 123::64, 1, _errno::32, 0::64, "invalid_protocol">>}}
+    Port.command(port, <<2, 3, 123::64, 99>>)
+    assert_receive {^port, {:data, <<2, 3, 123::64, 1, _errno::32, 0::64, "invalid_protocol">>}}
     refute File.exists?(Path.join(path, "segments"))
     Native.shutdown(n)
   end
@@ -37,7 +37,7 @@ defmodule Tay.Storage.NativeProtocolTest do
   test "truncated and arbitrary protocol bodies fail without creating files" do
     Process.flag(:trap_exit, true)
 
-    for bytes <- [<<2, 1, 1::64>>, <<1, 1, 1::64, 0, 0, 100::16>>, <<1, 255, 1::64>>] do
+    for bytes <- [<<1, 1, 1::64>>, <<2, 1, 1::64, 0, 0, 100::16>>, <<1, 255, 1::64>>] do
       port =
         Port.open(
           {:spawn_executable,
@@ -46,7 +46,7 @@ defmodule Tay.Storage.NativeProtocolTest do
         )
 
       Port.command(port, bytes)
-      assert_receive {^port, {:data, <<1, _, 1::64, 1, _::32, 0::64, "invalid_protocol">>}}, 5_000
+      assert_receive {^port, {:data, <<2, _, 1::64, 1, _::32, 0::64, "invalid_protocol">>}}, 5_000
       Port.close(port)
     end
   end
@@ -141,8 +141,8 @@ defmodule Tay.Storage.NativeProtocolTest do
     {:ok, native} = R.after_release(fn -> R.open(path) end)
     port = native.port
     target = path <> "-must-not-exist"
-    Port.command(port, <<1, 1, 456::64, 0, 0, byte_size(target)::16, target::binary>>)
-    assert_receive {^port, {:data, <<1, 1, 456::64, 1, _::32, 0::64, "poisoned">>}}, 5_000
+    Port.command(port, <<2, 1, 456::64, 0, 0, byte_size(target)::16, target::binary>>)
+    assert_receive {^port, {:data, <<2, 1, 456::64, 1, _::32, 0::64, "poisoned">>}}, 5_000
     refute File.exists?(target)
     Native.shutdown(native)
     assert R.snapshot(path) == before
@@ -155,9 +155,9 @@ defmodule Tay.Storage.NativeProtocolTest do
 
     for body <- [
           <<>>,
-          <<0, 0, 100_000::32>>,
-          <<0, 0, 0::32, byte_size(path)::16, path::binary>>,
-          <<0, 0, 100_000::32, byte_size(path)::16, path::binary, 99>>
+          <<0, 0>>,
+          <<0, 2, byte_size(path)::16, path::binary>>,
+          <<0, 0, byte_size(path)::16, path::binary, 99>>
         ] do
       port =
         Port.open(
@@ -166,32 +166,54 @@ defmodule Tay.Storage.NativeProtocolTest do
           [:binary, :exit_status, :use_stdio, {:packet, 4}]
         )
 
-      Port.command(port, <<1, 18, 999::64, body::binary>>)
-      assert_receive {^port, {:data, <<1, 18, 999::64, 1, _::32, 0::64, _::binary>>}}, 5_000
+      Port.command(port, <<2, 18, 999::64, body::binary>>)
+      assert_receive {^port, {:data, <<2, 18, 999::64, 1, _::32, 0::64, _::binary>>}}, 5_000
       Port.close(port)
       assert R.snapshot(path) == before
     end
 
     {:ok, native} = R.open(path)
     port = native.port
-    Port.command(port, <<1, 19, 999::64, 1>>)
+    Port.command(port, <<2, 19, 999::64, 1>>)
 
-    assert_receive {^port, {:data, <<1, 19, 999::64, 1, _::32, 0::64, "invalid_protocol">>}},
+    assert_receive {^port, {:data, <<2, 19, 999::64, 1, _::32, 0::64, "invalid_protocol">>}},
                    5_000
 
     Native.shutdown(native)
     assert R.snapshot(path) == before
   end
 
-  test "native listing entry cap returns no partial inventory", %{path: path} do
+  test "native directory inventory spans pages without a total file quota", %{path: path} do
     alias Tay.Test.RecoveryHelpers, as: R
     R.store(path)
-    {:ok, native} = R.open(path, max_directory_entries: 2)
-    assert {:error, %{reason: "resource_limit"}} = Native.list(native, :root)
+
+    names =
+      for n <- 1..2300 do
+        name = "inventory-#{n}"
+        File.write!(Path.join(path, name), <<>>)
+        name
+      end
+
+    {:ok, native} = R.open(path)
+
+    for _ <- 1..2 do
+      assert {:ok, entries} = Native.list(native, :root)
+      listed = MapSet.new(Enum.map(entries, & &1.name))
+      assert Enum.all?(names, &MapSet.member?(listed, &1))
+      assert length(entries) == length(File.ls!(path))
+    end
+
     Native.shutdown(native)
-    {:ok, native} = R.open(path, max_directory_entries: 4)
-    assert {:ok, entries} = Native.list(native, :root)
-    assert length(entries) == 4
+  end
+
+  test "directory mutation between inventory pages refuses a mixed view", %{path: path} do
+    alias Tay.Test.RecoveryHelpers, as: R
+    R.store(path)
+    for n <- 1..1100, do: File.write!(Path.join(path, "inventory-#{n}"), <<>>)
+    {:ok, native} = R.open(path)
+    assert {:ok, <<1, 1024::32, _::binary>>, 0} = Native.request_owned(native, :list, <<0, 0>>)
+    File.write!(Path.join(path, "changed-between-pages"), <<>>)
+    assert {:error, _} = Native.request_owned(native, :list, <<0, 1>>)
     Native.shutdown(native)
   end
 

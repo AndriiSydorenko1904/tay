@@ -237,7 +237,6 @@ defmodule Tay.Bench.Harness do
   alias Tay.Bench.{Stats, Observer, Worker, Memory}
   alias Tay.Storage.{Writer, Segment}
   @name Tay.Bench.Engine
-  @group_commit_interval_range 0..1_000
   @defaults %{
     mode: :sync,
     validated_filesystem: false,
@@ -245,7 +244,6 @@ defmodule Tay.Bench.Harness do
     args_bytes: 1024,
     clients: 8,
     client_slots: 64,
-    group_commit_interval_ms: 0,
     deadline_ms: 900_000,
     rotation_segments: 2,
     replay_segments: [1, 10, 100]
@@ -261,7 +259,6 @@ defmodule Tay.Bench.Harness do
         (c.mode != :sync or (c.validated_filesystem and :os.type() == {:unix, :linux})) and
         c.jobs in 1..100_000 and c.args_bytes in 0..262_000 and c.clients in 1..64 and
         c.client_slots in 1..65_536 and c.clients <= c.client_slots and
-        c.group_commit_interval_ms in @group_commit_interval_range and
         c.deadline_ms in 1000..3_600_000 and c.rotation_segments in 2..100 and
         is_list(c.replay_segments) and c.replay_segments != [] and
         Enum.all?(c.replay_segments, &(&1 in 1..100)) and
@@ -273,7 +270,15 @@ defmodule Tay.Bench.Harness do
   def options(_), do: {:error, :invalid_benchmark_options}
 
   def run(scenario, supplied)
-      when scenario in [:lifecycle, :rotation, :replay, :schedule, :reserve, :group_commit] do
+      when scenario in [
+             :lifecycle,
+             :rotation,
+             :replay,
+             :schedule,
+             :reserve,
+             :group_commit,
+             :compaction
+           ] do
     {:ok, c} = options(supplied)
 
     if File.exists?(c.path),
@@ -297,6 +302,55 @@ defmodule Tay.Bench.Harness do
       }
     after
       if Process.alive?(observer), do: GenServer.stop(observer)
+    end
+  end
+
+  def compaction(c) do
+    initialize(c)
+    {root, _startup_us, _retries} = start(c, compaction: false)
+
+    try do
+      ids = insert_many(c, c.jobs)
+      Enum.each(ids, &await_completed(c, &1))
+
+      passes =
+        for pass <- 1..3 do
+          {wall_us, {:ok, stats}} =
+            :timer.tc(fn ->
+              Tay.compact(name: @name, timeout: c.deadline_ms, terminal_retention: :infinity)
+            end)
+
+          stats
+          |> Map.take([
+            :source_bytes,
+            :candidate_bytes,
+            :reused_bytes,
+            :rewritten_bytes,
+            :total_ms,
+            :pause_ms,
+            :publication_pause_ms,
+            :publication_total_ms,
+            :reclaimed_bytes,
+            :net_reclaimed_bytes,
+            :retained_terminal_jobs
+          ])
+          |> Map.merge(%{pass: pass, caller_wall_us: wall_us})
+        end
+
+      stop(root)
+      {:ok, replay_root, replay} = measured_restart(c)
+
+      try do
+        Enum.each(Enum.uniq([hd(ids), List.last(ids)]), fn id ->
+          {:ok, %{state: :completed}} = Tay.get_job(id, name: @name)
+        end)
+
+        %{jobs: length(ids), args_body_bytes: c.args_bytes, passes: passes, restart: replay}
+      after
+        stop(replay_root)
+      end
+    after
+      stop(root)
     end
   end
 
@@ -383,7 +437,7 @@ defmodule Tay.Bench.Harness do
 
   def rotation(c) do
     initialize(c)
-    {root, startup_us, retries} = start(c, rotation_target_bytes: Segment.min_rotation_bytes())
+    {root, startup_us, retries} = start(c)
     pid = engine(root)
     trace(pid)
     c = %{c | args_bytes: 262_000}
@@ -418,7 +472,7 @@ defmodule Tay.Bench.Harness do
     if :sys.get_state(engine(root)).segment.id >= c.rotation_segments do
       count
     else
-      if count >= c.rotation_segments * 100,
+      if count >= c.rotation_segments * (div(Segment.rotation_bytes(), 262_000) + 2),
         do: raise("organic rotation did not reach its bounded target")
 
       insert_one(c, count, System.system_time(:millisecond) + 86_400_000)
@@ -766,16 +820,14 @@ defmodule Tay.Bench.Harness do
     do: [data_dir: c.path, durability: c.mode, validated_filesystem: c.validated_filesystem]
 
   defp engine_options(c) do
-    storage(c) ++
+    if(Mix.env() == :prod, do: Keyword.delete(storage(c), :durability), else: storage(c)) ++
       [
         name: @name,
         workers: %{"tay.benchmark.v1" => Worker},
         queues: [alpha: 2, beta: 2],
         client_slots: c.client_slots,
-        group_commit_interval_ms: c.group_commit_interval_ms,
         caller_timeout: c.deadline_ms,
-        execution_wake_ms: 50,
-        recovery: [deadline_ms: c.deadline_ms, activation_deadline_ms: c.deadline_ms]
+        recovery: [deadline_ms: c.deadline_ms]
       ]
   end
 

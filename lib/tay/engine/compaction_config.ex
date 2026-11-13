@@ -1,49 +1,23 @@
 defmodule Tay.Engine.CompactionConfig do
-  @moduledoc "Finite validated automatic compaction policy."
+  @moduledoc "Validated retention and checkpoint policy; maintenance mechanics are internal."
   alias Tay.Storage.V2.Retention
   @max_timer 4_294_967_295
-  @max_time 9_223_372_036_854_775_807
-  @checkpoint_disabled 0
-  @defaults %{
-    enabled: true,
-    terminal_retention: {:hours, 24},
-    check_interval: 60_000,
-    checkpoint_interval: @checkpoint_disabled,
-    min_interval: 3_600_000,
-    min_sealed_segments: 1,
-    min_reclaimable_bytes: 16_777_216,
-    dead_ratio_threshold: 0.25
-  }
+  @defaults %{automatic: true, terminal_retention: {:hours, 24}, checkpoint_interval: 0}
 
   def defaults, do: @defaults
-
-  def new(false), do: {:ok, %{@defaults | enabled: false}}
+  def new(false), do: {:ok, %{@defaults | automatic: false}}
 
   def new(options) when is_list(options) do
     with true <- Keyword.keyword?(options),
          true <- length(options) == length(Enum.uniq(Keyword.keys(options))),
          true <-
-           Enum.all?(
-             Keyword.keys(options),
-             &Map.has_key?(@defaults, &1)
-           ),
+           Enum.all?(Keyword.keys(options), &(&1 in [:terminal_retention, :checkpoint_interval])),
          config <- Map.merge(@defaults, Map.new(options)),
-         true <- is_boolean(config.enabled),
          :ok <- Retention.validate(config.terminal_retention),
          true <- config.terminal_retention != :infinity,
          true <- Retention.persisted(config.terminal_retention) == config.terminal_retention,
-         true <- timer?(config.check_interval),
-         true <- checkpoint_interval?(config.checkpoint_interval),
-         true <- timer?(config.min_interval),
          true <-
-           is_integer(config.min_sealed_segments) and
-             config.min_sealed_segments in 1..4_294_967_295,
-         true <-
-           is_integer(config.min_reclaimable_bytes) and
-             config.min_reclaimable_bytes in 1..@max_time,
-         true <-
-           is_number(config.dead_ratio_threshold) and
-             config.dead_ratio_threshold > 0 and config.dead_ratio_threshold <= 1 do
+           is_integer(config.checkpoint_interval) and config.checkpoint_interval in 0..@max_timer do
       {:ok, config}
     else
       _ -> {:error, :compaction_configuration}
@@ -51,6 +25,4 @@ defmodule Tay.Engine.CompactionConfig do
   end
 
   def new(_), do: {:error, :compaction_configuration}
-  defp timer?(n), do: is_integer(n) and n in 1..@max_timer
-  defp checkpoint_interval?(n), do: is_integer(n) and n in @checkpoint_disabled..@max_timer
 end

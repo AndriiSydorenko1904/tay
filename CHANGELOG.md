@@ -1,14 +1,21 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-11-13
 
 ### Removed
+
+- Remove recovery directory-count quotas, configurable segment rotation,
+  insertion payload ceilings, and compaction polling/cooldown/segment/byte/ratio
+  controls. Native protocol v2 streams directory pages without a total quota.
+  Compaction uses measured maintenance cost and estimated rewrite benefit.
+- Share `client_bytes` across in-flight requests instead of dividing it per
+  admission slot, allowing larger arguments within the format and resource budgets.
 
 - Remove execution batch/wakeup and recovery activation/I/O timing settings.
   Execution scheduling and recovery session expiry are internal; activation uses
   `recovery.deadline_ms` and recovery I/O uses `storage_timeout`.
 
-- Remove the low-level `Record.decode/2` options API and the segment parser's
+- Remove the low-level two-argument Record decoder options API and the segment parser's
   decode-payload option. Physical decoding uses the fixed 16 MiB format ceiling.
 
 - Remove configurable recovery payload/Value budgets, separate insertion argument
@@ -22,12 +29,35 @@
 - Remove ignored Engine limits `max_jobs`, `max_state_nodes`,
   `executor_max_results`, and `compaction.max_terminal_jobs`, including
   inspection's unused `--max-state-nodes` flag.
-- Remove the legacy Engine `group_commit_interval_ms` option. Use the shared
-  `journal.batch` configuration, including Engine overrides. Standalone keeps
-  `TAY_GROUP_COMMIT_INTERVAL_MS` and maps it directly to the journal configuration.
+- Remove manual journal batching configuration and its standalone/benchmark
+  interval settings. Sync batching automatically groups already admitted work.
+
+### Changed
+
+- Production Engines use sync durability without a public storage-mode option.
+  Development and test builds retain explicit modes; job durability is unchanged.
+- Engine startup uses authenticated checkpoint metadata, loads active snapshots
+  and auxiliary records by location, and keeps terminal argument bodies on disk.
+  Terminal lookups and retried tail mutations verify the original record before
+  use. Older checkpoints continue through full replay.
+- Reuse unchanged checkpoint segments and the recovery index through independent
+  copy-on-write file clones when no source tail or retention expiry requires a
+  rewrite. Unsupported filesystems use a bounded file copy. Source replay also
+  supplies compaction inventory, avoiding its duplicate physical scan.
+- Measure online compaction total time through resumed admission, including
+  reclamation and Engine adoption. Adoption removes only expired terminal IDs
+  and rebinds cold readers without rewriting retained DETS bodies. Keep publication-only times separately and
+  report reused and rewritten logical bytes.
 
 ### Fixed
 
+- Allow periodic checkpoints to capture a newer append frontier in the same
+  Engine generation and storage epoch, preventing repeated source-change
+  deferrals under sustained writes. Retain strict retention-estimate fencing.
+- Verify snapshot SHA-256 while parsing each base segment, removing a separate
+  full snapshot read from both recovery preparation and activation revalidation.
+- Update benchmark harnesses to use automatic journal batching and shared
+  recovery timing after removal of legacy Engine options.
 - Commit successful external completion and its result atomically as `(14,2)`;
   reserve result journal headroom before START. Older readers through 1.8.1
   refuse the new record; downgrade requires restoring a pre-upgrade backup.
@@ -45,6 +75,14 @@
   restart restores current durable schedules and all dependent PID references.
 - Ignore bounded, known late socket-command replies after caller timeout or
   cancellation without disconnecting unrelated active Python executions.
+
+### Added
+
+- Persist authenticated job-snapshot locations in an immutable `RECOVERY` index
+  during checkpoint publication. Bind its root to `MANIFEST`, verify locations
+  independently during replay, sync it before activation, and reclaim it with
+  its predecessor epoch. Older checkpoints remain readable; older readers
+  reject the extended manifest. Engine startup consumes the extended metadata and auxiliary-record index.
 
 ## 1.8.1 — 2026-11-12
 

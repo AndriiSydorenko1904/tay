@@ -24,7 +24,7 @@ defmodule Tay.Storage.Writer.SegmentOps do
     rotate? =
       state.segment.state == :sealed or
         state.segment.bytes + byte_size(bytes) + @footer_bytes >
-          state.options.rotation_target_bytes
+          Tay.Storage.Segment.rotation_bytes()
 
     if rotate? do
       with {:ok, next} <- rotate(state),
@@ -130,6 +130,12 @@ defmodule Tay.Storage.Writer.SegmentOps do
     with :ok <- sync_existing(state, :root, "STORE-V2"),
          :ok <- sync_existing(state, :root, "CURRENT"),
          :ok <- sync_existing(state, :epoch, "MANIFEST"),
+         {:ok, epoch_files} <- Native.list(state.native, :epoch),
+         :ok <-
+           if(Enum.any?(epoch_files, &(&1.name == "RECOVERY")),
+             do: sync_existing(state, :epoch, "RECOVERY"),
+             else: :ok
+           ),
          :ok <- Native.sync_dir(state.native, :epoch),
          :ok <- Native.sync_dir(state.native, :epochs),
          do: :ok

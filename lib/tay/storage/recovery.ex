@@ -3,10 +3,7 @@ defmodule Tay.Storage.Recovery do
 
   alias __MODULE__.Error
 
-  @max_directory_entries_limit 4_294_967_295
-
   @defaults %{
-    max_directory_entries: 100_000,
     deadline_ms: 900_000
   }
 
@@ -21,9 +18,6 @@ defmodule Tay.Storage.Recovery do
       invalid_options()
     end
   end
-
-  defp valid_option?({:max_directory_entries, n}),
-    do: is_integer(n) and n in 1..@max_directory_entries_limit
 
   defp valid_option?({_, n}), do: is_integer(n) and n > 0
   defp invalid_options, do: {:error, Error.new(:argument, :invalid_recovery_options, :validation)}

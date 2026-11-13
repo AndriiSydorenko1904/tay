@@ -1,9 +1,6 @@
 defmodule Tay.Storage.Writer.Config do
   @moduledoc false
 
-  alias Tay.Storage.Segment
-
-  @default_rotation_target_bytes 67_108_864
   @default_timeout_ms 10_000
   @test Mix.env() == :test
 
@@ -14,7 +11,6 @@ defmodule Tay.Storage.Writer.Config do
         :data_dir,
         :durability,
         :validated_filesystem,
-        :rotation_target_bytes,
         :bootstrap,
         :lifecycle_observer,
         :timeout
@@ -41,7 +37,6 @@ defmodule Tay.Storage.Writer.Config do
       data_dir: data_dir,
       durability: :sync,
       validated_filesystem: false,
-      rotation_target_bytes: @default_rotation_target_bytes,
       bootstrap: false,
       timeout: @default_timeout_ms,
       test_helper: false,
@@ -66,11 +61,6 @@ defmodule Tay.Storage.Writer.Config do
 
       not is_integer(options.timeout) or options.timeout <= 0 ->
         {:error, :invalid_timeout}
-
-      not is_integer(options.rotation_target_bytes) or
-        options.rotation_target_bytes < Segment.min_rotation_bytes() or
-          options.rotation_target_bytes > Segment.max_bytes() ->
-        {:error, :invalid_rotation_target}
 
       true ->
         {:ok, options}

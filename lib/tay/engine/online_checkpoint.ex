@@ -39,22 +39,27 @@ defmodule Tay.Engine.OnlineCheckpoint do
     }
   end
 
+  # Capture only the read capability, never the Engine or recovered job maps.
+  def loader(writer, reference, epoch, descriptor) do
+    fn id -> Tay.Storage.Writer.checkpoint_job(writer, reference, epoch, descriptor, id) end
+  end
+
   def adopt(state, %{recovered: recovered} = stats, retention) do
     previous_bytes = state.budget.bytes + state.auxiliary_bytes
     state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
     jobs = recovered.candidate.jobs
-    retained = MapSet.new(Map.keys(jobs))
 
-    TerminalStore.fold(
-      state.terminal_store,
-      fn job, :ok ->
-        if not MapSet.member?(retained, job.id),
-          do: :ok = TerminalStore.delete(state.terminal_store, job.id)
-
-        :ok
-      end,
-      :ok
-    )
+    terminal_store =
+      TerminalStore.rebase(
+        state.terminal_store,
+        jobs,
+        loader(
+          state.writer,
+          state.admission,
+          recovered.epoch_id,
+          Map.get(recovered.manifest, :recovery_index)
+        )
+      )
 
     terminal_budget = terminal_budget(jobs)
     volatile_results = Map.take(state.results, MapSet.to_list(state.volatile_ids))
@@ -74,7 +79,8 @@ defmodule Tay.Engine.OnlineCheckpoint do
         {:ok,
          %{
            state
-           | config: put_retention(state.config, stats.terminal_retention),
+           | terminal_store: terminal_store,
+             config: put_retention(state.config, stats.terminal_retention),
              epoch_id: recovered.epoch_id,
              next_sequence: recovered.next_sequence,
              next_availability_order: recovered.candidate.next_availability_order,
