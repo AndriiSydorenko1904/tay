@@ -65,6 +65,8 @@ defmodule Tay.Storage.V2.RecoveryIndex do
     end
   end
 
+  def valid?(%{format: 2} = descriptor), do: Tay.Storage.V2.CheckpointIndex.valid?(descriptor)
+
   def valid?(%{bytes: bytes, root: encoded} = descriptor) when map_size(descriptor) in [2, 3] do
     with true <- Enum.sort(Map.keys(descriptor)) in [[:bytes, :root], [:auxiliary, :bytes, :root]],
          true <- is_integer(bytes) and bytes > 0 and bytes <= 9_223_372_036_854_775_807,
@@ -81,6 +83,55 @@ defmodule Tay.Storage.V2.RecoveryIndex do
   end
 
   def valid?(_), do: false
+
+  def to_value(%{format: 2} = descriptor) do
+    Map.new(descriptor, fn
+      {key, value} when key in [:bytes, :format] -> {Atom.to_string(key), value}
+      {key, value} -> {Atom.to_string(key), {:bytes, value}}
+    end)
+  end
+
+  def to_value(descriptor) do
+    Map.new(descriptor, fn
+      {:bytes, bytes} -> {"bytes", bytes}
+      {key, value} -> {Atom.to_string(key), {:bytes, value}}
+    end)
+  end
+
+  def from_value(%{"format" => 2} = value) do
+    keys = [:format, :bytes | Tay.Storage.V2.CheckpointIndex.roles()]
+
+    if Enum.sort(Map.keys(value)) == Enum.sort(Enum.map(keys, &Atom.to_string/1)) do
+      descriptor =
+        Map.new(keys, fn key ->
+          encoded = value[Atom.to_string(key)]
+
+          {key,
+           case encoded do
+             {:bytes, bytes} -> bytes
+             scalar -> scalar
+           end}
+        end)
+
+      if valid?(descriptor), do: {:ok, descriptor}, else: {:error, :checkpoint_descriptor}
+    else
+      {:error, :checkpoint_descriptor}
+    end
+  end
+
+  def from_value(%{"bytes" => bytes, "root" => {:bytes, root}} = value)
+      when map_size(value) in [2, 3] do
+    descriptor =
+      case Map.fetch(value, "auxiliary") do
+        :error when map_size(value) == 2 -> %{bytes: bytes, root: root}
+        {:ok, {:bytes, auxiliary}} -> %{bytes: bytes, root: root, auxiliary: auxiliary}
+        _ -> :invalid
+      end
+
+    if valid?(descriptor), do: {:ok, descriptor}, else: {:error, :recovery_index_descriptor}
+  end
+
+  def from_value(_), do: {:error, :recovery_index_descriptor}
 
   defp empty_root, do: elem(DiskIndex.encode_root(nil), 1)
 
@@ -214,6 +265,11 @@ defmodule Tay.Storage.V2.RecoveryIndex do
            do: :ok
     end)
   end
+
+  def fetch(native, %{format: 2} = descriptor, id, epoch),
+    do: Tay.Storage.V2.CheckpointIndex.fetch(native, descriptor, epoch, id)
+
+  def fetch(native, descriptor, id, _epoch), do: fetch(native, descriptor, id)
 
   def fetch(native, descriptor, id) when is_binary(id) and byte_size(id) == 16 do
     with true <- valid?(descriptor) || {:error, :recovery_index_descriptor},

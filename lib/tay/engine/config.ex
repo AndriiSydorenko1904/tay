@@ -31,13 +31,13 @@ defmodule Tay.Engine.Config do
               GatewayConfig.defaults()
             )
 
+  @allowed_defaults if(@environment == :prod,
+                      do: Map.keys(@defaults) -- [:durability],
+                      else: Map.keys(@defaults)
+                    )
+
   def new(options) do
-    allowed =
-      if(@environment == :prod,
-        do: Map.keys(@defaults) -- [:durability],
-        else: Map.keys(@defaults)
-      ) ++
-        [:data_dir, :queues] ++ test_option_keys()
+    allowed = @allowed_defaults ++ [:data_dir, :queues] ++ test_option_keys()
 
     with true <- keyword?(options, allowed) || {:error, :invalid_engine_options},
          {:ok, base} <- Tay.Config.load(),

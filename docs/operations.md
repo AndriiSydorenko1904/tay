@@ -152,24 +152,33 @@ extended index is available, followed by tail replay. Older checkpoints use full
 mutations are already covered.
 All checkpoints operate on Store-v2 generations and prepare online.
 
-When the source has no new tail events and retention keeps every snapshot,
-publication reuses base segments and `RECOVERY` through copy-on-write copies.
-Each copy has its own inode and one link; predecessor cleanup cannot remove
-bytes addressed by the new epoch. The native owner syncs each copy before the
-usual directory/manifest/CURRENT barriers. Unsupported filesystems use bounded
-copies instead. A changed tail or expired history uses the normal rewrite path;
-this is not yet incremental segment cleaning under sustained writes.
+Checkpoint format 2 reuses immutable index pages and data segments across
+source epochs even when the tail changes. The builder reads working jobs and
+the new tail, addresses affected archived jobs, and updates only changed tree
+paths. Retention walks the ordered expiry index through its cutoff. The first
+checkpoint of an older format bootstraps the new roots atomically.
+
+Sparse-segment cleaning selects at most 16 segments and 64 MiB of input per
+checkpoint, using authenticated live-byte summaries. Retained records move to
+new segments; shared files remain until no published root references them.
+Native reclamation respects reader pins, rechecks CURRENT before each bounded
+batch, and syncs deletion directories. Cleanup errors defer GC; they never roll
+back CURRENT. Restart resumes cleanup. Cold backups include all referenced
+epoch files; copying only the CURRENT epoch is insufficient.
 
 Checkpoint adoption removes expired IDs through metadata and rebinds cold
 readers to the new epoch; retained terminal DETS bodies need no rewrite.
+Startup still rebuilds terminal metadata and loads result bodies into memory.
 
-Compaction `pause_ms` measures the final admission fence through reclamation,
-Engine checkpoint adoption and resumed admission. `total_ms` also includes
+Compaction `pause_ms` measures the final admission fence through immediate
+reclamation, Engine adoption and resumed admission. `total_ms` includes
 preparation and coordination. `publication_pause_ms` and `publication_total_ms`
-preserve the narrower publisher measurements. `candidate_bytes` is the logical
-candidate size; `reused_bytes` counts successful copy-on-write reuse and
-`rewritten_bytes` counts the remaining logical bytes, including fallback copies.
-These byte counts do not measure filesystem allocation or physical device writes.
+preserve the narrower publisher measurements. `candidate_bytes` includes shared
+data segments; `reused_bytes` counts those segments and `rewritten_bytes` counts
+new logical bytes. `cleaned_segments` and `cleaned_source_bytes` describe selected
+repacking input. Deferred older-epoch GC is excluded from immediate
+`reclaimed_bytes`. These counts do not measure filesystem allocation or device
+writes.
 
 Unknown/duplicate keys and invalid checkpoint intervals fail configuration.
 Checkpoint intervals fit unsigned 32 bits. Bounded hours use the shared manifest rule

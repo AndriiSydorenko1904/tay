@@ -23,7 +23,8 @@ defmodule Tay.Storage.V2.Publisher do
     Reducer,
     Retention,
     Snapshot,
-    RecoveryIndex
+    RecoveryIndex,
+    CheckpointIndex
   }
 
   alias Tay.Storage.V2.Reader, as: V2Reader
@@ -109,6 +110,7 @@ defmodule Tay.Storage.V2.Publisher do
 
     with epoch_id <- new_id(),
          nonce <- new_id(),
+         source <- Map.put(source, :candidate_epoch_id, epoch_id),
          :ok <- Native.v2_begin(native, nonce),
          {:ok, base, base_bytes, peak_memory, recovery_index, index_bytes, reused_bytes} <-
            candidate_base(native, normalized, ids, auxiliary_events, source),
@@ -120,21 +122,37 @@ defmodule Tay.Storage.V2.Publisher do
              do: Map.put(manifest, :recovery_index, recovery_index),
              else: manifest
            ),
+         source <- Map.put(source, :candidate_index, recovery_index),
          {:ok, manifest_bytes} <- Authority.encode_manifest(manifest),
          :ok <- write_manifest(native, manifest_bytes),
          {:ok, tail, tail_bytes} <- write_tail(native, source.store_id, tail_id, tail_first),
          :ok <- Native.sync_dir(native, :candidate_segments),
          {:ok, candidate} <-
-           V2Reader.recover_candidate(native, Reducer.candidate(limits, value_limits), manifest),
+           verify_candidate(
+             native,
+             source,
+             Reducer.candidate(limits, value_limits),
+             manifest,
+             auxiliary
+           ),
          true <-
            candidate_equivalent?(source, auxiliary, candidate.candidate) ||
              {:error, :candidate_mismatch} do
       {:ok,
        %{
          context
-         | epoch_id: epoch_id,
+         | source: source,
+           epoch_id: epoch_id,
            base_bytes: base_bytes + index_bytes,
            reused_bytes: reused_bytes,
+           retention_stats: %{
+             context.retention_stats
+             | retained_terminal_jobs:
+                 if(match?(%{format: 2}, recovery_index),
+                   do: CheckpointIndex.count(recovery_index, :expiry),
+                   else: context.retention_stats.retained_terminal_jobs
+                 )
+           },
            peak_memory: peak_memory,
            manifest: manifest,
            manifest_bytes: manifest_bytes,
@@ -201,7 +219,8 @@ defmodule Tay.Storage.V2.Publisher do
     epoch_id = context.epoch_id
     manifest_bytes = context.manifest_bytes
 
-    with :ok <- before_current(native, source, epoch_id),
+    with {:ok, admitted} <- admit_actual(context),
+         :ok <- before_current(native, source, epoch_id),
          {:ok, current_bytes} <-
            Authority.encode_current(%{
              store_id: source.store_id,
@@ -215,11 +234,34 @@ defmodule Tay.Storage.V2.Publisher do
       {:ok,
        %{
          context
-         | current_bytes: current_bytes,
+         | admitted_candidate_bytes: admitted,
+           current_bytes: current_bytes,
            stage: stage,
            identity: identity,
            previous: previous
        }}
+    end
+  end
+
+  # Batched CoW paths can grow as their authenticated reachability summaries
+  # grow. Recheck an underestimated candidate before changing authority; never
+  # reclaim the source to make space for these bytes.
+  defp admit_actual(context) do
+    bytes =
+      context.base_bytes + context.tail_bytes + context.delta_bytes +
+        byte_size(context.manifest_bytes) + 76 + authority_bytes(context.source)
+
+    cond do
+      bytes > Map.get(context.source, :max_candidate_bytes, @max) ->
+        {:error, :candidate_limit}
+
+      bytes <= context.admitted_candidate_bytes ->
+        {:ok, context.admitted_candidate_bytes}
+
+      true ->
+        with {:ok, free} <- Native.v2_space(context.native),
+             true <- free >= @minimum_headroom || {:error, :insufficient_headroom},
+             do: {:ok, bytes}
     end
   end
 
@@ -254,11 +296,11 @@ defmodule Tay.Storage.V2.Publisher do
         source_bytes: inventory.total_bytes,
         admitted_candidate_bytes: admitted_candidate_bytes,
         candidate_bytes:
-          base_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
+          base_bytes + context.reused_bytes + tail_bytes + delta_bytes + byte_size(manifest_bytes) +
             byte_size(current_bytes) +
             authority_bytes(source),
         peak_writer_process_bytes: peak_memory,
-        reused_bytes: context.reused_bytes || 0,
+        reused_bytes: context.reused_bytes,
         started: started,
         switch_started: switch_started,
         previous_epoch_id: source.epoch_id
@@ -325,10 +367,54 @@ defmodule Tay.Storage.V2.Publisher do
        |> Map.put(:schedules, recovered.candidate.schedules)
        |> Map.put(:results, recovered.candidate.results)
        |> Map.put(:next_availability_order, recovered.candidate.next_availability_order)}
+      |> incremental_source(native)
     end
   end
 
   defp load_source_jobs(_, _, _, _), do: {:error, :source_jobs}
+
+  defp incremental_source(
+         {:ok, %{source_replay: %{incremental: true} = recovered} = source},
+         native
+       ) do
+    descriptor = recovered.manifest.recovery_index
+
+    with {:ok, expired} <-
+           CheckpointIndex.expired(
+             native,
+             descriptor,
+             source.epoch_id,
+             source.terminal_retention,
+             source.captured_at,
+             source.jobs
+           ) do
+      {:ok,
+       source
+       |> Map.put(:incremental_roots, descriptor)
+       |> Map.put(:expired, expired)
+       |> Map.put(
+         :dirty_jobs,
+         MapSet.difference(recovered.dirty_jobs, MapSet.new(Map.keys(expired)))
+       )
+       |> Map.put(:jobs, Map.drop(source.jobs, Map.keys(expired)))
+       |> Map.put(:results, Map.take(source.results, MapSet.to_list(recovered.dirty_results)))}
+      |> plan_cleaning(native)
+    end
+  end
+
+  defp incremental_source(result, _native), do: result
+
+  defp plan_cleaning({:ok, source}, native),
+    do: Tay.Storage.V2.SegmentCleaner.plan(native, source)
+
+  defp materialize_if_needed(
+         _native,
+         _source,
+         %{incremental: true} = recovered,
+         _limits,
+         _value_limits
+       ),
+       do: {:ok, recovered}
 
   defp materialize_if_needed(native, source, %{indexed: true} = recovered, limits, value_limits) do
     if reusable?(source, recovered),
@@ -353,12 +439,84 @@ defmodule Tay.Storage.V2.Publisher do
   end
 
   defp reusable?(source, recovered) do
-    Map.has_key?(source, :online_catch_up) and
+    not Map.get(source, :incremental, false) and
+      Map.has_key?(source, :online_catch_up) and
       match?(%{auxiliary: _}, Map.get(recovered.manifest, :recovery_index)) and
       recovered.next_sequence == recovered.manifest.tail_first_sequence and
       Enum.all?(recovered.candidate.jobs, fn {_id, job} ->
         Snapshot.classify(job, source.terminal_retention, source.captured_at) == {:ok, :retain}
       end)
+  end
+
+  defp update_index(native, source, previous, jobs, entries, aux_entries, events, base) do
+    sizes = Map.new(base, &{&1.id, {&1.bytes, &1.digest}})
+
+    decorate = fn pointer ->
+      {bytes, digest} = sizes[pointer["segment"]]
+
+      pointer
+      |> Map.put("epoch", {:bytes, source.candidate_epoch_id})
+      |> Map.put("segment_bytes", bytes)
+      |> Map.put("segment_digest", {:bytes, digest})
+    end
+
+    puts = Enum.map(entries, fn {id, pointer} -> {id, decorate.(pointer), jobs[id]} end)
+    auxiliary = Enum.zip(aux_entries, events)
+
+    schedules =
+      for {{_, pointer}, %{record_type: 13, data: data}} <- auxiliary,
+          do: {data["schedule_id"], {:put, decorate.(pointer)}}
+
+    results =
+      for {{_, pointer}, %{record_type: 10, data: data}} <- auxiliary,
+          do: {data["job_id"], {:put, decorate.(pointer)}}
+
+    with {:ok, transaction} <- CheckpointIndex.begin(native, source.candidate_epoch_id, previous),
+         {:ok, transaction} <- CheckpointIndex.apply_changes(transaction, puts, source.expired),
+         {:ok, transaction} <- CheckpointIndex.change(transaction, :schedules, schedules),
+         {:ok, transaction} <- CheckpointIndex.change(transaction, :results, results),
+         {:ok, descriptor} <- CheckpointIndex.finish(transaction),
+         {:ok, objects} <- CheckpointIndex.objects(descriptor) do
+      reused =
+        Enum.sum(
+          for <<epoch::binary-size(16), 1, _::64, bytes::64>> <- objects,
+              epoch != source.candidate_epoch_id,
+              do: bytes
+        )
+
+      {:ok, descriptor, reused}
+    end
+  end
+
+  defp verify_candidate(native, %{incremental_roots: _} = source, candidate, manifest, expected) do
+    V2Reader.recover_checkpoint_candidate(
+      native,
+      candidate,
+      manifest,
+      expected.jobs,
+      Map.keys(expected.results),
+      source.expired
+    )
+  end
+
+  defp verify_candidate(native, _source, candidate, manifest, _expected),
+    do: V2Reader.recover_candidate(native, candidate, manifest)
+
+  defp candidate_base(native, jobs, ids, events, %{incremental_roots: previous} = source) do
+    with :ok <- if(ids == [] and events == [], do: boundary(source, :base_write), else: :ok),
+         {:ok, base, bytes, peak, entries, aux_entries} <-
+           write_base(
+             native,
+             jobs,
+             ids,
+             events,
+             source.store_id,
+             Segment.rotation_bytes(),
+             source
+           ),
+         {:ok, index, reused} <-
+           update_index(native, source, previous, jobs, entries, aux_entries, events, base),
+         do: {:ok, base, bytes, peak, index, index.bytes, reused}
   end
 
   defp candidate_base(
@@ -416,14 +574,51 @@ defmodule Tay.Storage.V2.Publisher do
              Segment.rotation_bytes(),
              source
            ),
-         {:ok, index, index_bytes} <- RecoveryIndex.build(native, entries, aux_entries),
+         {:ok, index, index_bytes} <-
+           build_index(native, source, jobs, events, base, entries, aux_entries),
          do: {:ok, base, bytes, peak, index, index_bytes, 0}
   end
+
+  defp build_index(
+         native,
+         %{incremental: true} = source,
+         jobs,
+         events,
+         base,
+         entries,
+         aux_entries
+       ) do
+    with {:ok, descriptor} <-
+           Tay.Storage.V2.CheckpointIndex.bootstrap(
+             native,
+             source.candidate_epoch_id,
+             jobs,
+             entries,
+             aux_entries,
+             events,
+             base
+           ),
+         do: {:ok, descriptor, descriptor.bytes}
+  end
+
+  defp build_index(native, _source, _jobs, _events, _base, entries, aux_entries),
+    do: RecoveryIndex.build(native, entries, aux_entries)
 
   defp source_inventory(native, _store_id, %{source_replay: recovered} = source) do
     with {:ok, entries} <- Native.list(native, :segments),
          {:ok, classified} <- Reader.classify_entries(entries, :segments) do
       summaries = if recovered.store, do: recovered.store.segments, else: []
+
+      {total_bytes, segment_count} =
+        if Map.has_key?(source, :incremental_roots) do
+          active =
+            Enum.map(classified.canonical, fn {id, entry} -> %{id: id, bytes: entry.size} end)
+
+          CheckpointIndex.archive_size(source.incremental_roots, source.epoch_id, active)
+        else
+          {Enum.sum(Enum.map(classified.canonical, fn {_, entry} -> entry.size end)),
+           length(classified.canonical)}
+        end
 
       {:ok,
        %{
@@ -434,8 +629,8 @@ defmodule Tay.Storage.V2.Publisher do
              segment.state == :sealed,
              do: %{id: segment.id, digest: segment.digest}
            ),
-         total_bytes: Enum.sum(Enum.map(classified.canonical, fn {_, entry} -> entry.size end)),
-         segment_count: length(classified.canonical)
+         total_bytes: total_bytes,
+         segment_count: segment_count
        }}
     end
   end
@@ -836,6 +1031,14 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
+  defp prepare_snapshot(%{incremental_roots: descriptor} = source) do
+    {:ok, source.jobs, Enum.sort(MapSet.to_list(source.dirty_jobs)),
+     %{
+       expired_jobs: map_size(source.expired),
+       retained_terminal_jobs: CheckpointIndex.count(descriptor, :expiry)
+     }}
+  end
+
   defp prepare_snapshot(%{reuse_base: true, jobs: jobs}) do
     {:ok, jobs, Enum.sort(Map.keys(jobs)),
      %{
@@ -852,7 +1055,7 @@ defmodule Tay.Storage.V2.Publisher do
   end
 
   defp equivalent?(source, before, after_state) do
-    if Map.get(source, :reuse_base, false),
+    if Map.get(source, :reuse_base, false) or Map.has_key?(source, :incremental_roots),
       do: indexed_equivalent?(before, after_state),
       else: live_equivalent?(source, before, after_state)
   end
@@ -1017,10 +1220,30 @@ defmodule Tay.Storage.V2.Publisher do
     end
   end
 
+  defp prepare_delta(native, %{incremental_roots: _} = source, logical, type, schema, payload) do
+    with {:ok, affected} <-
+           CheckpointIndex.affected(
+             %{record_type: type, payload_schema_version: schema, payload: payload},
+             source.value_limits
+           ),
+         do:
+           CheckpointIndex.prepare_record(
+             native,
+             source.candidate_index,
+             source.candidate_epoch_id,
+             :candidate,
+             logical,
+             affected
+           )
+  end
+
+  defp prepare_delta(_native, _source, logical, _type, _schema, _payload), do: {:ok, logical}
+
   defp append_delta(native, source, logical, tail, records) do
     Enum.reduce_while(records, {:ok, logical, tail, 0}, fn
       {8, 1, payload}, {:ok, logical, current, bytes} ->
-        with {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
+        with {:ok, logical} <- prepare_delta(native, source, logical, 8, 1, payload),
+             {:ok, mutation} <- Codec.decode_mutation(payload, source.value_limits),
              {:ok, next_logical} <- Reducer.apply(logical, mutation),
              {:ok, frame} <-
                Record.encode(%Record{
@@ -1050,7 +1273,8 @@ defmodule Tay.Storage.V2.Publisher do
       {type, 2, payload}, {:ok, logical, current, bytes} when Tay.Event.V2.is_auxiliary(type) ->
         sequence = current.first_sequence + current.count
 
-        with {:ok, event, _} <- Tay.Event.decode_payload(type, 2, payload, source.value_limits),
+        with {:ok, logical} <- prepare_delta(native, source, logical, type, 2, payload),
+             {:ok, event, _} <- Tay.Event.decode_payload(type, 2, payload, source.value_limits),
              {:ok, next_logical} <- Reducer.apply_event(logical, event, %{sequence: sequence}),
              {:ok, frame} <-
                Record.encode(%Record{
@@ -1256,6 +1480,12 @@ defmodule Tay.Storage.V2.Publisher do
            candidate_bytes: publication.candidate_bytes,
            reused_bytes: publication.reused_bytes,
            rewritten_bytes: publication.candidate_bytes - publication.reused_bytes,
+           cleaned_segments: length(Map.get(source, :cleaned_objects, [])),
+           cleaned_source_bytes:
+             Enum.sum(
+               for <<_::binary-size(25), bytes::64>> <- Map.get(source, :cleaned_objects, []),
+                   do: bytes
+             ),
            admitted_candidate_bytes: publication.admitted_candidate_bytes,
            peak_writer_process_bytes:
              max(publication.peak_writer_process_bytes, process_memory()),

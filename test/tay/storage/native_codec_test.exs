@@ -138,6 +138,8 @@ defmodule Tay.Storage.Native.CodecTest do
   @stage ".tay-new-00000000000000000001-" <> String.duplicate("0", 32) <> ".tmp"
   @canonical "00000000000000000001.tay"
   defp invoke(n, :list), do: Native.list(n, :root)
+  defp invoke(n, :open_epoch_read), do: Native.open_epoch_read(n, @zero, :epoch, "RECOVERY")
+  defp invoke(n, :v2_prune), do: Native.v2_prune(n, @zero, <<0::608>>, false, [])
   defp invoke(n, :v2_clone), do: Native.v2_clone(n, :candidate, "RECOVERY")
   defp invoke(n, :mkdir), do: Native.mkdir_segments(n)
   defp invoke(n, :open_read), do: Native.open_read(n, :segments, @canonical)
@@ -154,6 +156,7 @@ defmodule Tay.Storage.Native.CodecTest do
 
   defp invoke(n, :sync_dir), do: Native.sync_dir(n, :root)
   defp invoke(n, :cold_stage_create), do: Native.cold_create_stage(n, "stage", @epoch)
+  defp invoke(n, :cold_select_epoch), do: Native.cold_select_epoch(n, @epoch)
   defp invoke(n, :cold_open_write), do: Native.cold_open_write(n, :root, "data")
   defp invoke(n, :cold_list), do: Native.cold_list(n, :root, 1)
   defp invoke(n, :v2_select), do: Native.v2_select(n, @zero)

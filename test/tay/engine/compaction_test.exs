@@ -45,7 +45,7 @@ defmodule Tay.Engine.CompactionTest do
     assert second.reclamation == :complete
     assert second.reclaimed_bytes > 0
 
-    refute File.exists?(
+    assert File.exists?(
              Path.join([path, "epochs", "e-" <> Base.encode16(epoch_id, case: :lower)])
            )
 
@@ -132,7 +132,7 @@ defmodule Tay.Engine.CompactionTest do
   test "reclamation failure never rolls back CURRENT and startup resumes cleanup", %{path: path} do
     {:ok, root} = EngineHelpers.start(path, @name)
     writer = :sys.get_state(@name).writer
-    assert :ok = Tay.Storage.Writer.inject_fault(writer, :v2_reclaim, 1, :error)
+    assert :ok = Tay.Storage.Writer.inject_fault(writer, :v2_prune, 1, :error)
 
     assert {:ok, stats} = Tay.compact(name: @name, timeout: 60_000)
     assert stats.reclamation == :deferred

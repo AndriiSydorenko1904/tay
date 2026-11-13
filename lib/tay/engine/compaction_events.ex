@@ -49,6 +49,8 @@ defmodule Tay.Engine.CompactionEvents do
     :candidate_bytes,
     :reused_bytes,
     :rewritten_bytes,
+    :cleaned_segments,
+    :cleaned_source_bytes,
     :reclaimed_bytes,
     :pause_ms,
     :publication_pause_ms,

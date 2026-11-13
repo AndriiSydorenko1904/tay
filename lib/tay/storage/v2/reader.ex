@@ -8,7 +8,7 @@ defmodule Tay.Storage.V2.Reader do
 
   alias Tay.Event
   alias Tay.Storage.{BufferedRead, Native, Reader, Segment}
-  alias Tay.Storage.V2.{Authority, Codec, Reducer, RecoveryIndex}
+  alias Tay.Storage.V2.{Authority, Codec, Reducer, RecoveryIndex, CheckpointIndex}
 
   @max_metadata 16_777_216
 
@@ -149,6 +149,25 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
+  defp replay_frozen_selected(
+         native,
+         candidate,
+         canonical,
+         %{recovery_index: %{format: 2}} = manifest,
+         _exclude,
+         options
+       ) do
+    checkpoint_replay(
+      native,
+      :segments,
+      candidate,
+      canonical,
+      manifest,
+      if(Keyword.get(options, :reuse, false), do: :work, else: :scrub),
+      true
+    )
+  end
+
   defp replay_frozen_selected(native, candidate, canonical, manifest, exclude, options) do
     if Keyword.get(options, :reuse, false) and
          match?(%{auxiliary: _}, Map.get(manifest, :recovery_index)) and
@@ -213,7 +232,13 @@ defmodule Tay.Storage.V2.Reader do
   end
 
   @doc "Independently replays a private or just-renamed candidate before CURRENT publication."
-  def recover_candidate(native, candidate, manifest) do
+  def recover_candidate(native, candidate, manifest),
+    do: recover_candidate_mode(native, candidate, manifest, :scrub)
+
+  def recover_checkpoint_candidate(native, candidate, manifest, jobs, results, expired),
+    do: recover_candidate_mode(native, candidate, manifest, {:changes, jobs, results, expired})
+
+  defp recover_candidate_mode(native, candidate, manifest, mode) do
     with :ok <- Native.check(native),
          {:ok, epoch_entries} <- Native.list(native, :candidate),
          :ok <- epoch?(epoch_entries),
@@ -225,13 +250,129 @@ defmodule Tay.Storage.V2.Reader do
          {:ok, classified} <- Reader.classify_entries(segment_entries, :segments),
          true <- classified.unrelated == [] || {:error, :unexpected_epoch_segment_entry},
          {:ok, result} <-
-           replay(native, :candidate_segments, candidate, classified.canonical, manifest),
+           candidate_replay(native, candidate, classified.canonical, manifest, mode),
          :ok <- Native.check(native) do
       {:ok, Map.put(result, :manifest_bytes, manifest_bytes)}
     else
       {:ok, _} -> {:error, :candidate_manifest_mismatch}
       error -> error
     end
+  end
+
+  defp candidate_replay(
+         native,
+         candidate,
+         canonical,
+         %{recovery_index: %{format: 2}} = manifest,
+         mode
+       ),
+       do: checkpoint_replay(native, :candidate_segments, candidate, canonical, manifest, mode)
+
+  defp candidate_replay(native, candidate, canonical, manifest, _mode),
+    do: replay(native, :candidate_segments, candidate, canonical, manifest)
+
+  defp checkpoint_replay(native, scope, candidate, canonical, manifest, mode, frozen \\ false) do
+    count = length(manifest.base_segments)
+    index_scope = if scope == :candidate_segments, do: :candidate, else: :epoch
+
+    with true <-
+           length(canonical) >= count + if(frozen, do: 0, else: 1) || {:error, :tail_missing},
+         true <-
+           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..length(canonical)//1) ||
+             {:error, :segment_ids},
+         {:ok, loaded} <-
+           load_checkpoint(native, manifest, candidate, mode, index_scope),
+         {:ok, bases} <- indexed_bases(native, canonical, manifest, scope),
+         state = %{
+           candidate: loaded,
+           next_sequence: manifest.tail_first_sequence,
+           last_snapshot_id: nil,
+           dirty_jobs: MapSet.new(),
+           dirty_results: MapSet.new(),
+           dirty_schedules: MapSet.new()
+         },
+         {:ok, state} <- seed_availability_frontier(state, manifest, count + 1, count),
+         {:ok, summaries, state} <-
+           indexed_tail(native, Enum.drop(canonical, count), bases, state, manifest, scope),
+         {:ok, store} <-
+           if(summaries == [] and frozen,
+             do: {:ok, nil},
+             else: Reader.validate_topology(summaries)
+           ),
+         :ok <-
+           if(mode == :scrub,
+             do:
+               CheckpointIndex.scrub_objects(
+                 native,
+                 manifest.recovery_index,
+                 manifest.epoch_id,
+                 manifest.store_id,
+                 index_scope
+               ),
+             else: :ok
+           ) do
+      {bytes, segments} =
+        CheckpointIndex.archive_size(manifest.recovery_index, manifest.epoch_id, summaries)
+
+      {:ok,
+       %{
+         candidate: state.candidate,
+         store: store,
+         highest: List.last(summaries),
+         next_sequence: state.next_sequence,
+         total_segment_bytes: bytes,
+         record_count: Enum.sum(Enum.map(summaries, & &1.count)),
+         segment_count: segments,
+         indexed: true,
+         incremental: mode == :work or is_tuple(mode),
+         expired: if(is_tuple(mode), do: elem(mode, 3), else: %{}),
+         dirty_jobs: state.dirty_jobs,
+         dirty_results: state.dirty_results,
+         dirty_schedules: state.dirty_schedules
+       }}
+    end
+  end
+
+  defp load_checkpoint(native, manifest, candidate, {:changes, jobs, results, _expired}, scope),
+    do:
+      CheckpointIndex.load_changed(
+        native,
+        manifest.recovery_index,
+        manifest.epoch_id,
+        candidate.limits,
+        candidate.value_limits,
+        jobs,
+        results,
+        scope
+      )
+
+  defp load_checkpoint(native, manifest, candidate, mode, scope),
+    do:
+      CheckpointIndex.load(
+        native,
+        manifest.recovery_index,
+        manifest.epoch_id,
+        candidate.limits,
+        candidate.value_limits,
+        mode,
+        scope
+      )
+
+  defp runtime_replay(
+         native,
+         candidate,
+         canonical,
+         %{recovery_index: %{format: 2}} = manifest,
+         options
+       ) do
+    checkpoint_replay(
+      native,
+      :segments,
+      candidate,
+      canonical,
+      manifest,
+      if(Keyword.get(options, :indexed, false), do: :all, else: :scrub)
+    )
   end
 
   defp runtime_replay(native, candidate, canonical, manifest, options) do
@@ -249,7 +390,7 @@ defmodule Tay.Storage.V2.Reader do
     with true <-
            length(canonical) >= base_count + if(frozen, do: 0, else: 1) || {:error, :tail_missing},
          true <-
-           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..length(canonical)) ||
+           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..length(canonical)//1) ||
              {:error, :segment_ids},
          {:ok, loaded, auxiliary} <-
            RecoveryIndex.load(
@@ -294,12 +435,12 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
-  defp indexed_bases(native, canonical, manifest) do
+  defp indexed_bases(native, canonical, manifest, scope \\ :segments) do
     Enum.reduce_while(Enum.zip(canonical, manifest.base_segments), {:ok, []}, fn {{id, entry},
                                                                                   base},
                                                                                  {:ok, acc} ->
       result =
-        with_file(native, :segments, entry, fn ->
+        with_file(native, scope, entry, fn ->
           with true <- entry.size == base.bytes || {:error, :base_size},
                {:ok, header} <- exact_read(native, 0, 44),
                {:ok, decoded} <-
@@ -336,23 +477,24 @@ defmodule Tay.Storage.V2.Reader do
     end
   end
 
-  defp indexed_tail(native, tail, bases, state, manifest) do
+  defp indexed_tail(native, tail, bases, state, manifest, scope \\ :segments) do
     Enum.reduce_while(Enum.with_index(tail, 1), {:ok, bases, state}, fn {{id, entry}, ordinal},
                                                                         {:ok, summaries, acc} ->
       result =
-        with_file(native, :segments, entry, fn ->
+        with_file(native, scope, entry, fn ->
           buffered_reduce(
             native,
             entry.size,
             acc,
             fn record, _offset, current ->
               with {:ok, current} <-
-                     hydrate(native, manifest.recovery_index, record, current, entry),
+                     hydrate(native, manifest, record, current, entry, scope),
                    do: consume(record, false, current)
             end,
             id: id,
             store_id: manifest.store_id,
-            highest: ordinal == length(tail)
+            highest: ordinal == length(tail),
+            sha256: true
           )
         end)
 
@@ -366,7 +508,54 @@ defmodule Tay.Storage.V2.Reader do
     end)
   end
 
-  defp hydrate(native, descriptor, record, state, entry) do
+  defp hydrate(
+         native,
+         %{recovery_index: %{format: 2} = descriptor} = manifest,
+         record,
+         state,
+         entry,
+         scope
+       ) do
+    with {:ok, affected} <- CheckpointIndex.affected(record, state.candidate.value_limits),
+         :ok <- Native.close_read(native),
+         {:ok, candidate} <-
+           CheckpointIndex.prepare_record(
+             native,
+             descriptor,
+             manifest.epoch_id,
+             if(scope == :candidate_segments, do: :candidate, else: :epoch),
+             state.candidate,
+             affected
+           ),
+         {:ok, reopened} <- Native.open_read(native, scope, entry.name),
+         true <-
+           Map.take(reopened, [:device, :inode, :size, :links, :type]) ==
+             Map.take(entry, [:device, :inode, :size, :links, :type]) ||
+             {:error, :file_identity_changed} do
+      state = %{state | candidate: candidate}
+
+      state =
+        if affected.job_changed,
+          do: update_in(state.dirty_jobs, &MapSet.put(&1, affected.job)),
+          else: state
+
+      state =
+        if affected.result,
+          do: update_in(state.dirty_results, &MapSet.put(&1, affected.result)),
+          else: state
+
+      state =
+        if affected.schedule,
+          do: update_in(state.dirty_schedules, &MapSet.put(&1, affected.schedule)),
+          else: state
+
+      {:ok, state}
+    end
+  end
+
+  defp hydrate(native, manifest, record, state, entry, scope) do
+    descriptor = manifest.recovery_index
+
     id =
       case record do
         %{record_type: 8, payload_schema_version: 1, payload: <<id::binary-size(16), _::binary>>} ->
@@ -379,8 +568,8 @@ defmodule Tay.Storage.V2.Reader do
     case Map.get(state.candidate.jobs, id) do
       %{cold: true} ->
         with :ok <- Native.close_read(native),
-             {:ok, job} <- RecoveryIndex.fetch(native, descriptor, id),
-             {:ok, reopened} <- Native.open_read(native, :segments, entry.name),
+             {:ok, job} <- RecoveryIndex.fetch(native, descriptor, id, manifest.epoch_id),
+             {:ok, reopened} <- Native.open_read(native, scope, entry.name),
              true <-
                Map.take(reopened, [:device, :inode, :size, :links, :type]) ==
                  Map.take(entry, [:device, :inode, :size, :links, :type]) ||
@@ -487,7 +676,7 @@ defmodule Tay.Storage.V2.Reader do
            length(canonical) >= base_count + 1 || {:error, :tail_missing},
          true <- tail_id == base_count + 1 || {:error, :tail_id},
          true <-
-           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..length(canonical)) ||
+           Enum.map(canonical, &elem(&1, 0)) == Enum.to_list(1..length(canonical)//1) ||
              {:error, :segment_ids},
          {:ok, summaries, state} <- scan_all(native, scope, canonical, manifest, candidate),
          :ok <- verify_index(native, scope, manifest, state.locations, state.auxiliary_locations),
@@ -633,6 +822,22 @@ defmodule Tay.Storage.V2.Reader do
   end
 
   defp verify_index(native, scope, manifest, expected, auxiliary \\ nil)
+
+  defp verify_index(
+         native,
+         scope,
+         %{recovery_index: %{format: 2} = descriptor, epoch_id: epoch, store_id: store_id},
+         _expected,
+         _auxiliary
+       ) do
+    CheckpointIndex.scrub_objects(
+      native,
+      descriptor,
+      epoch,
+      store_id,
+      if(scope == :candidate_segments, do: :candidate, else: :epoch)
+    )
+  end
 
   defp verify_index(native, scope, %{recovery_index: descriptor}, expected, auxiliary) do
     index_scope = if scope == :candidate_segments, do: :candidate, else: :epoch

@@ -117,4 +117,92 @@ defmodule Tay.Storage.DiskIndexTest do
     assert {:error, :eio} = DiskIndex.fetch(fn _, _ -> {:error, :eio} end, root, key(1))
     assert :ok = :file.close(file)
   end
+
+  test "copy-on-write updates read and rewrite only changed paths across epochs", %{
+    index_file: file
+  } do
+    first = <<1::128>>
+    second = <<2::128>>
+    Process.put(:index_pages, %{})
+    Process.put(:index_reads, 0)
+
+    writer = fn epoch ->
+      fn at, bytes ->
+        Process.put(:index_pages, Map.put(Process.get(:index_pages), {epoch, at}, bytes))
+        :ok
+      end
+    end
+
+    read = fn epoch, at, size ->
+      Process.put(:index_reads, Process.get(:index_reads) + 1)
+
+      case Map.get(Process.get(:index_pages), {epoch, at}) do
+        bytes when is_binary(bytes) and byte_size(bytes) == size -> {:ok, bytes}
+        _ -> {:error, :eio}
+      end
+    end
+
+    {:ok, root, _} = DiskIndex.build(Stream.map(1..9000, &{key(&1), &1}), writer.(first), 64)
+    root = DiskIndex.bind_epoch(root, first)
+    prior_pages = Process.get(:index_pages)
+    changes = [{key(2), :delete}, {key(65), {:put, "changed"}}, {key(9001), {:put, 9001}}]
+
+    assert {:ok, updated, _bytes} =
+             DiskIndex.update(read, writer.(second), root, changes, 64, second)
+
+    assert Process.get(:index_reads) <= 3 * (root.height + 1)
+    assert map_size(Process.get(:index_pages)) - map_size(prior_pages) <= 3 * (root.height + 2)
+    assert Map.take(Process.get(:index_pages), Map.keys(prior_pages)) == prior_pages
+    assert updated.count == 9000
+    assert {:ok, encoded} = DiskIndex.encode_root(updated)
+    assert {:ok, ^updated} = DiskIndex.decode_root(encoded)
+    assert {:ok, 2} = DiskIndex.fetch(read, root, key(2))
+    assert :not_found = DiskIndex.fetch(read, updated, key(2))
+    assert {:ok, "changed"} = DiskIndex.fetch(read, updated, key(65))
+    assert {:ok, 9001} = DiskIndex.fetch(read, updated, key(9001))
+    assert {:ok, 9000} = DiskIndex.fetch(read, updated, key(9000))
+    assert :ok = :file.close(file)
+  end
+
+  test "updates preserve roots on no-op, splits, complete deletion and failed writes", %{
+    index_file: file
+  } do
+    {:ok, original, bytes} = DiskIndex.build(Enum.map(1..64, &{key(&1), &1}), write(file))
+
+    assert {:ok, ^original, ^bytes} =
+             DiskIndex.update(read(file), write(file), original, [{key(99), :delete}], bytes)
+
+    assert {:ok, ^original, ^bytes} =
+             DiskIndex.update(read(file), write(file), original, [{key(1), {:put, 1}}], bytes)
+
+    assert {:ok, split, next} =
+             DiskIndex.update(read(file), write(file), original, [{key(65), {:put, nil}}], bytes)
+
+    assert split.height == 1
+    assert split.count == 65
+    assert {:ok, nil} = DiskIndex.fetch(read(file), split, key(65))
+
+    assert {:error, :enospc} =
+             DiskIndex.update(
+               read(file),
+               fn _, _ -> {:error, :enospc} end,
+               split,
+               [{key(65), :delete}],
+               next
+             )
+
+    assert {:ok, nil} = DiskIndex.fetch(read(file), split, key(65))
+
+    assert {:ok, nil, _} =
+             DiskIndex.update(
+               read(file),
+               write(file),
+               split,
+               Enum.map(1..65, &{key(&1), :delete}),
+               next
+             )
+
+    assert {:ok, 64} = DiskIndex.fetch(read(file), original, key(64))
+    assert :ok = :file.close(file)
+  end
 end

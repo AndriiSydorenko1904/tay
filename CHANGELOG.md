@@ -40,10 +40,13 @@
   and auxiliary records by location, and keeps terminal argument bodies on disk.
   Terminal lookups and retried tail mutations verify the original record before
   use. Older checkpoints continue through full replay.
-- Reuse unchanged checkpoint segments and the recovery index through independent
-  copy-on-write file clones when no source tail or retention expiry requires a
-  rewrite. Unsupported filesystems use a bounded file copy. Source replay also
-  supplies compaction inventory, avoiding its duplicate physical scan.
+- Publish persistent jobs/work/schedules/results/expiry roots. Changed-tail
+  checkpoints reuse immutable files across epochs and rewrite affected index
+  paths in batches. Retention uses its ordered index; sparse-segment cleaning
+  processes a bounded selection using authenticated live-byte summaries.
+- Reclaim only files unreachable from published roots, respecting native reader
+  pins and rechecking CURRENT for each deletion batch. Resume background GC at
+  startup; include referenced archives in cold backup/restore catalogs.
 - Measure online compaction total time through resumed admission, including
   reclamation and Engine adoption. Adoption removes only expired terminal IDs
   and rebinds cold readers without rewriting retained DETS bodies. Keep publication-only times separately and
@@ -80,8 +83,7 @@
 
 - Persist authenticated job-snapshot locations in an immutable `RECOVERY` index
   during checkpoint publication. Bind its root to `MANIFEST`, verify locations
-  independently during replay, sync it before activation, and reclaim it with
-  its predecessor epoch. Older checkpoints remain readable; older readers
+  independently during replay, sync it before activation, and reclaim it only when no published root references it. Older checkpoints remain readable; older readers
   reject the extended manifest. Engine startup consumes the extended metadata and auxiliary-record index.
 
 ## 1.8.1 — 2026-11-12

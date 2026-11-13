@@ -92,7 +92,9 @@ Loss/timeout/bad response is `:uncertain`, with no inferred mutation outcome.
 
 `str` means `length:u16 | bytes`, with no embedded NUL. Paths are bounded by
 PATH_MAX; basenames by 255 bytes and cannot contain `/`, `.` or `..` entries.
-`scope:u8` is 0 for data_dir and 1 for segments/. The established storage
+`scope:u8` is 0 for data_dir, 1 for selected segments, 3 for epochs, 4 for
+candidate metadata, 5 for candidate segments and 6 for selected epoch metadata.
+Internal scope 7 addresses a pinned archive parent. The established storage
 identity is `size:u64 | device:u64 | inode:u64 | links:u64 | type:u8 |
 mode:u32` (37 bytes). Cold-copy sessions append `mtime_ns:u64 | ctime_ns:u64`
 (53 bytes total); they revalidate these timestamps before and after hashing
@@ -132,7 +134,21 @@ wire-stable; their numeric ordering is not used to classify behavior.
 | 19 enable mutations | empty | empty, after deferred barriers; same helper and lock |
 | 38 acquire if missing | strict:u8, operator_validated:u8, absolute_path:str | root_created:u8, filesystem_type:u64, helper_pid:u64; mutation session only when the root was created |
 | 39 abort v2 candidate | — | closes private candidate/read descriptors while preserving the authoritative source |
-| 240 test fault | opcode:u8, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
+| 40 clone pinned file | target_scope:u8, name:str | cloned:u8; otherwise bounded copy |
+| 41 open archive read | segments:u8, epoch_name:str, name:str | identity; pins ancestors until close |
+| 42 prune archive epoch | epoch_name:str, expected_CURRENT:76 bytes, keep_RECOVERY:u8, count:u32, sorted_unique_segment_ids:u64[] | reclaimed_bytes:u64, complete:u8 |
+| 43 select cold-copy epoch | epoch_name:str | empty; creates or pins its private staging directories |
+| 240 test fault | opcode:u16, occurrence:u32, action:u8, errno:u32, short_count:u64 | empty |
+
+Archive opens accept only canonical segment names or `MANIFEST`/`RECOVERY`, use
+descriptor-relative no-follow opens and revalidate every ancestor and file on
+read/close. Writer queues addressed Engine lookups until a delegated reader
+closes its single read descriptor. Archive pruning refuses current, candidate
+and pinned-reader epochs, checks exact CURRENT before every batch, examines at
+most 128 entries and unlinks at most 32 files per request. Directory syncs and
+idempotent missing-directory handling allow interrupted cleanup to resume.
+Cold-copy epoch selection syncs the previous staging directories before moving
+to another epoch in strict mode; publication syncs the final directories.
 
 Fault actions use the named `enum fault_action` constants in the helper while
 retaining these frozen wire values:
@@ -205,7 +221,8 @@ of allocating a second maximum-record-sized buffer. Reply headers and bodies
 are written separately, avoiding another full-body reply copy.
 
 Linux publication is `syscall(SYS_renameat2, ..., RENAME_NOREPLACE)`. There is
-no replacing-rename fallback, ftruncate, unlink, or segment deletion operation.
+no replacing-rename fallback or ftruncate. Only post-CURRENT reclamation can
+unlink unreachable archive files and directories, under its authority checks.
 The Linux adapter allows persistent ext-family, XFS, or Btrfs filesystem types
 for `:sync` only with explicit `validated_filesystem: true`; it also executes
 lock, file/directory sync, and no-replace capability checks. The assertion must

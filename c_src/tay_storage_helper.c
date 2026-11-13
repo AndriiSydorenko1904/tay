@@ -1,4 +1,4 @@
-/* Tay filesystem Port, protocol v1. No checksums, events, or repair code. */
+/* Tay filesystem Port, protocol v2. No checksums, events, or repair code. */
 #define _GNU_SOURCE 1
 #define _DARWIN_C_SOURCE 1
 #include <sys/types.h>
@@ -87,10 +87,10 @@ enum { ACQUIRE=1, LIST=2, MKDIR_SEGMENTS=3, OPEN_READ=4, READ_AT=5,
   SYNC_READ=16, SHUTDOWN=17, ACQUIRE_EXISTING=18, ENABLE_MUTATIONS=19,
   COLD_TARGET_OPEN=20, COLD_STAGE_CREATE=21, COLD_OPEN_WRITE=22,
   COLD_SYNC_STAGING=23, COLD_PUBLISH=24, COLD_SYNC_CATALOG=25,
-  COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28,
+  COLD_CHECK=26, COLD_SOURCE=27, COLD_LIST=28, COLD_SELECT_EPOCH=43,
   V2_SELECT=29, V2_BEGIN=30, V2_PUBLISH_EPOCH=31,
   V2_PUBLISH_CURRENT=33, V2_SPACE=34,
-  V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39, V2_CLONE=40,
+  V2_RECLAIM=37, ACQUIRE_IF_MISSING=38, V2_ABORT=39, V2_CLONE=40, OPEN_EPOCH_READ=41, V2_PRUNE=42,
   FAULT=240 };
 
 /* Fault-site values are part of the test protocol. Keep their numeric values
@@ -148,7 +148,8 @@ enum storage_scope {
   SCOPE_EPOCHS=3,
   SCOPE_CANDIDATE=4,
   SCOPE_CANDIDATE_SEGMENTS=5,
-  SCOPE_EPOCH=6
+  SCOPE_EPOCH=6,
+  SCOPE_ARCHIVE=7
 };
 
 enum cold_scope {
@@ -169,7 +170,8 @@ enum helper_exit_status {
  * of root_fd or epoch_fd and must never be closed independently. */
 struct store_state {
   int root_fd, segments_fd, lock_fd, read_fd, write_fd;
-  int epochs_fd, epoch_fd, segments_parent_fd;
+  int epochs_fd, epoch_fd, segments_parent_fd, archive_epoch_fd, archive_segments_fd;
+  char archive_epoch_name[256];
   char segments_name[256], epoch_name[256], root_path[PATH_MAX];
   char write_name[256], read_name[256];
   int write_scope, write_kind, read_scope, poisoned, acquired;
@@ -180,7 +182,7 @@ struct store_state {
 };
 static struct store_state store = {
   .root_fd=-1, .segments_fd=-1, .lock_fd=-1, .read_fd=-1, .write_fd=-1,
-  .epochs_fd=-1, .epoch_fd=-1, .segments_parent_fd=-1,
+  .epochs_fd=-1, .epoch_fd=-1, .segments_parent_fd=-1, .archive_epoch_fd=-1, .archive_segments_fd=-1,
   .segments_name="segments"
 };
 
@@ -203,6 +205,19 @@ struct candidate_state {
 static struct candidate_state pending_epoch = {
   .write_fd=-1, .fd=-1, .segments_fd=-1
 };
+
+/* Bounded archive reclamation cursor; it never shares a reader's descriptors. */
+static int release_owned_fd(int *fd);
+static struct { int epoch_fd, segments_fd; DIR *dir; char name[256]; }
+  pruning={.epoch_fd=-1,.segments_fd=-1};
+static int close_pruning(void) {
+  int e=pruning.dir && closedir(pruning.dir)<0?errno:0;
+  pruning.dir=NULL;
+  int next=release_owned_fd(&pruning.segments_fd); if (!e) e=next;
+  next=release_owned_fd(&pruning.epoch_fd); if (!e) e=next;
+  pruning.name[0]=0;
+  return e;
+}
 
 /* Cold-copy targets own a source-independent tree. Parent descriptors borrow
  * the final entry of each chain; cold_chain_close is their sole closer. */
@@ -323,6 +338,7 @@ static int scope_fd(int scope) {
   if (scope==SCOPE_CANDIDATE) return pending_epoch.fd;
   if (scope==SCOPE_CANDIDATE_SEGMENTS) return pending_epoch.segments_fd;
   if (scope==SCOPE_EPOCH) return store.epoch_fd;
+  if (scope==SCOPE_ARCHIVE) return store.archive_segments_fd>=0?store.archive_segments_fd:store.archive_epoch_fd;
   return cold.target && scope==SCOPE_COLD_VERIFY ? cold.verify_parent_fd : -1;
 }
 static int same(const struct stat *a,const struct stat *b) {
@@ -432,8 +448,9 @@ static void abandon_cold_target(void) {
   cold.target=0;
 }
 static void shutdown_owned_handles(void) {
+  if (close_pruning()) _exit(HELPER_EXIT_CLOSE_FAILURE);
   int *descriptors[] = {
-    &store.write_fd, &pending_epoch.write_fd, &store.read_fd, &store.segments_fd, &pending_epoch.segments_fd, &pending_epoch.fd, &store.epoch_fd, &store.epochs_fd, &store.root_fd, &store.lock_fd, &cold.stage_fd, &cold.stage_epochs_fd, &cold.stage_epoch_fd, &cold.stage_segments_fd, &cold.lock_fd
+    &store.write_fd, &pending_epoch.write_fd, &store.read_fd, &store.archive_segments_fd, &store.archive_epoch_fd, &store.segments_fd, &pending_epoch.segments_fd, &pending_epoch.fd, &store.epoch_fd, &store.epochs_fd, &store.root_fd, &store.lock_fd, &cold.stage_fd, &cold.stage_epochs_fd, &cold.stage_epoch_fd, &cold.stage_segments_fd, &cold.lock_fd
   };
   for (size_t i=0; i<sizeof(descriptors)/sizeof(descriptors[0]); i++) {
     if (release_owned_fd(descriptors[i])) _exit(HELPER_EXIT_CLOSE_FAILURE);
@@ -931,6 +948,98 @@ static int exact_metadata(int directory,const char *name,const unsigned char *ex
   return e;
 }
 
+static uint64_t keep_id(const unsigned char *ids,uint32_t index) {
+  uint64_t value=0;
+  for (unsigned i=0;i<8;i++) value=(value<<8)|ids[(size_t)index*8+i];
+  return value;
+}
+static int kept_segment(const unsigned char *ids,uint32_t count,uint64_t id) {
+  uint32_t lo=0,hi=count;
+  while (lo<hi) { uint32_t mid=lo+(hi-lo)/2; uint64_t value=keep_id(ids,mid);
+    if (value==id) return 1;
+    if (value<id) lo=mid+1; else hi=mid; }
+  return 0;
+}
+static int prune_metadata(int directory,const char *name,uint64_t *bytes) {
+  struct stat identity;
+  if (fstatat(directory,name,&identity,AT_SYMLINK_NOFOLLOW)<0) return errno==ENOENT?0:errno;
+  if (!S_ISREG(identity.st_mode) || identity.st_nlink!=1) return EINVAL;
+  if (reclamation_unlink(directory,name,0,FAULT_MANIFEST_UNLINK)<0) return errno;
+  *bytes+=(uint64_t)identity.st_size;
+  return 0;
+}
+static int v2_prune(void) {
+  char target[256];
+  int e=string(target,sizeof(target));
+  if (e || !epoch_name_ok(target) || !need(CURRENT_METADATA_BYTES+5)) return e?e:EPROTO;
+  const unsigned char *expected=input+pos; pos+=CURRENT_METADATA_BYTES;
+  unsigned keep_recovery=(unsigned)number(1); uint32_t count=(uint32_t)number(4);
+  if (keep_recovery>1 || count>(input_n-pos)/8) return EPROTO;
+  const unsigned char *ids=input+pos; pos+=(size_t)count*8;
+  for (uint32_t i=0;i<count;i++) if (!keep_id(ids,i) || (i && keep_id(ids,i)<=keep_id(ids,i-1))) return EINVAL;
+  e=exact_metadata(store.root_fd,"CURRENT",expected,CURRENT_METADATA_BYTES);
+  if (e) { close_pruning(); return e; }
+  if (!strcmp(target,store.epoch_name) ||
+      (pending_epoch.fd>=0 && !strcmp(target,pending_epoch.name)) ||
+      (store.archive_epoch_fd>=0 && !strcmp(target,store.archive_epoch_name))) return EBUSY;
+  if (pruning.epoch_fd>=0 && strcmp(pruning.name,target)) { e=close_pruning(); if (e) return e; }
+  if (pruning.epoch_fd<0) {
+    e=open_epochs(0); if (e) return e;
+    pruning.epoch_fd=openat(store.epochs_fd,target,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (pruning.epoch_fd<0) {
+      if (errno==ENOENT) {
+        if (promotion_sync(store.epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) return errno;
+        put(0,8); put(1,1); return 0;
+      } return errno;
+    }
+    strcpy(pruning.name,target);
+    e=checked_directory(pruning.epoch_fd,store.epochs_fd,target); if (e) { close_pruning(); return e; }
+    pruning.segments_fd=openat(pruning.epoch_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (pruning.segments_fd<0) {
+      if (errno!=ENOENT || keep_recovery || count) { e=errno; close_pruning(); return e; }
+    } else {
+      e=checked_directory(pruning.segments_fd,pruning.epoch_fd,"segments"); if (e) { close_pruning(); return e; }
+      int copy=openat(pruning.segments_fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+      if (copy<0) { e=errno; close_pruning(); return e; }
+      pruning.dir=fdopendir(copy);
+      if (!pruning.dir) { e=errno; close(copy); close_pruning(); return e; }
+    }
+  }
+  e=checked_directory(pruning.epoch_fd,store.epochs_fd,target);
+  if (!e && pruning.segments_fd>=0) e=checked_directory(pruning.segments_fd,pruning.epoch_fd,"segments");
+  if (e) { close_pruning(); return e; }
+  uint64_t bytes=0; unsigned visited=0,deleted=0; int done=pruning.segments_fd<0;
+  while (!done && visited<128 && deleted<32) {
+    errno=0; struct dirent *entry=readdir(pruning.dir);
+    if (!entry) { e=errno; done=!e; break; }
+    if (!strcmp(entry->d_name,".") || !strcmp(entry->d_name,"..")) continue;
+    visited++;
+    if (!canonical(entry->d_name)) { e=EINVAL; break; }
+    uint64_t id=0; for (unsigned i=0;i<SEGMENT_ID_DIGITS;i++) id=id*10+(unsigned)(entry->d_name[i]-'0');
+    if (kept_segment(ids,count,id)) continue;
+    struct stat identity;
+    if (fstatat(pruning.segments_fd,entry->d_name,&identity,AT_SYMLINK_NOFOLLOW)<0) { e=errno; break; }
+    if (!S_ISREG(identity.st_mode) || identity.st_nlink!=1) { e=EINVAL; break; }
+    if (reclamation_unlink(pruning.segments_fd,entry->d_name,0,FAULT_SEGMENT_UNLINK)<0) { e=errno; break; }
+    bytes+=(uint64_t)identity.st_size; deleted++;
+  }
+  if (!e && deleted && promotion_sync(pruning.segments_fd,FAULT_SEGMENT_UNLINK_SYNC)<0) e=errno;
+  if (!e && done) {
+    if (!keep_recovery) e=prune_metadata(pruning.epoch_fd,"RECOVERY",&bytes);
+    if (!e && !keep_recovery && !count) e=prune_metadata(pruning.epoch_fd,"MANIFEST",&bytes);
+    if (!e && promotion_sync(pruning.epoch_fd,FAULT_MANIFEST_UNLINK_SYNC)<0) e=errno;
+    if (!e && !keep_recovery && !count) {
+      if (reclamation_unlink(pruning.epoch_fd,"segments",AT_REMOVEDIR,FAULT_SEGMENTS_RMDIR)<0 && errno!=ENOENT) e=errno;
+      if (!e && promotion_sync(pruning.epoch_fd,FAULT_SEGMENTS_RMDIR_SYNC)<0) e=errno;
+      if (!e && reclamation_unlink(store.epochs_fd,target,AT_REMOVEDIR,FAULT_EPOCH_RMDIR)<0) e=errno;
+      if (!e && promotion_sync(store.epochs_fd,FAULT_EPOCH_RMDIR_SYNC)<0) e=errno;
+    }
+  }
+  if (done || e) { int closing=close_pruning(); if (!e) e=closing; }
+  if (!e) { put(bytes,8); put((uint64_t)done,1); }
+  return e;
+}
+
 static int reclaim_segments(int directory,uint64_t *bytes) {
   int fd=openat(directory,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
   if (fd<0) return errno==ENOENT?0:errno;
@@ -1160,6 +1269,38 @@ static int cold_stage_create(void) {
   }
   return e;
 }
+static int cold_select_epoch(void) {
+  char name[256];
+  int e=string(name,sizeof(name));
+  if (e || !epoch_name_ok(name)) return e?e:EINVAL;
+  if (!cold.target || !cold.stage_created) return EBADF;
+  if (store.write_fd>=0 || store.read_fd>=0) return EBUSY;
+  e=cold_check_paths(); if (e) return e;
+  if (!strcmp(name,cold.epoch_name)) return 0;
+  if (store.strict_mode && (fsync(cold.stage_segments_fd)<0 || fsync(cold.stage_epoch_fd)<0)) return errno;
+  if (mkdirat(cold.stage_epochs_fd,name,0700)<0 && errno!=EEXIST) return errno;
+  int epoch=openat(cold.stage_epochs_fd,name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (epoch<0) return errno;
+  int segments=-1;
+  struct stat epoch_identity, segments_identity;
+  e=checked_directory(epoch,cold.stage_epochs_fd,name);
+  if (!e && fstat(epoch,&epoch_identity)<0) e=errno;
+  if (!e && mkdirat(epoch,"segments",0700)<0 && errno!=EEXIST) e=errno;
+  if (!e) {
+    segments=openat(epoch,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (segments<0) e=errno;
+  }
+  if (!e) e=checked_directory(segments,epoch,"segments");
+  if (!e && fstat(segments,&segments_identity)<0) e=errno;
+  if (!e && store.strict_mode && (fsync(segments)<0 || fsync(epoch)<0 || fsync(cold.stage_epochs_fd)<0)) e=errno;
+  if (e) { if (segments>=0) close(segments); close(epoch); return e; }
+  close_owned_fd(&cold.stage_segments_fd);
+  close_owned_fd(&cold.stage_epoch_fd);
+  cold.stage_segments_fd=segments; cold.stage_epoch_fd=epoch;
+  cold.stage_epoch_identity=epoch_identity; cold.stage_segments_identity=segments_identity;
+  strcpy(cold.epoch_name,name);
+  return cold_check_paths();
+}
 static int cold_scope_fd(int scope) {
   if (scope==SCOPE_ROOT) return cold.stage_fd;
   if (scope==SCOPE_SEGMENTS) return cold.stage_segments_fd;
@@ -1281,10 +1422,55 @@ static int open_read(void) {
   if (e) { close(store.read_fd); store.read_fd=-1; return e; }
   stat_out(&store.read_identity); return 0;
 }
+static int close_archive(void) {
+  int e=release_owned_fd(&store.archive_segments_fd);
+  int next=release_owned_fd(&store.archive_epoch_fd);
+  store.archive_epoch_name[0]=0;
+  return e?e:next;
+}
+/* An archive read pins directory descriptors until CLOSE_READ. It cannot
+ * escape this continuously owned store or select a writable archive handle. */
+static int open_epoch_read(void) {
+  if (store.read_fd>=0 || store.archive_epoch_fd>=0 || !need(1)) return EBUSY;
+  unsigned segments=(unsigned)number(1);
+  char epoch[256], name[256];
+  int e=string(epoch,sizeof(epoch));
+  if (!e) e=string(name,sizeof(name));
+  if (e) return e;
+  if (segments>1 || !epoch_name_ok(epoch) ||
+      (segments?!canonical(name):(strcmp(name,"RECOVERY") && strcmp(name,"MANIFEST")))) return EINVAL;
+  e=open_epochs(0); if (e) return e;
+  store.archive_epoch_fd=openat(store.epochs_fd,epoch,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+  if (store.archive_epoch_fd<0) return errno;
+  strcpy(store.archive_epoch_name,epoch);
+  e=checked_directory(store.archive_epoch_fd,store.epochs_fd,epoch);
+  if (!e && segments) {
+    store.archive_segments_fd=openat(store.archive_epoch_fd,"segments",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (store.archive_segments_fd<0) e=errno;
+    else e=checked_directory(store.archive_segments_fd,store.archive_epoch_fd,"segments");
+  }
+  if (!e) {
+    store.read_scope=SCOPE_ARCHIVE;
+    strcpy(store.read_name,name);
+    int parent=scope_fd(SCOPE_ARCHIVE);
+    store.read_fd=openat(parent,name,O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+    if (store.read_fd<0) e=errno;
+    else e=checked_regular(store.read_fd,parent,name,&store.read_identity);
+  }
+  if (e) { close_owned_fd(&store.read_fd); close_archive(); return e; }
+  stat_out(&store.read_identity);
+  return 0;
+}
 static int validate_read(void) {
   struct stat now;
   if (store.read_fd<0) return EBADF;
-  int e=checked_regular(store.read_fd,scope_fd(store.read_scope),store.read_name,&now);
+  int e=0;
+  if (store.read_scope==SCOPE_ARCHIVE) {
+    e=checked_directory(store.archive_epoch_fd,store.epochs_fd,store.archive_epoch_name);
+    if (!e && store.archive_segments_fd>=0)
+      e=checked_directory(store.archive_segments_fd,store.archive_epoch_fd,"segments");
+  }
+  if (!e) e=checked_regular(store.read_fd,scope_fd(store.read_scope),store.read_name,&now);
   if (e) return e;
   return same(&now,&store.read_identity) && now.st_size==store.read_identity.st_size ? 0 : ESTALE;
 }
@@ -1501,7 +1687,7 @@ static int publish(void) {
 static int inspection_opcode_allowed(unsigned op) {
   switch (op) {
     case LIST: case OPEN_READ: case READ_AT: case CLOSE_READ: case CHECK: case INFO:
-    case V2_SELECT: case V2_SPACE:
+    case V2_SELECT: case V2_SPACE: case OPEN_EPOCH_READ:
       return 1;
     default:
       return 0;
@@ -1510,7 +1696,7 @@ static int inspection_opcode_allowed(unsigned op) {
 
 static int cold_target_opcode_allowed(unsigned op) {
   switch (op) {
-    case COLD_STAGE_CREATE: case COLD_OPEN_WRITE: case COLD_SYNC_STAGING:
+    case COLD_STAGE_CREATE: case COLD_SELECT_EPOCH: case COLD_OPEN_WRITE: case COLD_SYNC_STAGING:
     case COLD_PUBLISH: case COLD_SYNC_CATALOG: case COLD_CHECK:
     case OPEN_READ: case READ_AT: case CLOSE_READ: case SYNC_READ:
     case WRITE_AT: case SYNC_FILE: case CLOSE_WRITE:
@@ -1522,7 +1708,7 @@ static int cold_target_opcode_allowed(unsigned op) {
 
 static int failure_poisons(unsigned op) {
   switch (op) {
-    case LIST: case OPEN_READ: case READ_AT: case CLOSE_READ: case V2_RECLAIM:
+    case LIST: case OPEN_READ: case OPEN_EPOCH_READ: case READ_AT: case CLOSE_READ: case V2_RECLAIM: case V2_PRUNE:
       return 0;
     default:
       return 1;
@@ -1556,6 +1742,7 @@ static int dispatch(unsigned op) {
     if (!cold_target_opcode_allowed(op)) return EPROTO;
     switch (op) {
       case COLD_STAGE_CREATE: return cold_stage_create();
+      case COLD_SELECT_EPOCH: return cold_select_epoch();
       case COLD_OPEN_WRITE: return cold_open_write();
       case COLD_SYNC_STAGING: return cold_sync_staging();
       case COLD_PUBLISH: return cold_publish();
@@ -1591,6 +1778,7 @@ static int dispatch(unsigned op) {
     case V2_SPACE: return v2_space();
     case V2_RECLAIM: return v2_reclaim();
     case V2_ABORT: return v2_abort();
+    case V2_PRUNE: return v2_prune();
     case V2_CLONE: return v2_clone();
     case LIST: return list_directory();
     case MKDIR_SEGMENTS:
@@ -1598,10 +1786,12 @@ static int dispatch(unsigned op) {
       if (mkdirat(store.root_fd,"segments",0700)<0) return errno;
       return open_segments();
     case OPEN_READ: return open_read();
+    case OPEN_EPOCH_READ: return open_epoch_read();
     case READ_AT: return read_at();
     case CLOSE_READ:
       e=validate_read(); fd=store.read_fd; store.read_fd=-1;
       if (fd>=0 && close(fd)<0 && !e) e=errno;
+      { int closing=close_archive(); if (!e) e=closing; }
       return e;
     case CREATE_STAGE: return create_stage();
     case OPEN_ACTIVE: return open_active();
@@ -1661,10 +1851,19 @@ static int validate_request(unsigned op) {
       pos++; e=string(name,256); break;
     case V2_SELECT: case V2_BEGIN: case V2_PUBLISH_EPOCH:
       e=string(name,256); break;
+    case OPEN_EPOCH_READ:
+      if (!need(1)) return EPROTO;
+      pos++; e=string(name,256); if (!e) e=string(name,256); break;
     case V2_PUBLISH_CURRENT:
       e=string(name,256);
       if (e || !need(FILE_IDENTITY_PAIR_BYTES)) return e?e:EPROTO;
       pos+=FILE_IDENTITY_PAIR_BYTES; break;
+    case V2_PRUNE: {
+      e=string(name,256); if (e || !need(CURRENT_METADATA_BYTES+5)) return e?e:EPROTO;
+      pos+=CURRENT_METADATA_BYTES+1; uint64_t count=number(4);
+      if (count>(input_n-pos)/8) return EPROTO;
+      pos+=(size_t)count*8; break;
+    }
     case V2_RECLAIM:
       e=string(name,256); if (e || !need(RECLAIM_BASE_BYTES)) return e?e:EPROTO;
       pos+=CURRENT_METADATA_BYTES;
@@ -1675,6 +1874,8 @@ static int validate_request(unsigned op) {
       break;
     case COLD_STAGE_CREATE:
       e=string(name,256); if (!e) e=string(name,256); break;
+    case COLD_SELECT_EPOCH:
+      e=string(name,256); break;
     case COLD_OPEN_WRITE:
       if (!need(2)) return EPROTO;
       pos+=2; e=string(name,256); break;

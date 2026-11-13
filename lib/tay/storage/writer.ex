@@ -270,6 +270,20 @@ defmodule Tay.Storage.Writer do
   # requests therefore interleave with ordinary durable appends without ever
   # sharing the Port concurrently.
   def handle_call(
+        {:tay_native_request, generation, reference, operation, body},
+        {pid, _},
+        %{native: %{generation: generation} = native, garbage: %{ref: reference, pid: pid}} =
+          state
+      )
+      when operation in [:list, :v2_prune] do
+    if state.online_compaction == nil and state.inspection == nil do
+      {:reply, Native.request_owned(native, operation, body), state}
+    else
+      {:reply, {:error, %{kind: :resource_limit, reason: :maintenance_busy}}, state}
+    end
+  end
+
+  def handle_call(
         {:tay_native_request, generation, delegate, operation, body},
         {pid, _},
         %{
@@ -282,14 +296,17 @@ defmodule Tay.Storage.Writer do
           }
         } = state
       ) do
-    OnlineCompactionLifecycle.native_request(
-      state,
-      native,
-      deadline,
-      cancel_flag,
-      operation,
-      body
-    )
+    {:reply, result, next} =
+      OnlineCompactionLifecycle.native_request(
+        state,
+        native,
+        deadline,
+        cancel_flag,
+        operation,
+        body
+      )
+
+    {:reply, result, delegated_read(next, operation, result)}
   end
 
   def handle_call(
@@ -300,8 +317,9 @@ defmodule Tay.Storage.Writer do
           inspection: %{ref: delegate, pid: pid}
         } = state
       )
-      when operation in [:list, :open_read, :read, :close_read] do
-    {:reply, Native.request_owned(native, operation, body), state}
+      when operation in [:list, :open_read, :open_epoch_read, :read, :close_read] do
+    result = Native.request_owned(native, operation, body)
+    {:reply, result, delegated_read(state, operation, result)}
   end
 
   def handle_call({:tay_native_request, _, _, _, _}, _from, state),
@@ -394,14 +412,18 @@ defmodule Tay.Storage.Writer do
     do: {:reply, {:error, :compaction_restart_required}, state}
 
   def handle_call(
-        {:checkpoint_job, reference, epoch_id, descriptor, id},
-        {caller, _},
+        {:checkpoint_job, reference, epoch_id, descriptor, id} = request,
+        {caller, _} = from,
         %{recovery: recovery} = state
       ) do
     if recovery.status == :ready and caller == recovery.caller and
          reference == recovery.admission_ref and epoch_id == state.epoch_id do
-      result = Tay.Storage.V2.RecoveryIndex.fetch(state.native, descriptor, id)
-      {:reply, result, state}
+      if state.delegate_read_open do
+        {:noreply, %{state | read_waiters: [{from, request} | state.read_waiters]}}
+      else
+        result = Tay.Storage.V2.RecoveryIndex.fetch(state.native, descriptor, id, state.epoch_id)
+        {:reply, result, state}
+      end
     else
       {:reply, {:error, :stale_checkpoint_reader}, state}
     end
@@ -666,7 +688,7 @@ defmodule Tay.Storage.Writer do
       ) do
     Process.demonitor(monitor, [:flush])
     GenServer.reply(from, result)
-    {:noreply, %{state | inspection: nil}}
+    {:noreply, delegated_read(%{state | inspection: nil}, :close_read, :ok)}
   end
 
   def handle_info(
@@ -675,14 +697,20 @@ defmodule Tay.Storage.Writer do
       ) do
     _ = Native.close_read(state.native)
     GenServer.reply(from, {:error, {:inspection_exit, reason}})
-    {:noreply, %{state | inspection: nil}}
+    {:noreply, delegated_read(%{state | inspection: nil}, :close_read, :ok)}
   end
 
   def handle_info(
         {:DOWN, monitor, :process, pid, reason},
         %{online_compaction: %{monitor: monitor, pid: pid} = online} = state
       ) do
-    OnlineCompactionLifecycle.builder_down(state, online, reason)
+    case OnlineCompactionLifecycle.builder_down(state, online, reason) do
+      {:noreply, next} ->
+        {:noreply, delegated_read(next, :close_read, :ok)}
+
+      {:noreply, next, continuation} ->
+        {:noreply, delegated_read(next, :close_read, :ok), continuation}
+    end
   end
 
   def handle_info(
@@ -734,10 +762,17 @@ defmodule Tay.Storage.Writer do
   def handle_info({port, {:data, _}}, %{native: %{port: port}} = state),
     do: {:noreply, poison(state, :unsolicited_native_reply)}
 
+  def handle_info(
+        {:DOWN, monitor, :process, pid, _},
+        %{garbage: %{monitor: monitor, pid: pid}} = state
+      ),
+      do: {:noreply, Map.put(state, :garbage, nil)}
+
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
+    Tay.Storage.V2.Reclaimer.stop_background(state)
     Session.notify_lifecycle(state, :closed)
     Native.shutdown(state.native)
   end
@@ -753,6 +788,7 @@ defmodule Tay.Storage.Writer do
   defp perform_recovery_activation(state, caller) do
     case RecoveryLifecycle.activate(state, caller) do
       {:ok, summary, candidate, next} ->
+        next = Tay.Storage.V2.Reclaimer.start_background(next, state.recovery.view)
         {:reply, {:ok, summary, candidate}, next, {:continue, :release_transient_heap}}
 
       {:error, error, failed_state} ->
@@ -819,6 +855,23 @@ defmodule Tay.Storage.Writer do
 
     defp hook(_, _), do: :ok
   end
+
+  # A delegated reader owns the single native read descriptor until close.
+  # Replay queued Engine lookups before replying to that close, so the next
+  # builder read cannot overtake them or replace their pinned descriptor.
+  defp delegated_read(state, operation, {:ok, _, _})
+       when operation in [:open_read, :open_epoch_read],
+       do: %{state | delegate_read_open: true}
+
+  defp delegated_read(state, :close_read, _result) do
+    Enum.each(Enum.reverse(state.read_waiters), fn {from, request} ->
+      send(self(), {:"$gen_call", from, request})
+    end)
+
+    %{state | delegate_read_open: false, read_waiters: []}
+  end
+
+  defp delegated_read(state, _operation, _result), do: state
 
   defp poison(state, reason), do: Session.poison(state, reason)
 end

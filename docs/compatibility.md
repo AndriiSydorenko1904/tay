@@ -165,8 +165,9 @@ Batching, wakeups and recovery session expiry remain internal mechanisms.
 
 Extended checkpoint indexes enable lazy terminal-argument reads during Engine
 startup; metadata and result bodies are still loaded. Cold body corruption is
-reported when the job is addressed, while full storage inspection/publication
-checks the complete archive. Previous checkpoint/index shapes remain readable;
+reported when the job is addressed. Full storage inspection and cold backup
+scrub the reachable archive; incremental publication checks new pages/records
+and retains authenticated immutable references. Previous checkpoint/index shapes remain readable;
 new manifests are refused by older readers. Restore the pre-upgrade backup to
 downgrade. Production Engine `durability` options are removed: sync is fixed.
 See the [storage index contract](storage.md#checkpoint-location-index-20) and

@@ -43,6 +43,8 @@ defmodule Tay.Bench.Observer do
          rotations: [],
          current: %{},
          calls: %{},
+         read_bytes: 0,
+         read_calls: 0,
          last_segment: 1,
          limit: limit
        }}
@@ -99,6 +101,9 @@ defmodule Tay.Bench.Observer do
     key = "#{inspect(module)}.#{function}/#{arity}"
     {:noreply, %{s | calls: Map.update(s.calls, key, 1, &(&1 + 1))}}
   end
+
+  def handle_info({:trace, _, :call, {Tay.Storage.Native, :read, 3}, {:read_bytes, bytes}}, s),
+    do: {:noreply, %{s | read_bytes: s.read_bytes + bytes, read_calls: s.read_calls + 1}}
 
   def handle_info(_, s), do: {:noreply, s}
   def handle_call(:result, _, s), do: {:reply, s, s}
@@ -315,10 +320,12 @@ defmodule Tay.Bench.Harness do
 
       passes =
         for pass <- 1..3 do
-          {wall_us, {:ok, stats}} =
-            :timer.tc(fn ->
-              Tay.compact(name: @name, timeout: c.deadline_ms, terminal_retention: :infinity)
-            end)
+          if pass == 3 do
+            id = insert_one(c, c.jobs + 1, nil)
+            await_completed(c, id)
+          end
+
+          {wall_us, stats, reads, peak} = measured_compaction(c)
 
           stats
           |> Map.take([
@@ -326,6 +333,8 @@ defmodule Tay.Bench.Harness do
             :candidate_bytes,
             :reused_bytes,
             :rewritten_bytes,
+            :cleaned_segments,
+            :cleaned_source_bytes,
             :total_ms,
             :pause_ms,
             :publication_pause_ms,
@@ -334,7 +343,14 @@ defmodule Tay.Bench.Harness do
             :net_reclaimed_bytes,
             :retained_terminal_jobs
           ])
-          |> Map.merge(%{pass: pass, caller_wall_us: wall_us})
+          |> Map.merge(%{
+            pass: pass,
+            changed_tail: pass == 3,
+            caller_wall_us: wall_us,
+            native_read_bytes: reads.bytes,
+            native_read_calls: reads.calls,
+            sampled_peak: peak
+          })
         end
 
       stop(root)
@@ -351,6 +367,51 @@ defmodule Tay.Bench.Harness do
       end
     after
       stop(root)
+    end
+  end
+
+  defp measured_compaction(c) do
+    observer = Process.whereis(Observer)
+    writer = :sys.get_state(@name).writer
+    before = Observer.result()
+    sampler = Memory.start(@name, self())
+
+    :erlang.trace_pattern(
+      {Tay.Storage.Native, :read, 3},
+      [{[:_, :_, :"$1"], [], [{:message, {{:read_bytes, :"$1"}}}]}],
+      [:local]
+    )
+
+    :erlang.trace(writer, true, [:call, :arity, :set_on_spawn, {:tracer, observer}])
+
+    try do
+      {wall_us, {:ok, stats}} =
+        :timer.tc(fn ->
+          Tay.compact(name: @name, timeout: c.deadline_ms, terminal_retention: :infinity)
+        end)
+
+      ref = :erlang.trace_delivered(:all)
+
+      receive do
+        {:trace_delivered, :all, ^ref} -> :ok
+      after
+        5_000 -> raise("compaction trace delivery deadline exceeded")
+      end
+
+      after_reads = Observer.result()
+
+      {wall_us, stats,
+       %{
+         bytes: after_reads.read_bytes - before.read_bytes,
+         calls: after_reads.read_calls - before.read_calls
+       }, Memory.stop(sampler)}
+    after
+      for pid <- Process.list(),
+          :erlang.trace_info(pid, :tracer) == {:tracer, observer},
+          do: safe_untrace(pid)
+
+      :erlang.trace_pattern({Tay.Storage.Native, :read, 3}, false, [:local])
+      if Process.alive?(sampler), do: Memory.stop(sampler)
     end
   end
 

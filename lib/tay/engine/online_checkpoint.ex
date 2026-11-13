@@ -44,6 +44,104 @@ defmodule Tay.Engine.OnlineCheckpoint do
     fn id -> Tay.Storage.Writer.checkpoint_job(writer, reference, epoch, descriptor, id) end
   end
 
+  def adopt(state, %{recovered: %{incremental: true} = recovered} = stats, retention) do
+    expired = recovered.expired
+    state = purge_expired_volatile_terminals(state, retention, stats.captured_at)
+
+    terminal_store =
+      TerminalStore.expire(
+        state.terminal_store,
+        expired,
+        loader(
+          state.writer,
+          state.admission,
+          recovered.epoch_id,
+          recovered.manifest.recovery_index
+        )
+      )
+
+    terminal_budget =
+      Enum.reduce(expired, state.terminal_budget, fn {_id, job}, acc ->
+        %{count: acc.count - 1, bytes: acc.bytes - job.charge.bytes}
+      end)
+
+    terminal_stats =
+      Enum.reduce(expired, state.terminal_stats, fn {_id, job}, acc ->
+        Tay.Engine.ProjectionState.replace_terminal_stats(acc, job, nil)
+      end)
+
+    estimate =
+      Enum.reduce(expired, state.compaction_estimate, fn {_id, job}, acc ->
+        CompactionEstimate.remove(acc, job)
+      end)
+
+    # Every accepted tail mutation is already reflected in live projections.
+    # Only durable expiry changes logical runtime state at adoption.
+    results = Map.drop(state.results, Map.keys(expired))
+    schedules = retain_volatile_memberships(recovered.candidate.schedules, state)
+
+    schedule_bytes = fn values ->
+      Enum.reduce(values, 0, fn {_, value}, sum ->
+        sum + Tay.State.Memory.schedule_bytes(value)
+      end)
+    end
+
+    expired_result_bytes =
+      Enum.reduce(expired, 0, fn {id, _}, sum ->
+        sum + Tay.State.Memory.result_bytes(state.results[id])
+      end)
+
+    auxiliary_bytes =
+      state.auxiliary_bytes - expired_result_bytes - schedule_bytes.(state.schedules) +
+        schedule_bytes.(schedules)
+
+    with {:ok, next} <-
+           Tay.State.Memory.transaction(
+             state.memory,
+             auxiliary_bytes - state.auxiliary_bytes,
+             fn ->
+               {:ok,
+                %{
+                  state
+                  | terminal_store: terminal_store,
+                    terminal_budget: terminal_budget,
+                    terminal_stats: terminal_stats,
+                    compaction_estimate: estimate,
+                    results: results,
+                    schedules: schedules,
+                    auxiliary_bytes: auxiliary_bytes,
+                    schedule_owners: Tay.State.Auxiliary.owners(schedules),
+                    config: put_retention(state.config, stats.terminal_retention),
+                    epoch_id: recovered.epoch_id,
+                    next_sequence: recovered.next_sequence,
+                    next_availability_order: recovered.candidate.next_availability_order,
+                    segment: Map.take(recovered.highest, [:id, :bytes, :count, :state]),
+                    segment_catalog:
+                      recovered.store.segments
+                      |> Enum.map(
+                        &Map.take(&1, [
+                          :id,
+                          :state,
+                          :bytes,
+                          :count,
+                          :first_sequence,
+                          :last_sequence
+                        ])
+                      )
+                      |> Enum.take(-@segment_catalog_limit),
+                    history_bytes: recovered.total_segment_bytes,
+                    segment_count: recovered.segment_count,
+                    events_since_checkpoint:
+                      recovered.next_sequence - recovered.manifest.tail_first_sequence,
+                    last_compaction_at: max(stats.captured_at, Clock.wall(state.config.clock)),
+                    last_checkpoint_at: stats.captured_at,
+                    online_compaction: nil
+                }}
+             end
+           ),
+         do: next
+  end
+
   def adopt(state, %{recovered: recovered} = stats, retention) do
     previous_bytes = state.budget.bytes + state.auxiliary_bytes
     state = purge_expired_volatile_terminals(state, retention, stats.captured_at)

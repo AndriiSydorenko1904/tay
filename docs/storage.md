@@ -60,58 +60,75 @@ chosen internally by the storage engine, not a public setting.
 
 ## Checkpoint location index (2.0)
 
-New nonempty checkpoints also publish `RECOVERY` beside `MANIFEST` and
-`segments/`. It is an immutable index of base job-snapshot locations, not a
-second job journal. Tail changes remain authoritative over those snapshots.
-Empty checkpoints omit the index. Earlier checkpoints without it remain valid;
-readers which do not recognize the extended manifest refuse new checkpoints.
+Online checkpoints publish immutable `RECOVERY` metadata beside `MANIFEST` and
+`segments/`. Tail changes remain authoritative over snapshots. Earlier
+checkpoints without an index and the preceding job-only/job-plus-auxiliary
+index descriptors remain readable through their existing replay paths.
 
-The optional manifest field `recovery_index` contains `bytes` (the exact file
-length), `root` for jobs and `auxiliary` for schedule/result records (byte strings
-encoded by `DiskIndex.encode_root/1`). Earlier job-only descriptors remain readable. The root
-envelope is a canonical Value map with `version: 1` and an optional `root`
-reference. Each reference contains `offset`, `bytes`, SHA-256 `digest`, binary
-`first`/`last` keys, entry `count`, and tree `height`. A reference's digest covers
-the exact encoded page. Root metadata is covered by the manifest digest in
-`CURRENT`. All map keys on disk are strings; binary keys/digests use Value's
-byte carrier.
+The current descriptor contains `format: 2`, `bytes` (the exact current index
+file length), and five roots encoded by `DiskIndex.encode_root/1`:
 
-Pages are canonical Value maps with `version: 1` and either `leaf` entries or
-`children` references. Leaf entries are ordered binary-key/value pairs; keys
-are strictly increasing. Children have disjoint ordered key ranges, matching
-counts and heights, and point only to earlier bytes in the same file.
-Pages have at most 64 entries/references. This is internal page structure,
-not a configurable job count or recovery quota.
+| Root | Key | Value |
+| --- | --- | --- |
+| `root` | raw 16-byte job ID | snapshot pointer, including terminal summary |
+| `work` | raw 16-byte active job ID | same snapshot pointer |
+| `expiry` | unsigned big-endian terminal time followed by job ID | same terminal pointer |
+| `schedules` | schedule ID | canonical `(13,2)` record pointer |
+| `results` | raw job ID | canonical `(10,2)` record pointer |
 
-Job keys are raw 16-byte IDs. A location value contains `segment`, `offset`,
-`bytes` (complete Record size), `sequence` (physical snapshot sequence) and
-`digest` (SHA-256 of the snapshot payload). Addressed reads verify native file
-identity, bounds, Record CRC, type/schema `(7,1)`, sequence, payload digest and
-decoded job ID. Terminal locations also contain an authenticated `summary`: a
-snapshot with empty arguments, the original encoded definition length and its
-terminal memory charge. The auxiliary tree uses big-endian 64-bit physical
-sequences as keys and authenticates the locations of schedule/result records.
-Full semantic replay independently reconstructs job locations and summaries
-from parsed records and compares them with the index before candidate publication. Missing, orphaned, truncated or mismatched indexes
-refuse recovery without repair.
+Even an empty format-2 checkpoint has a 64-byte index header: `TAYI`, version
+byte `2`, and 59 zero bytes. Null roots use the existing version-1 root envelope.
+The old descriptor is `{bytes, root}` or `{bytes, root, auxiliary}` and has no
+header; its auxiliary tree uses physical sequence keys.
 
-The native owner appends and syncs the index before manifest publication and
-the atomic CURRENT switch. Index bytes are included in candidate-space
-admission and publication measurements; like MANIFEST, they are metadata rather
-than journal segment bytes. Activation syncs the index, cold copy includes it,
-and predecessor reclamation unlinks and directory-syncs it before removing
-MANIFEST. Engine startup reads index metadata, validates base headers/footers,
-loads active snapshots and auxiliary records by authenticated location, then
-replays the tail. Cold terminal arguments are read only on job lookup or when a
-tail mutation needs that job. Missing/corrupt cold record bodies are detected at
-that read and fail the Engine closed; they never become `not_found`. Inspection
-and publication retain full physical/semantic replay for an archive-wide check.
-Older indexes and checkpoints without an index use full replay.
+Every page reference authenticates offset, encoded length, SHA-256 digest,
+first/last key, count and height. Format-2 references additionally identify the
+16-byte source epoch and summarize reachable files and live record bytes.
+File keys are `epoch[16] || scope[1] || segment_id[u64] || sealed_bytes[u64]`;
+scope zero names that epoch's `RECOVERY` with both integers zero, and scope one
+names an immutable segment. Summaries are sorted, unique, checked against the
+page contents, and covered by each parent's digest. The manifest digest in
+CURRENT authenticates all roots. On-disk maps use string keys and Value byte
+carriers for binary fields.
 
-Startup still traverses terminal metadata to rebuild history ordering/counts;
-it is proportional to retained IDs, active bodies, result bodies and tail size.
-It does not yet provide startup independent of archive ID count. Results remain
-in the Engine memory budget. These limits are distinct from lazy argument loading.
+Pages contain at most 64 ordered leaf entries or disjoint child references.
+Children have matching counts and strictly decreasing height. Same-file child
+references precede their parent; cross-epoch children identify an immutable
+published file. Batched updates append changed paths and retain unchanged
+references. Immutable pages are never edited in place.
+
+Record pointers contain source `epoch`, `segment`, `offset`, complete Record
+`bytes`, physical `sequence`, SHA-256 payload `digest`, sealed `segment_bytes`
+and whole-file `segment_digest`. Terminal pointers include an authenticated
+summary snapshot with empty arguments, original definition length and memory
+charge. Addressed reads verify pinned file identity, extent, Record CRC,
+type/schema, sequence, payload digest and decoded identity. Missing/corrupt
+addressed bodies fail closed and never become `not_found`.
+
+The first checkpoint of an older format builds all roots; publication still
+uses the existing directory-sync and atomic CURRENT ordering. Later builders
+load the work root, schedules and frozen new tail, hydrate only affected archive
+records, and update job/work/expiry/result paths. The expiry tree finds elapsed
+retention without scanning retained IDs. A bounded cleaner can additionally
+move live records from sparse segments. New pages and touched records are
+independently read back before publication; inherited references retain their
+published authentication. Full inspection and cold backup scrub reachable
+segments and verify the root/work/expiry partition and auxiliary identities.
+
+Native readers pin the archive ancestors and revalidate them on each read.
+Reclamation derives reachability from all five roots, checks exact CURRENT
+before each batch, refuses pinned/current/candidate epochs, and syncs deletion
+directories. Referenced older epoch files survive publication. Background GC
+resumes on startup. Cold backup/restore copies every reachable epoch file,
+retaining the relative paths and checksummed catalog; an old epoch MANIFEST is
+not needed to resolve an authenticated pointer.
+
+Startup still traverses terminal metadata to rebuild disposable DETS and
+history ordering/counts. It is proportional to retained IDs, active bodies,
+result bodies and tail size; results remain in the Engine memory budget.
+Checkpoint work no longer requires that terminal-ID traversal. Older binaries
+that do not understand the new descriptor refuse it; downgrade requires a
+pre-upgrade backup.
 
 ## Event and recovery boundary
 

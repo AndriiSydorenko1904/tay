@@ -9,7 +9,7 @@ defmodule Tay.Storage.ColdCopy do
   """
 
   alias Tay.Storage.Native
-  alias Tay.Storage.V2.{Reader, Reducer}
+  alias Tay.Storage.V2.{CheckpointIndex, Reader, Reducer}
 
   @chunk_bytes 1_048_576
   @catalog_bytes 64 * 1_048_576
@@ -89,9 +89,14 @@ defmodule Tay.Storage.ColdCopy do
   defp copy_source(operation, source, config) do
     with {:ok, recovered} <- native(Reader.recover(source, Reducer.candidate())),
          epoch = "e-" <> Base.encode16(recovered.epoch_id, case: :lower),
+         config = Map.put(config, :archive_objects, archive_objects(recovered)),
          :ok <- native(Native.cold_source(source)),
          {:ok, entries} <- inventory(source, epoch, config),
          {:ok, expected} <- hashes(source, entries),
+         true <-
+           expected["CURRENT"]["sha256"] ==
+             Base.encode16(:crypto.hash(:sha256, recovered.current), case: :lower) or
+             {:error, :source_changed},
          {:ok, source_info} <- native(Native.info(source)),
          {:ok, target} <- open_target(source_info, config) do
       try do
@@ -262,8 +267,9 @@ defmodule Tay.Storage.ColdCopy do
          {:ok, epoch_entries} <- native(Native.cold_list(source, :epoch, remaining)),
          {:ok, entries, seen, bytes} <-
            inventory_epoch(epoch_entries, epoch, root_entries, seen, bytes, config),
-         {:ok, entries, _seen, _bytes} <-
+         {:ok, entries, seen, bytes} <-
            inventory_segments(segments, epoch, entries, seen, bytes, config),
+         {:ok, entries} <- inventory_archives(source, epoch, entries, seen, bytes, config),
          true <-
            (Map.has_key?(entries, "STORE-V2") and Map.has_key?(entries, "CURRENT") and
               Map.has_key?(entries, ".tay-owner.lock") and
@@ -281,6 +287,45 @@ defmodule Tay.Storage.ColdCopy do
       {:error, %{result: "refused"} = error} -> {:error, error}
       {:error, reason} -> refused(reason)
       _ -> refused(:missing_segments)
+    end
+  end
+
+  defp archive_objects(%{manifest: %{recovery_index: %{format: 2} = index}}) do
+    {:ok, objects} = CheckpointIndex.objects(index)
+    objects
+  end
+
+  defp archive_objects(_), do: []
+
+  defp inventory_archives(source, current, entries, seen, bytes, config) do
+    Enum.reduce_while(config.archive_objects, {:ok, entries, seen, bytes}, fn
+      <<epoch::binary-size(16), scope, segment::64, _size::64>>, {:ok, acc, count, total} ->
+        epoch_name = "e-" <> Base.encode16(epoch, case: :lower)
+        scope = if scope == 0, do: :epoch, else: :segments
+
+        name =
+          if scope == :epoch, do: "RECOVERY", else: elem(Tay.Storage.Segment.filename(segment), 1)
+
+        relative =
+          "epochs/" <> epoch_name <> if(scope == :epoch, do: "/", else: "/segments/") <> name
+
+        if epoch_name == current or Map.has_key?(acc, relative) do
+          {:cont, {:ok, acc, count, total}}
+        else
+          with {:ok, identity} <- native(Native.open_epoch_read(source, epoch, scope, name)),
+               :ok <- native(Native.close_read(source)),
+               :ok <- regular(identity),
+               {:ok, next_count} <- count(count, config.max_files),
+               {:ok, next_bytes} <- bytes(total, identity.size, config.max_bytes) do
+            {:cont, {:ok, Map.put(acc, relative, identity), next_count, next_bytes}}
+          else
+            error -> {:halt, error}
+          end
+        end
+    end)
+    |> case do
+      {:ok, all, _, _} -> {:ok, all}
+      error -> error
     end
   end
 
@@ -388,7 +433,7 @@ defmodule Tay.Storage.ColdCopy do
   end
 
   defp with_read(native, scope, name, expected, callback) do
-    case Native.open_read(native, scope, name) |> native() do
+    case source_read(native, scope, name) |> native() do
       {:ok, identity} ->
         if same_identity?(identity, expected) do
           result = consume(native, expected.size, :crypto.hash_init(:sha256), callback)
@@ -435,7 +480,7 @@ defmodule Tay.Storage.ColdCopy do
   end
 
   defp current_identity(native, scope, name, expected) do
-    case Native.open_read(native, scope, name) |> native() do
+    case source_read(native, scope, name) |> native() do
       {:ok, identity} ->
         closed = Native.close_read(native) |> native()
 
@@ -546,14 +591,15 @@ defmodule Tay.Storage.ColdCopy do
     scope = scope(relative)
     name = basename(relative)
 
-    case Native.open_read(source, scope, name) |> native() do
+    case source_read(source, scope, name) |> native() do
       {:ok, opened} ->
         if same_identity?(opened, identity) do
-          with {:ok, _} <-
+          with {:ok, target_scope} <- target_scope(target, relative),
+               {:ok, _} <-
                  native(
                    Native.cold_open_write(
                      target,
-                     target_scope(relative),
+                     target_scope,
                      name,
                      relative == ".tay-owner.lock"
                    )
@@ -683,14 +729,36 @@ defmodule Tay.Storage.ColdCopy do
     do: Native.cold_sync_catalog(target) |> native()
 
   defp scope(relative) do
-    cond do
-      String.contains?(relative, "/segments/") -> :segments
-      String.starts_with?(relative, "epochs/") -> :epoch
-      true -> :root
+    case Path.split(relative) do
+      ["epochs", "e-" <> epoch, "segments", _] ->
+        {:archive, Base.decode16!(epoch, case: :lower), :segments}
+
+      ["epochs", "e-" <> epoch, _] ->
+        {:archive, Base.decode16!(epoch, case: :lower), :epoch}
+
+      [_] ->
+        :root
     end
   end
 
-  defp target_scope(relative), do: scope(relative)
+  defp source_read(native, {:archive, epoch, scope}, name),
+    do: Native.open_epoch_read(native, epoch, scope, name)
+
+  defp source_read(native, scope, name), do: Native.open_read(native, scope, name)
+
+  defp target_scope(target, relative) do
+    case scope(relative) do
+      {:archive, epoch, scope} ->
+        with :ok <-
+               native(
+                 Native.cold_select_epoch(target, "e-" <> Base.encode16(epoch, case: :lower))
+               ),
+             do: {:ok, scope}
+
+      :root ->
+        {:ok, :root}
+    end
+  end
 
   defp basename(relative), do: Path.basename(relative)
 

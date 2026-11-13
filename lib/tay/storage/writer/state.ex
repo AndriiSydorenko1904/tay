@@ -16,6 +16,8 @@ defmodule Tay.Storage.Writer.State do
       compacted: false,
       online_compaction: nil,
       inspection: nil,
+      delegate_read_open: false,
+      read_waiters: [],
       inspection_cache: inspection_cache,
       retired_ports: MapSet.new(),
       next_sequence: 1,

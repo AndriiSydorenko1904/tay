@@ -85,6 +85,11 @@ defmodule Tay.Qualification.BenchmarkTest do
     end
 
     assert result.measurements.restart.within_configured_deadline
+    changed = List.last(result.measurements.passes)
+    assert changed.changed_tail
+    assert changed.retained_terminal_jobs == 5
+    assert changed.native_read_bytes > 0
+    assert changed.sampled_peak.samples > 0
     assert is_binary(Stats.json(result))
   end
 

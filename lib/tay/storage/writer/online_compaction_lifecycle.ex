@@ -109,7 +109,11 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
         peak_delta_events: online.peak_delta_events,
         peak_delta_bytes: online.peak_delta_bytes,
         net_reclaimed_bytes:
-          max(Map.get(reclaimed, :reclaimed_bytes, 0) - Map.get(stats, :candidate_bytes, 0), 0)
+          max(
+            Map.get(reclaimed, :reclaimed_bytes, 0) -
+              Map.get(stats, :rewritten_bytes, Map.get(stats, :candidate_bytes, 0)),
+            0
+          )
       })
 
     case Native.open_active(native, canonical(recovered.highest.id), recovered.highest.identity) do
@@ -124,6 +128,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
             online_compaction: nil
         }
 
+        next = Reclaimer.start_background(next, recovered)
         {next, delivered} = resume_pending(next, Enum.reverse(online.pending), stats, mutate)
 
         send(
@@ -302,6 +307,7 @@ defmodule Tay.Storage.Writer.OnlineCompactionLifecycle do
             epoch_id: rotated.epoch_id,
             current: rotated.v2_current,
             frontier: rotated.next_sequence - 1,
+            incremental: true,
             exclude_segment_id: rotated.segment.id,
             candidate_limits: rotated.candidate_limits,
             value_limits: rotated.value_limits,

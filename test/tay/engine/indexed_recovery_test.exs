@@ -33,8 +33,7 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     assert restored.definition["args"] == args
     assert {:ok, duplicate} = Tay.insert(intent, name: @name)
     assert duplicate.id == restored.id
-    # Reclamation removes the original epoch. The retained cold summary must
-    # read from the new checkpoint capability after adoption.
+    # The new capability resolves the retained summary through shared archive roots.
     assert {:ok, _} = Tay.compact(name: @name, terminal_retention: :infinity)
     assert {:ok, rebased} = Tay.get_job(job.id, name: @name)
     assert rebased.args == args
@@ -86,7 +85,7 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     EngineHelpers.stop(root)
   end
 
-  test "unchanged checkpoint uses independent archive copies and reports the full pause", %{
+  test "unchanged checkpoint retains referenced archives and reports the full pause", %{
     path: path
   } do
     {:ok, root} = EngineHelpers.restart(path, @name, compaction: false)
@@ -116,10 +115,11 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     assert second.pause_ms >= second.publication_pause_ms + 50
     assert second.total_ms >= second.publication_total_ms + 50
     assert second.rewritten_bytes + second.reused_bytes == second.candidate_bytes
-    if :os.type() == {:unix, :darwin}, do: assert(second.reused_bytes > 0)
+    assert second.reused_bytes > 0
     new_segment = RecoveryHelpers.canonical(path, 1)
-    assert File.read!(new_segment) == old_bytes
-    assert File.stat!(new_segment).inode != old_inode
+    assert byte_size(File.read!(new_segment)) == 44
+    assert File.read!(old_segment) == old_bytes
+    assert File.stat!(old_segment).inode == old_inode
     assert {:ok, restored} = Tay.get_job(intent.id, name: @name)
     assert restored.args == intent.args
     EngineHelpers.stop(root)
@@ -163,7 +163,8 @@ defmodule Tay.Engine.IndexedRecoveryTest do
       DiskIndex.reduce(fn at, size -> :file.pread(index, at, size) end, root_ref, [], fn id,
                                                                                          pointer,
                                                                                          acc ->
-        {:ok, [{id, Map.delete(pointer, "summary")} | acc]}
+        {:ok,
+         [{id, Map.drop(pointer, ["summary", "epoch", "segment_bytes", "segment_digest"])} | acc]}
       end)
 
     File.close(index)
@@ -193,7 +194,8 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     {:ok, root} = EngineHelpers.restart(path, @name, compaction: false)
     assert {:ok, restored} = Tay.get_job(intent.id, name: @name)
     assert restored.args == intent.args
-    assert {:ok, _} = Tay.compact(name: @name, terminal_retention: :infinity)
+    assert {:ok, migrated} = Tay.compact(name: @name, terminal_retention: :infinity)
+    assert migrated.recovered.manifest.recovery_index.format == 2
     EngineHelpers.stop(root)
   end
 
@@ -219,7 +221,7 @@ defmodule Tay.Engine.IndexedRecoveryTest do
     EngineHelpers.stop(root)
 
     {:ok, index_root} =
-      Tay.Storage.DiskIndex.decode_root(stats.recovered.manifest.recovery_index.auxiliary)
+      Tay.Storage.DiskIndex.decode_root(stats.recovered.manifest.recovery_index.schedules)
 
     epoch = Path.dirname(RecoveryHelpers.segment_directory(path))
     file = Path.join(epoch, "RECOVERY")

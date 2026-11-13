@@ -210,19 +210,7 @@ defmodule Tay.Storage.V2.Authority do
     body =
       case Map.fetch(m, :recovery_index) do
         {:ok, index} ->
-          Map.put(
-            body,
-            "recovery_index",
-            %{
-              "bytes" => index.bytes,
-              "root" => {:bytes, index.root}
-            }
-            |> then(fn value ->
-              if Map.has_key?(index, :auxiliary),
-                do: Map.put(value, "auxiliary", {:bytes, index.auxiliary}),
-                else: value
-            end)
-          )
+          Map.put(body, "recovery_index", RecoveryIndex.to_value(index))
 
         :error ->
           body
@@ -260,21 +248,11 @@ defmodule Tay.Storage.V2.Authority do
 
       manifest =
         case Map.fetch(body, "recovery_index") do
-          {:ok, %{"bytes" => bytes, "root" => {:bytes, root}} = index}
-          when map_size(index) in [2, 3] ->
-            descriptor = %{bytes: bytes, root: root}
-
-            descriptor =
-              case Map.fetch(index, "auxiliary") do
-                {:ok, {:bytes, auxiliary}} -> Map.put(descriptor, :auxiliary, auxiliary)
-                :error -> descriptor
-                _ -> Map.put(descriptor, :auxiliary, :invalid)
-              end
-
-            Map.put(manifest, :recovery_index, descriptor)
-
-          {:ok, _} ->
-            Map.put(manifest, :recovery_index, :invalid)
+          {:ok, index} ->
+            case RecoveryIndex.from_value(index) do
+              {:ok, descriptor} -> Map.put(manifest, :recovery_index, descriptor)
+              _ -> Map.put(manifest, :recovery_index, :invalid)
+            end
 
           :error ->
             manifest

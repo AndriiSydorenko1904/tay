@@ -42,6 +42,16 @@ defmodule Tay.Engine.CompactionEstimate do
     bucket(estimate, job, 1)
   end
 
+  def remove(estimate, job) do
+    estimate = bucket(estimate, job, -1)
+
+    %{
+      estimate
+      | jobs: estimate.jobs - 1,
+        definition_bytes: estimate.definition_bytes - definition_bytes(job)
+    }
+  end
+
   defp bucket(estimate, %{state: state} = job, sign) when state in @terminal do
     at = Map.get(job, :terminal_at)
 

@@ -362,8 +362,10 @@ mix run --no-start bench/run.exs --scenario compaction --mode write \
 This runs real completed jobs, publishes three retained checkpoints, then
 restarts and checks history lookup. Compare caller time, complete admission pause,
 publication-only time, candidate/reused/rewritten bytes and restart memory/time.
-Passes two and three measure an unchanged archive. They do not establish
-incremental compaction performance with a continuously changing tail. For Linux
+Pass two measures an unchanged archive; pass three adds and completes one job
+before checkpointing. Each pass reports payload-free native read byte/call traces
+and sampled process/VM memory. This is a finite changed-tail probe, not a
+sustained-load latency guarantee. For Linux
 production measurements use `MIX_ENV=prod --mode sync --validated-filesystem`
 with the environment prefix before `mix` and the flags after the script name,
 on an independently validated local filesystem. Use new paths for every run.

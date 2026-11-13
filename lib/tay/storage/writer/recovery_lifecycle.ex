@@ -155,6 +155,8 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
       compacted: false,
       online_compaction: nil,
       inspection: nil,
+      delegate_read_open: false,
+      read_waiters: [],
       inspection_cache:
         :ets.new(:tay_storage_preview_cache, [
           :set,
@@ -224,7 +226,9 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
             epoch_id: view.epoch_id,
             compaction_captured_at: view.manifest.captured_at,
             compaction_terminal_retention:
-              if(view.manifest.source_frontier == 0 and view.manifest.source_segments == [],
+              if(
+                is_nil(view.manifest.source_epoch_id) and view.manifest.source_frontier == 0 and
+                  view.manifest.source_segments == [],
                 do: nil,
                 else: view.manifest.terminal_retention
               ),
@@ -233,7 +237,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
             highest: store.highest,
             exhausted: store.exhausted,
             record_count: count,
-            segment_count: length(store.segments),
+            segment_count: view.segment_count,
             total_segment_bytes: view.total_segment_bytes,
             physical_last_sequence: if(count == 0, do: nil, else: store.next_sequence - 1),
             next_sequence: if(store.exhausted, do: :exhausted, else: store.next_sequence),

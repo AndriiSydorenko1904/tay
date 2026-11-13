@@ -133,6 +133,15 @@ defmodule Tay.State.TerminalStore do
     %{store | loader: loader}
   end
 
+  def expire(store, expired, loader) do
+    Enum.each(expired, fn {id, job} ->
+      :ok = :dets.delete(store.table, id)
+      remove_index(store, job)
+    end)
+
+    %{store | loader: loader}
+  end
+
   defp open_file(file),
     do: :dets.open_file(make_ref(), file: String.to_charlist(file), type: :set, repair: :force)
 

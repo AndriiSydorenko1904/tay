@@ -352,6 +352,9 @@ defmodule Tay.Storage.Native do
     do: empty(native, :cold_stage_create, string(name) <> string(epoch))
 
   @doc false
+  def cold_select_epoch(native, epoch), do: empty(native, :cold_select_epoch, string(epoch))
+
+  @doc false
   def cold_open_write(native, scope, name, lock \\ false) when is_boolean(lock),
     do:
       identity_request(
@@ -431,6 +434,27 @@ defmodule Tay.Storage.Native do
     end
   end
 
+  @doc false
+  def v2_prune(native, epoch, current, keep_recovery, segments) do
+    name = "e-" <> Base.encode16(epoch, case: :lower)
+    ids = segments |> Enum.sort() |> Enum.map(&<<&1::64>>) |> IO.iodata_to_binary()
+
+    body =
+      <<string(name)::binary, current::binary-size(76), if(keep_recovery, do: 1, else: 0),
+        length(segments)::32, ids::binary>>
+
+    case request(native, :v2_prune, body) do
+      {:ok, <<bytes::64, done>>, 0} when done in [0, 1] ->
+        {:ok, %{reclaimed_bytes: bytes, complete: done == 1}}
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        uncertain(native, :invalid_prune_reply)
+    end
+  end
+
   @doc "Unlinks only a verified non-CURRENT predecessor via pinned descriptors."
   def v2_reclaim(native, target, current)
       when is_binary(target) and is_binary(current) and byte_size(current) == 76 do
@@ -442,6 +466,28 @@ defmodule Tay.Storage.Native do
   end
 
   def v2_reclaim(_, _, _), do: {:error, %{kind: :native_argument, reason: :reclaim}}
+
+  @doc false
+  def open_epoch_read(native, epoch, scope, name)
+      when is_binary(epoch) and byte_size(epoch) == 16 and scope in [:epoch, :segments] do
+    body =
+      <<if(scope == :segments, do: 1, else: 0),
+        string("e-" <> Base.encode16(epoch, case: :lower))::binary, string(name)::binary>>
+
+    case request(native, :open_epoch_read, body) do
+      {:ok, bytes, 0} ->
+        case identity(bytes, cold?(native)) do
+          {:ok, entry, <<>>} -> {:ok, entry}
+          _ -> uncertain(native, :invalid_epoch_read_reply)
+        end
+
+      {:error, _} = error ->
+        error
+
+      _ ->
+        uncertain(native, :invalid_epoch_read_reply)
+    end
+  end
 
   def open_read(native, scope, name),
     do: identity_request(native, :open_read, <<scope(scope), string(name)::binary>>)

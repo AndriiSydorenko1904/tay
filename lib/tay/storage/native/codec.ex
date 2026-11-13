@@ -33,6 +33,7 @@ defmodule Tay.Storage.Native.Codec do
     cold_check: 26,
     cold_source: 27,
     cold_list: 28,
+    cold_select_epoch: 43,
     v2_select: 29,
     v2_begin: 30,
     v2_publish_epoch: 31,
@@ -42,6 +43,8 @@ defmodule Tay.Storage.Native.Codec do
     acquire_if_missing: 38,
     v2_abort: 39,
     v2_clone: 40,
+    open_epoch_read: 41,
+    v2_prune: 42,
     fault: 240
   }
 
