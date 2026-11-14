@@ -10,7 +10,7 @@ The package has no runtime dependencies and supports maintained Node.js LTS
 releases starting with Node 22. It ships both ESM (`import`) and CommonJS
 (`require`) entrypoints with TypeScript declarations.
 
-After the first npm release it can be installed with `npm install tay-client`.
+Install it with `npm install tay-client`.
 
 From a Tay checkout:
 

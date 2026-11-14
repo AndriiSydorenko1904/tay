@@ -1,5 +1,9 @@
 defmodule Tay.Limits do
-  @moduledoc false
+  @moduledoc """
+  Fixed numeric bounds shared by Tay's value and storage formats.
+
+  These constants describe format limits, not configurable Engine budgets.
+  """
 
   @int64_min -0x8000000000000000
   @int64_max 0x7FFFFFFFFFFFFFFF

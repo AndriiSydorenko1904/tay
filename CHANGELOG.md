@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 — 2026-11-13
+## 2.0.0 — 2026-11-14
 
 ### Removed
 
@@ -89,6 +89,11 @@
   cancellation without disconnecting unrelated active Python executions.
 
 ### Added
+
+- Publish the first Node.js `tay-client` SDK (1.0.0), with typed ESM and
+  CommonJS entrypoints, local socket and HTTP producers/workers, mTLS,
+  schedules, cancellation and result polling. Requires Node.js 22 or later.
+- Release Python `tay-client` 1.4.5 with the late socket-reply fix described above.
 
 - Persist authenticated job-snapshot locations in an immutable `RECOVERY` index
   during checkpoint publication. Bind its root to `MANIFEST`, verify locations
