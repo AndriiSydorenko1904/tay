@@ -1,8 +1,8 @@
 defmodule Tay.Limits do
   @moduledoc """
-  Fixed numeric bounds shared by Tay's value and storage formats.
+  Fixed numeric bounds shared by Tay's formats and runtime.
 
-  These constants describe format limits, not configurable Engine budgets.
+  These constants describe format and runtime limits, not configurable Engine budgets.
   """
 
   @int64_min -0x8000000000000000
@@ -10,6 +10,7 @@ defmodule Tay.Limits do
   @uint32_max 0xFFFFFFFF
   @uint64_max 0xFFFFFFFFFFFFFFFF
   @max_payload_bytes 16 * 1_024 * 1_024
+  @group_commit_commands_per_turn 8
 
   @type int64 :: -0x8000000000000000..0x7FFFFFFFFFFFFFFF
   @type uint32 :: 0..0xFFFFFFFF
@@ -32,4 +33,7 @@ defmodule Tay.Limits do
 
   @spec max_payload_bytes() :: max_payload_bytes()
   def max_payload_bytes, do: @max_payload_bytes
+
+  @spec group_commit_commands_per_turn() :: pos_integer()
+  def group_commit_commands_per_turn, do: @group_commit_commands_per_turn
 end

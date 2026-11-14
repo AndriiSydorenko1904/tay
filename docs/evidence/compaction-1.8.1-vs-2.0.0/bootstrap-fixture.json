@@ -1,0 +1,73 @@
+{
+  "args_bytes": 256,
+  "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+  "counts": {
+    "completed": 10000
+  },
+  "fixture": "tay-compaction-v1",
+  "jobs": 10000,
+  "profile": "bootstrap",
+  "samples": [
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "1534b23985f2d59d09119e4319aa07f8",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "337a4c324e4b4319b5808807e043b78c",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "51a1a70c1e88147a2f279a18d0308798",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "5dec5421c18b7b0dd35f14e6b6c81bdb",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "65a592e16185748f18e9eb771c2b6792",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "a282f342d724a378a0cc7f0bfd4e1efb",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "be9a70bb6e4f6b2b0f10374fd5b1e316",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "da37adeb70dbf35e800c349fb12c27e1",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "e0f180aab8f60ec037e3837802ca9c96",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "e3604d89474c5bd6c0e6bfb5be3a6a98",
+      "state": "completed"
+    },
+    {
+      "definition_sha256": "a0d09fda6bee8d4cc426af26fbcdd63110947a971575021ad7a89c08e6625048",
+      "id": "fb1320b8768b6a9bee954cea0de4a44f",
+      "state": "completed"
+    }
+  ],
+  "schema": 1,
+  "seed_durability": "sync",
+  "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+  "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+  "seed_version": "1.8.1",
+  "seed_working_tree_dirty": false
+}

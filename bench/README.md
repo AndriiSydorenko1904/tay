@@ -9,11 +9,33 @@ counts, sampled IDs/definitions/states, profile and producing Engine version.
 Every run verifies the restored state, performs compaction, restarts the Engine
 and verifies the resulting state again. The prepared fixture is preserved.
 
-Prepare a 10,000-job fixture once, using a new absolute directory.
+Canonical fixtures are persistent user data, including between benchmark
+sessions. Keep them outside the checkout and outside temporary/container
+storage, for example:
+
+```text
+~/.local/share/tay/bench-fixtures/
+  bootstrap-10000-<producer-revision>/  # fixture.json, catalog.json, store/
+  backups/                           # independently verified backup copies
+```
+
+Respect `XDG_DATA_HOME` when set. Inspect and verify existing fixtures before
+seeding a new version. Never overwrite or clean up a canonical fixture or its
+backup as part of a trial. In Docker, bind-mount the canonical fixture read-only
+and use separate writable storage for restored trials. Export and verify any
+fixture produced inside a container before removing that container or its
+filesystem. A saved JSON manifest alone is not a saved fixture.
+
+Prepare a 10,000-job fixture once, using a new absolute directory. These local
+examples use development write durability; use the Linux sync options below
+for storage qualification.
 
 ```sh
+fixture_root="${XDG_DATA_HOME:-$HOME/.local/share}/tay/bench-fixtures"
+mkdir -p "$fixture_root"
+fixture="$fixture_root/bootstrap-10000-$(git rev-parse --short HEAD)"
 mix run --no-start bench/compaction.exs --action seed \
-  --fixture /private/tmp/tay-compaction-bootstrap --profile bootstrap --jobs 10000
+  --fixture "$fixture" --profile bootstrap --jobs 10000
 ```
 
 Run multiple trials using the same fixture and a new store/output each time.
@@ -22,7 +44,7 @@ Each command starts a fresh VM. Parent directories must already exist.
 ```sh
 for trial in 1 2 3 4; do
   ERL_FLAGS='+S 2:2 +A 2' mix run --no-start bench/compaction.exs --action run \
-    --fixture /private/tmp/tay-compaction-bootstrap \
+    --fixture "$fixture" \
     --path "/private/tmp/tay-compaction-trial-$trial" \
     --output "/private/tmp/tay-compaction-trial-$trial.json"
 done

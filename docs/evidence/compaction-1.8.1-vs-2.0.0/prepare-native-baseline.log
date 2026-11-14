@@ -1,0 +1,3 @@
+** (EXIT from #PID<0.95.0>) shutdown: failed to start child: Tay.Engine
+    ** (EXIT) %Tay.Storage.Recovery.Error{stage: :ownership, kind: :ownership_busy, reason: %{reason: "store_busy", kind: :native_io, operation: :acquire_existing, bytes_written: 0, errno: 11}, store_id: nil, segment_id: nil, offset: nil, sequence: nil, physical_reason: %{reason: "store_busy", kind: :native_io, operation: :acquire_existing, bytes_written: 0, errno: 11}, cleanup_error: nil, action: :preserve_and_stop, mutation: :none}
+

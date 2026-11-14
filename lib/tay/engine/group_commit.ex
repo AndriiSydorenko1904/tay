@@ -3,7 +3,7 @@ defmodule Tay.Engine.GroupCommit do
 
   alias Tay.Engine.ProjectionState
   alias Tay.Storage.Writer
-  @commands_per_turn 8
+  @commands_per_turn Tay.Limits.group_commit_commands_per_turn()
 
   def window(config), do: min(config.client_slots, @commands_per_turn)
 

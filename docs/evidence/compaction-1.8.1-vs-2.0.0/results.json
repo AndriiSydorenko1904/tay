@@ -1,0 +1,1739 @@
+{
+  "bootstrap": {
+    "summary": {
+      "baseline": {
+        "compaction_seconds": {
+          "median": 6.9471705,
+          "min": 6.842667,
+          "max": 6.97754,
+          "relative_mad": 0.003907490106943555
+        },
+        "startup_seconds_median": 7.3296925,
+        "restore_seconds_median": 3.5727114999999996
+      },
+      "candidate": {
+        "compaction_seconds": {
+          "median": 10.8921285,
+          "min": 9.909603,
+          "max": 11.101681,
+          "relative_mad": 0.01786629674815163
+        },
+        "startup_seconds_median": 7.209652500000001,
+        "restore_seconds_median": 3.5272105
+      },
+      "candidate_to_baseline_time_ratio": 1.5678510409381776
+    },
+    "runs": [
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 260,
+              "beam": 200668649,
+              "rss": 264183808
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 58,
+              "total_ms": 6821
+            },
+            "restore_us": 3579185,
+            "startup_us": 7630963,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 6971093,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:06:24.552863Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 417,
+              "beam": 199149545,
+              "rss": 269684736
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 0,
+              "rewritten_bytes": 37230779,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 134,
+              "total_ms": 11059
+            },
+            "restore_us": 3669480,
+            "startup_us": 7738206,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 11071780,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:06:48.037775Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 372,
+              "beam": 200517785,
+              "rss": 272523264
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 0,
+              "rewritten_bytes": 37230779,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 134,
+              "total_ms": 9900
+            },
+            "restore_us": 3516123,
+            "startup_us": 7242350,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 9909603,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:07:09.675012Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 260,
+              "beam": 198375769,
+              "rss": 273879040
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 58,
+              "total_ms": 6839
+            },
+            "restore_us": 3602676,
+            "startup_us": 7350224,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 6977540,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 1
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:07:31.492505Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 257,
+              "beam": 200707889,
+              "rss": 276873216
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 68,
+              "total_ms": 6766
+            },
+            "restore_us": 3566238,
+            "startup_us": 7309161,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 6923248,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 1
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:07:53.169612Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 405,
+              "beam": 199251881,
+              "rss": 272674816
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 0,
+              "rewritten_bytes": 37230779,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 134,
+              "total_ms": 10703
+            },
+            "restore_us": 3488018,
+            "startup_us": 7176955,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 10712477,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:08:15.488784Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 418,
+              "beam": 199691313,
+              "rss": 280743936
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 0,
+              "rewritten_bytes": 37230779,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 130,
+              "total_ms": 11092
+            },
+            "restore_us": 3538298,
+            "startup_us": 6981144,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 11101681,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:08:38.038319Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "bootstrap",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 255,
+              "beam": 200592393,
+              "rss": 260583424
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 10410462,
+              "pause_ms": 62,
+              "total_ms": 6696
+            },
+            "restore_us": 3550178,
+            "startup_us": 7292390,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 6842667,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d",
+          "catalog_sha256": "3dcf7d2914676d210607d262b2184d018c369d04e8fc93c502738e77fd13a51a",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:08:59.543393Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      }
+    ]
+  },
+  "checkpoint": {
+    "summary": {
+      "baseline": {
+        "compaction_seconds": {
+          "median": 3.790952,
+          "min": 3.784075,
+          "max": 3.887897,
+          "relative_mad": 0.001514527221658324
+        },
+        "startup_seconds_median": 2.9052625,
+        "restore_seconds_median": 1.2308694999999998
+      },
+      "candidate": {
+        "compaction_seconds": {
+          "median": 0.0515225,
+          "min": 0.043566,
+          "max": 0.062279,
+          "relative_mad": 0.08904847396768399
+        },
+        "startup_seconds_median": 0.0707895,
+        "restore_seconds_median": 4.494004
+      },
+      "candidate_to_baseline_time_ratio": 0.01359091331148482
+    },
+    "runs": [
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 143,
+              "beam": 199583953,
+              "rss": 259149824
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 8780729,
+              "pause_ms": 41,
+              "total_ms": 3665
+            },
+            "restore_us": 1259815,
+            "startup_us": 2768926,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 3795558,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 1
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:11.068217Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 4,
+              "beam": 52847030,
+              "rss": 148414464
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 2497,
+              "reclaimed_bytes": 44,
+              "pause_ms": 23,
+              "total_ms": 62
+            },
+            "restore_us": 4325891,
+            "startup_us": 71963,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 62279,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:16.465986Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 3,
+              "beam": 52824470,
+              "rss": 139993088
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 2497,
+              "reclaimed_bytes": 44,
+              "pause_ms": 18,
+              "total_ms": 50
+            },
+            "restore_us": 4515745,
+            "startup_us": 71938,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 50303,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:21.969850Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 143,
+              "beam": 199407745,
+              "rss": 277512192
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 8780729,
+              "pause_ms": 40,
+              "total_ms": 3640
+            },
+            "restore_us": 1201924,
+            "startup_us": 2816069,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 3784075,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:33.405358Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 144,
+              "beam": 199226049,
+              "rss": 289800192
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 8780729,
+              "pause_ms": 39,
+              "total_ms": 3660
+            },
+            "restore_us": 1192949,
+            "startup_us": 3459724,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 3786346,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:45.712820Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 4,
+              "beam": 51888270,
+              "rss": 144707584
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 2497,
+              "reclaimed_bytes": 44,
+              "pause_ms": 17,
+              "total_ms": 52
+            },
+            "restore_us": 4472263,
+            "startup_us": 69641,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 52742,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:51.219592Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 3,
+              "beam": 52824582,
+              "rss": 142172160
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 2497,
+              "reclaimed_bytes": 44,
+              "pause_ms": 14,
+              "total_ms": 42
+            },
+            "restore_us": 4714421,
+            "startup_us": 67720,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 43566,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:09:57.090188Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 0,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 146,
+              "beam": 199167689,
+              "rss": 274206720
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10000,
+              "reclaimed_bytes": 8780729,
+              "pause_ms": 41,
+              "total_ms": 3712
+            },
+            "restore_us": 1316893,
+            "startup_us": 2994456,
+            "delta_us": 0,
+            "startup_retries": 0,
+            "compaction_us": 3887897,
+            "jobs_before": 10000,
+            "jobs_after": 10000,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:09.073218Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      }
+    ]
+  },
+  "delta": {
+    "summary": {
+      "baseline": {
+        "compaction_seconds": {
+          "median": 3.8781625,
+          "min": 3.813823,
+          "max": 4.404662,
+          "relative_mad": 0.009044618424318264
+        },
+        "startup_seconds_median": 2.8189045,
+        "restore_seconds_median": 1.223879
+      },
+      "candidate": {
+        "compaction_seconds": {
+          "median": 0.0913675,
+          "min": 0.088797,
+          "max": 0.092551,
+          "relative_mad": 0.01049607354912846
+        },
+        "startup_seconds_median": 0.070264,
+        "restore_seconds_median": 4.42773
+      },
+      "candidate_to_baseline_time_ratio": 0.023559482100092507
+    },
+    "runs": [
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 143,
+              "beam": 200109210,
+              "rss": 265949184
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reclaimed_bytes": 8781624,
+              "pause_ms": 43,
+              "total_ms": 3653
+            },
+            "restore_us": 1242700,
+            "startup_us": 2774641,
+            "delta_us": 20031,
+            "startup_retries": 0,
+            "compaction_us": 3813823,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 1
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:20.772697Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 5,
+              "beam": 53760716,
+              "rss": 140873728
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 211501,
+              "reclaimed_bytes": 939,
+              "pause_ms": 21,
+              "total_ms": 92
+            },
+            "restore_us": 4370879,
+            "startup_us": 67610,
+            "delta_us": 27825,
+            "startup_retries": 0,
+            "compaction_us": 92551,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:26.206542Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 5,
+              "beam": 53671821,
+              "rss": 138440704
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 211501,
+              "reclaimed_bytes": 939,
+              "pause_ms": 23,
+              "total_ms": 91
+            },
+            "restore_us": 4226883,
+            "startup_us": 72514,
+            "delta_us": 19786,
+            "startup_retries": 0,
+            "compaction_us": 92102,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:31.476262Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 164,
+              "beam": 200895898,
+              "rss": 286023680
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reclaimed_bytes": 8781624,
+              "pause_ms": 44,
+              "total_ms": 4227
+            },
+            "restore_us": 1231461,
+            "startup_us": 3089467,
+            "delta_us": 19468,
+            "startup_retries": 0,
+            "compaction_us": 4404662,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:43.896574Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 146,
+              "beam": 192607202,
+              "rss": 267857920
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reclaimed_bytes": 8781624,
+              "pause_ms": 45,
+              "total_ms": 3718
+            },
+            "restore_us": 1175749,
+            "startup_us": 2795231,
+            "delta_us": 19334,
+            "startup_retries": 0,
+            "compaction_us": 3872349,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 1
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:10:55.134318Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 5,
+              "beam": 53446620,
+              "rss": 133152768
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 211501,
+              "reclaimed_bytes": 939,
+              "pause_ms": 22,
+              "total_ms": 90
+            },
+            "restore_us": 4484581,
+            "startup_us": 70348,
+            "delta_us": 23631,
+            "startup_retries": 0,
+            "compaction_us": 90633,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:11:00.694058Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "candidate",
+        "report": {
+          "version": "2.0.0",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+            "checkpoint_revision": "5e4335686857ccccfc5325388b5ed87a09a8efdf",
+            "checkpoint_version": "2.0.0",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 5,
+              "beam": 53631532,
+              "rss": 135168000
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reused_bytes": 8780108,
+              "rewritten_bytes": 211501,
+              "reclaimed_bytes": 939,
+              "pause_ms": 25,
+              "total_ms": 88
+            },
+            "restore_us": 4499356,
+            "startup_us": 70180,
+            "delta_us": 22754,
+            "startup_retries": 0,
+            "compaction_us": 88797,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "64ce5259a7045dc870aeb03e82ca1b002f709fe423c7359346619fa86dcfb729",
+          "catalog_sha256": "bc1471631f06d77bb9c7778f645df663400918facb8246ff12b420fcefc92e26",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:11:06.258970Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      },
+      {
+        "cohort": "baseline",
+        "report": {
+          "version": "1.8.1",
+          "os": "{:unix, :linux}",
+          "otp": "29",
+          "schedulers": 2,
+          "elixir": "1.20.5",
+          "revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+          "harness_sha256": "cf0f2ea7143c333cb29fb83cb1b4a91159911e1c78d84b57b080b767878f6ace",
+          "fixture": {
+            "args_bytes": 256,
+            "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+            "checkpoint_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "checkpoint_version": "1.8.1",
+            "counts": {
+              "completed": 10000
+            },
+            "fixture": "tay-compaction-v1",
+            "jobs": 10000,
+            "profile": "checkpoint",
+            "schema": 1,
+            "seed_durability": "sync",
+            "seed_harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+            "seed_revision": "affbfb0c0ab40e3460b023224b05c139452158fe",
+            "seed_version": "1.8.1",
+            "seed_working_tree_dirty": false,
+            "source_fixture_sha256": "6dc7f39b174ba90cc3211b0eaa2fb7b71607b3b2bb066fa8f77346311ef2908d"
+          },
+          "delta_jobs": 1,
+          "expire_terminal": false,
+          "timeout_ms": 900000,
+          "measurement": {
+            "memory": {
+              "count": 147,
+              "beam": 200130858,
+              "rss": 270368768
+            },
+            "stats": {
+              "expired_jobs": 0,
+              "retained_terminal_jobs": 10001,
+              "reclaimed_bytes": 8781624,
+              "pause_ms": 43,
+              "total_ms": 3735
+            },
+            "restore_us": 1216297,
+            "startup_us": 2842578,
+            "delta_us": 19105,
+            "startup_retries": 0,
+            "compaction_us": 3883976,
+            "jobs_before": 10001,
+            "jobs_after": 10001,
+            "verification": "counts, sampled definitions/states, and restart passed",
+            "verification_startup_retries": 0
+          },
+          "report_schema": 1,
+          "benchmark": "tay-compaction-fixture-v1",
+          "fixture_sha256": "8898382df6960d034b6af75373dac50edfc33258a3136d89d2c5d4d9f08e66dd",
+          "catalog_sha256": "17d77e73a84a5864a90996a353dee4c6f6a9cccc7b1bcfcf675624d8325a99dc",
+          "working_tree_dirty": false,
+          "measured_at_utc": "2026-11-14T17:11:18.331464Z",
+          "durability": "sync",
+          "architecture": "aarch64-unknown-linux-gnu",
+          "logical_processors": 10,
+          "filesystem": "btrfs",
+          "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+          "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+        }
+      }
+    ]
+  }
+}
