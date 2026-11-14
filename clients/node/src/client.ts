@@ -119,7 +119,7 @@ export class Tay extends Scheduling {
     const error = new ConnectionLost("Tay client was closed");
     this.rejectPending(error);
     for (const waiter of this.#connectWaiters.splice(0)) waiter.reject(error);
-    this.#socket?.destroy();
+    this.#socket?.end();
     this.#socket = undefined;
     await this.#supervisor?.catch(() => undefined);
     this.#supervisor = undefined;
