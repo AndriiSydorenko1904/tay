@@ -1,4 +1,4 @@
-# Compaction 2.0.1 validation — 2026-11-14
+# Compaction 2.0 validation — 2026-11-14
 
 The full checkpoint scrub reuses the pointer supplied by the root traversal,
 charges each decoded snapshot once, and compares work/expiry partitions in
@@ -40,9 +40,11 @@ These are candidate-only measurements on a disposable loop-backed filesystem.
 
 ## Source identity
 
-The baseline is the clean `v2.0.0` checkout at `773dd03`. The candidate reports
+The baseline is the clean pre-optimization checkout at `773dd03`, originally
+tagged `v2.0.0`. The candidate reports
 record that same parent SHA and `working_tree_dirty: true`, because they were
-measured before committing the fix. Candidate version is `2.0.1`. The exact
+measured before committing the fix. Candidate build version was `2.0.1`. These fixes were subsequently folded into
+the first Hex `2.0.0` package before publication. The exact
 runtime source files measured have these fingerprints.
 
 - `lib/tay/storage/v2/checkpoint_index.ex` SHA-256 `844ac087a7746eeaed6c3146bdfa02a887c1eef5fa5bf5929e5e5395225c7fcb`
@@ -69,3 +71,27 @@ fresh-VM trial.
 - Regression coverage rejects authenticated but inconsistent expiry keys,
   record offsets, metadata charge and extra pointer fields. UTF-8 tests cover
   long ASCII prefixes, Unicode suffixes and malformed sequences at boundaries.
+
+## Reusable fixture follow-up
+
+`bench/compaction.exs` prepared one checkpointed 10,000-job fixture and restored
+it twice using catalog-verified cold copy. Both fresh-VM runs reported the same
+fixture/catalog hashes and verified sampled definitions, job counts and state
+after a complete Engine stop and fresh start. The fixture was reused across
+runs. The seed was built once.
+
+| Case | Restore | Startup | Delta setup | Compaction | Jobs after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Unchanged checkpoint | 4.188 s | 34.8 ms | 0.0 ms | 13.2 ms | 10000 |
+| One new job | 3.649 s | 33.6 ms | 7.7 ms | 32.7 ms | 10001 |
+
+These cases measure incremental compaction after restoring a prepared
+checkpoint. The earlier full-compaction comparison measured bootstrap after
+execution. Each report records its setup costs and memory sampling scope.
+[Unchanged checkpoint](fixture-unchanged.json), [one-job delta](fixture-delta.json).
+
+The fixture regression test also passed all three profiles with retained and
+expired history, preserved fixture file hashes across repeated runs, rejected
+existing/nested output paths and detected a changed catalog. Production-build
+Linux/Btrfs sync smoke checks passed checkpoint+delta and mixed+expiration cases
+with 100 seed jobs each, including a complete Engine stop/fresh-start check.

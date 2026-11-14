@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "os": "{:unix, :darwin}",
+  "otp": "29",
+  "schedulers": 2,
+  "elixir": "1.20.4",
+  "revision": "6c670dd49c6c42ec72d30698428a87c3bbdb9b97",
+  "harness_sha256": "164121243e928b9eec44a2275166791596d80e7a059a3800d6880c81d0174921",
+  "fixture": {
+    "args_bytes": 256,
+    "catalog_sha256": "a896293d3934591973acca5f4d2a91d442b24485fb6bbaa8e7598f2847905e32",
+    "counts": {
+      "completed": 10000
+    },
+    "fixture": "tay-compaction-v1",
+    "jobs": 10000,
+    "profile": "checkpoint",
+    "schema": 1,
+    "seed_durability": "write",
+    "seed_harness_sha256": "2dbd6ca7d3ac0db6e1b2a108ba97f0d5171ac1e6cdaf5c5295b87e7324128eef",
+    "seed_revision": "6c670dd49c6c42ec72d30698428a87c3bbdb9b97",
+    "seed_version": "2.0.0",
+    "seed_working_tree_dirty": true
+  },
+  "delta_jobs": 1,
+  "expire_terminal": false,
+  "timeout_ms": 120000,
+  "measurement": {
+    "memory": {
+      "count": 3,
+      "beam": 71325282,
+      "rss": 143966208
+    },
+    "stats": {
+      "expired_jobs": 0,
+      "retained_terminal_jobs": 10001,
+      "reused_bytes": 8780108,
+      "rewritten_bytes": 197419,
+      "reclaimed_bytes": 939,
+      "pause_ms": 3,
+      "total_ms": 33
+    },
+    "verification": "counts, sampled definitions/states, and restart passed",
+    "restore_us": 3649175,
+    "startup_us": 33585,
+    "delta_us": 7718,
+    "compaction_us": 32709,
+    "jobs_before": 10001,
+    "jobs_after": 10001
+  },
+  "report_schema": 1,
+  "benchmark": "tay-compaction-fixture-v1",
+  "fixture_sha256": "e6c161c33fa103fe4fc8708626dd3f5f0e251b0bb565e415c99371eae332fd37",
+  "catalog_sha256": "a896293d3934591973acca5f4d2a91d442b24485fb6bbaa8e7598f2847905e32",
+  "working_tree_dirty": true,
+  "measured_at_utc": "2026-11-14T16:13:58.480745Z",
+  "durability": "write",
+  "architecture": "aarch64-apple-darwin25.6.0",
+  "logical_processors": 10,
+  "filesystem": "macOS development filesystem",
+  "memory_scope": "compaction only, RSS sampled every 250 ms, BEAM every 25 ms",
+  "copy_method": "catalog-verified ColdCopy.restore, ordinary native reads/writes"
+}

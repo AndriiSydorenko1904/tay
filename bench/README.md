@@ -1,5 +1,61 @@
 # Qualification benchmark harness
 
+## Reusable compaction fixtures
+
+`compaction.exs` prepares a cold store once and restores it into a new directory
+for each compaction trial. Restore verifies the external SHA-256 catalog through
+`Tay.Storage.ColdCopy`. The fixture manifest binds the catalog and records job
+counts, sampled IDs/definitions/states, profile and producing Engine version.
+Every run verifies the restored state, performs compaction, restarts the Engine
+and verifies the resulting state again. The prepared fixture is preserved.
+
+Prepare a 10,000-job fixture once, using a new absolute directory.
+
+```sh
+mix run --no-start bench/compaction.exs --action seed \
+  --fixture /private/tmp/tay-compaction-bootstrap --profile bootstrap --jobs 10000
+```
+
+Run multiple trials using the same fixture and a new store/output each time.
+Each command starts a fresh VM. Parent directories must already exist.
+
+```sh
+for trial in 1 2 3 4; do
+  ERL_FLAGS='+S 2:2 +A 2' mix run --no-start bench/compaction.exs --action run \
+    --fixture /private/tmp/tay-compaction-bootstrap \
+    --path "/private/tmp/tay-compaction-trial-$trial" \
+    --output "/private/tmp/tay-compaction-trial-$trial.json"
+done
+```
+
+| Seed profile | Prepared state | Run options |
+| --- | --- | --- |
+| `bootstrap` | Completed jobs before their first manual checkpoint | Default full compaction |
+| `checkpoint` | Completed jobs with an existing checkpoint | Default unchanged checkpoint, or `--delta-jobs 1` for a changed tail |
+| `mixed` | 80% completed, 10% cancelled, 10% scheduled jobs for cohorts divisible by ten | Default retention, or `--expire-terminal` to expire terminal history while preserving active work |
+
+`--delta-jobs` defaults to zero and is bounded at 1,000. Seed defaults are
+10,000 jobs, 256-byte arguments and eight clients. `--timeout-ms` defaults to
+120,000 and can be increased explicitly to at most 900,000.
+
+The report times catalog-verified restore, Engine startup, delta creation and
+compaction separately. Memory sampling covers compaction only. Reports bind the
+fixture/catalog hashes and include the copy method, Engine revision/version,
+durability, architecture and scheduler count. Prepared `seed-store`, restored
+stores and catalogs remain available for inspection.
+
+This measures compaction after restore and restart. The existing `release.exs`
+continues to measure enqueue/execution throughput and compaction immediately
+after execution. Creating jobs remains part of those throughput measurements.
+Use a fixture produced by the oldest compatible Engine in a version comparison.
+Checkpoint migration costs are included when a newer Engine migrates its format.
+
+On a validated local Linux filesystem, pass `--mode sync --validated-filesystem`
+to both actions and use paths on that filesystem. Both actions default to
+development `write` mode. Production builds require sync. Copy/restore warms
+the filesystem cache, so keep the restore procedure and durability the same
+across compared checkouts.
+
 ## Operational soak
 
 `soak.py` exercises a disposable standalone container with separate Python HTTP
