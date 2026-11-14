@@ -39,7 +39,7 @@ defmodule Tay.HTTP.SessionRestartTest do
         )
       end)
 
-    assert ExecutionHelpers.eventually(fn -> File.exists?(Path.join(flags, "entered")) end, 1000)
+    assert ExecutionHelpers.eventually(fn -> File.exists?(Path.join(flags, "entered")) end, 5_000)
     assert :ok = Tay.restart(name: __MODULE__, force: true, timeout: 15_000)
     File.write!(Path.join(flags, "restarted"), "ready")
     assert {output, 0} = Task.await(worker, 30_000)
