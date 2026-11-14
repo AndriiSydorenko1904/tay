@@ -48,6 +48,7 @@ def main() -> None:
                 "TLSV13_ALERT_CERTIFICATE_REQUIRED",
                 "SSLV3_ALERT_HANDSHAKE_FAILURE",
                 "TLSV1_ALERT_UNKNOWN_CA",
+                "TLS_ALERT_BAD_CERTIFICATE",
                 "SSLV3_ALERT_BAD_CERTIFICATE",
             }, error
         else:
