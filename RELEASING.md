@@ -1,37 +1,42 @@
 # Releasing Tay
 
-Tay publishes two independent public packages from this repository:
+Tay publishes three independently versioned public packages from this repository:
 
 - `tay` on Hex.pm for the Elixir engine and Phoenix LiveView dashboard;
-- `tay-client` on PyPI for the Python SDK (`import tay`).
+- `tay-client` on PyPI for the Python SDK (`import tay`);
+- `tay-client` on npm for the Node.js SDK (Node.js 22+, ESM and CommonJS).
 
-Their versions are independent. A Tay release publishes `tay-client` only when
-`clients/python/` changed since the preceding Tay tag. Such a change must bump
-the PEP 440 package version; an unchanged client keeps its existing version.
+A Tay GitHub release triggers container and Python publication. The Python
+workflow publishes only when `clients/python/` changed since the preceding Tay
+tag. Such a change must bump its PEP 440 package version, including SDK README
+or comment-only changes. Node.js releases use their own npm package version and
+are published manually.
 
-Published versions are immutable. Run every check below from a clean checkout
-of the release tag, and publish only after the GitHub repository and tag are
-public.
+| Artifact | Version source | Publication |
+| --- | --- | --- |
+| Hex package and HexDocs | `mix.exs` | `mix hex.publish` |
+| GHCR container | `mix.exs` | `publish-container.yml`, through release or manual dispatch |
+| Python SDK | `clients/python/pyproject.toml` | `publish-python.yml`, through release or manual dispatch |
+| Node.js SDK | `clients/node/package.json` | `npm publish` from `clients/node` |
+
+Published package versions are immutable. Prepare changes in a clean checkout,
+qualify the release commit, and publish artifacts from its public tag.
 
 ## Prepare
 
-Before promoting the 1.8 release candidate, complete the operational smoke run and
-the previous-stable-version upgrade/cold-restore drill described in
-[`bench/README.md`](bench/README.md). Retain the final reports, including failed
-attempts. Extended soaks are optional and do not impose a 24-hour release wait.
-An interrupted run remains partial evidence, not a completed soak. The smoke
-run does not replace the required CI and Standalone checks for the release commit.
-
-The prepared 1.8.1 checkout uses engine/container version `1.8.1` and Python
-package `1.4.4`. Include SDK README and comment-only changes when detecting a
-changed client. Keep historical rc
-changelog entries and format-introduction versions intact. Mark GitHub release
-candidates as prereleases; promote only the final stable tag after the checks
-below. Preparing local files does not publish Hex, PyPI, or containers.
+Select new versions for the artifacts being changed. Keep historical changelog
+entries and format-introduction versions intact. Mark GitHub release candidates
+as prereleases. Storage and recovery changes can be exercised with the
+operational smoke and previous-version upgrade/cold-restore drill in
+[`bench/README.md`](bench/README.md). Retain reports, including failed attempts.
 
 1. Set the Tay release version in `mix.exs`. If `clients/python/` changed, also
    bump its independent PEP 440 version in `clients/python/pyproject.toml`.
-2. Move the release notes from `Unreleased` to that version in `CHANGELOG.md`.
+   For a Node.js SDK release, update `clients/node/package.json` and its lockfile
+   together, for example with `npm version patch --no-git-tag-version` from
+   `clients/node`.
+2. Add the versioned release notes to `CHANGELOG.md`, moving any corresponding
+   `Unreleased` notes into that entry.
 3. Update versioned HexDocs links in the README and package metadata, versioned
    GitHub documentation links, the pinned
    container tags in `compose.yml` and deployment guides, and keep the README
@@ -55,16 +60,25 @@ mix test --warnings-as-errors
 TAY_PACKAGE_TEST=1 mix test test/tay/system/package_test.exs --warnings-as-errors
 mix hex.build
 
-uvx ruff check clients/python
-uvx ruff format --check clients/python
+uv run --with ruff ruff check clients/python
+uv run --with ruff ruff format --check clients/python
 uv run --with mypy --with cryptography mypy clients/python/tay
-python -m unittest discover -s clients/python/tests -v
+uv run --with pytest pytest clients/python
 uv build clients/python
-uvx twine check clients/python/dist/*
+uv run --with twine twine check clients/python/dist/*
+
+(cd clients/node && npm ci && npm run check && npm test && npm run pack:check)
 ```
 
 Install the wheel into a fresh virtual environment and verify both `import tay`
 and `tay-worker --help` before uploading it.
+
+Run Node.js checks with Node.js 22 or later. CI tests the SDK on Node.js 22,
+24 and 26 and Python on 3.11–3.14. For compaction-only iteration, use the
+[reusable cold-store fixtures](bench/README.md#reusable-compaction-fixtures).
+The fixture harness reports restore, startup, delta setup and compaction
+separately. Extended qualification, performance comparisons and soaks are
+optional. Preserve interrupted runs as partial evidence.
 
 ## Publish
 
@@ -73,18 +87,46 @@ and `Standalone runtime` push runs for the exact release SHA. Missing or failed
 checks and API errors refuse publication. Full qualification and performance
 comparisons are optional.
 
-The local `deploy-helper.sh` checks these two required workflows. For historical
-tags whose embedded publication workflows still require full qualification, it
-retries publication using the current workflows on `main`. Published tags and
-package versions do not need to change for this publication-policy update.
+The local `deploy-helper.sh` requires a clean working tree and matching local
+and remote release tags, with the tagged commit contained in `origin/main`.
+It checks CI and Standalone for that exact SHA, waiting for running checks and
+refusing failed checks. Push the release commit to `main` before invoking it.
 
-Authenticate interactively for the first Hex release, inspect the file list,
-and publish the package and HexDocs:
+After the two required workflows succeed, create and push the release tag.
+The shell variable below reads the version already prepared in `mix.exs`.
+
+```sh
+release_version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
+git tag "v$release_version"
+git push origin "refs/tags/v$release_version"
+```
+
+Authenticate to Hex when needed, inspect the file list, and publish the package
+and HexDocs from the tagged checkout. Hex may request an OTP code.
 
 ```sh
 mix hex.user auth
 mix hex.publish
 ```
+
+Run the helper for the same tag to publish containers and the changed Python SDK.
+
+```sh
+./deploy-helper.sh "v$release_version"
+```
+
+The helper creates a GitHub Release when it is missing, preserves an existing
+release, and dispatches the publication workflows from `main` with the release
+tag as input. It skips an existing container version and an already published
+Python version. Existing release notes can be updated explicitly with
+`gh release edit`. Hex and npm publication are separate steps.
+
+For a container-only retry of an existing release, use
+`./deploy-helper.sh --containers-only --no-release "v$release_version"`.
+`--force-containers` rebuilds an existing container version when explicitly
+requested. Inspect the helper output and workflow conclusions after a retry.
+
+## Python SDK setup
 
 Publish `tay-client` through the `publish-python.yml` GitHub Actions workflow
 and PyPI Trusted Publishing. For the first release, configure a pending GitHub
@@ -110,9 +152,27 @@ upload only artifacts produced from the release tag:
 uvx twine upload clients/python/dist/*
 ```
 
-Never store Hex or PyPI credentials in this repository. After publishing,
+## Node.js SDK publication
+
+After updating the npm package version and passing the Node.js checks, publish
+from the client directory. Its `prepack` script builds both ESM and CommonJS
+artifacts.
+
+```sh
+cd clients/node
+npm login
+npm publish --dry-run
+npm publish
+```
+
+The account must have publication rights and satisfy npm's authentication
+requirements. Verify the published package in a fresh consumer with ESM,
+CommonJS and TypeScript imports.
+
+Never store Hex, PyPI or npm credentials in this repository. After publishing,
 create clean consumer projects and install `{:tay, "~> <version>"}` from Hex
-and the independently released `tay-client==<python-version>` from PyPI.
+and the independently released SDK versions from PyPI and npm. Verify the GHCR
+tag and its `linux/amd64` and `linux/arm64` manifests as well.
 
 ## Update documentation only
 
