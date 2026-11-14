@@ -65,10 +65,13 @@ defmodule TayQualification.Probe do
 
   defp rejects_fault_opcode(helper) do
     port = Port.open({:spawn_executable, String.to_charlist(helper)}, [:binary, :exit_status, :use_stdio, {:packet, 4}])
-    true = Port.command(port, <<1, 240, 1::64, 0::144>>)
+    # Use the current protocol so rejection proves the fault opcode is absent,
+    # rather than merely rejecting an obsolete protocol version.
+    true = Port.command(port, <<2, 240, 1::64, 0::144>>)
 
     receive do
-      {^port, {:data, <<1, 240, 1::64, 1, _errno::32, 0::64, "invalid_protocol">>}} -> :ok
+      {^port, {:data, <<2, 240, 1::64, 1, _errno::32, 0::64, "invalid_protocol">>}} -> :ok
+      {^port, reply} -> raise "unexpected production fault-opcode reply: #{inspect(reply)}"
     after
       5000 -> raise "production helper accepted or failed to reject the test-only opcode"
     end
