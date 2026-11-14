@@ -1,6 +1,7 @@
 defmodule Tay.Storage.Segment.Parser do
   @moduledoc false
   alias Tay.Storage.{CRC32C, Record, Segment}
+  @max_segment_id Tay.Limits.uint64_max()
   @read_window 1_048_576
 
   @spec scan(any(), any(), any()) ::
@@ -133,7 +134,7 @@ defmodule Tay.Storage.Segment.Parser do
     Keyword.keyword?(options) and
       length(Keyword.keys(options)) == length(Enum.uniq(Keyword.keys(options))) and
       Enum.all?(options, fn
-        {:id, id} -> is_integer(id) and id in 1..18_446_744_073_709_551_615
+        {:id, id} -> is_integer(id) and id in 1..@max_segment_id
         {:store_id, id} -> is_binary(id) and byte_size(id) == 16 and id != <<0::128>>
         {:highest, highest} -> is_boolean(highest)
         {:sha256, enabled} -> is_boolean(enabled)

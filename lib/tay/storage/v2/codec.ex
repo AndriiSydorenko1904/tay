@@ -7,7 +7,8 @@ defmodule Tay.Storage.V2.Codec do
   alias Tay.Event
   alias Tay.Event.{V2, Value}
 
-  @max 18_446_744_073_709_551_615
+  @uint64_max Tay.Limits.uint64_max()
+  @max_payload_bytes Tay.Limits.max_payload_bytes()
   @states ~w(scheduled available executing retryable completed cancelled discarded)
   @kinds %{inserted: 1, available: 2, started: 3, finished: 4, cancelled: 5, retried: 6}
   @snapshot_keys ~w(definition state attempt next_attempt eligible_at availability_order inserted_at attempted_at completed_at terminal_at diagnostic)
@@ -32,7 +33,7 @@ defmodule Tay.Storage.V2.Codec do
          payload <-
            <<job.id::binary-size(16), job.revision::64, job.cycle::64, present::binary,
              body::binary>>,
-         true <- byte_size(payload) <= 16_777_216 || {:error, :payload_too_large} do
+         true <- byte_size(payload) <= @max_payload_bytes || {:error, :payload_too_large} do
       {:ok, payload}
     end
   end
@@ -46,7 +47,7 @@ defmodule Tay.Storage.V2.Codec do
     with {:ok, %{encoded_bytes: body_bytes}} <- Value.measure(snapshot_body(job), limits),
          execution_bytes <- if(is_nil(Map.get(job, :execution)), do: 1, else: 9),
          bytes <- 16 + 8 + 8 + execution_bytes + body_bytes,
-         true <- bytes <= 16_777_216 || {:error, :payload_too_large} do
+         true <- bytes <= @max_payload_bytes || {:error, :payload_too_large} do
       {:ok, bytes}
     end
   end
@@ -54,7 +55,7 @@ defmodule Tay.Storage.V2.Codec do
   def decode_snapshot(payload, limits \\ Value.defaults())
 
   def decode_snapshot(payload, limits)
-      when is_binary(payload) and byte_size(payload) <= 16_777_216 do
+      when is_binary(payload) and byte_size(payload) <= @max_payload_bytes do
     with <<id::binary-size(16), revision::64, cycle::64, present, rest::binary>> <- payload,
          {:ok, execution, body_bytes} <- execution(present, rest),
          {:ok, body} <- Value.decode(body_bytes, limits),
@@ -78,7 +79,7 @@ defmodule Tay.Storage.V2.Codec do
          payload <-
            <<mutation.job_id::binary-size(16), kind, mutation.expected_revision::64,
              mutation.new_revision::64, mutation.at::64, body::binary>>,
-         true <- byte_size(payload) <= 16_777_216 || {:error, :payload_too_large} do
+         true <- byte_size(payload) <= @max_payload_bytes || {:error, :payload_too_large} do
       {:ok, payload}
     end
   end
@@ -86,7 +87,7 @@ defmodule Tay.Storage.V2.Codec do
   def decode_mutation(payload, limits \\ Value.defaults())
 
   def decode_mutation(payload, limits)
-      when is_binary(payload) and byte_size(payload) <= 16_777_216 do
+      when is_binary(payload) and byte_size(payload) <= @max_payload_bytes do
     with <<id::binary-size(16), kind_byte, expected::64, revision::64, at::64,
            body_bytes::binary>> <- payload,
          {:ok, kind} <- kind(kind_byte),
@@ -125,7 +126,8 @@ defmodule Tay.Storage.V2.Codec do
       ) do
     with true <- V2.id?(id) || {:error, :job_id},
          true <- Map.has_key?(@kinds, kind) || {:error, :mutation_kind},
-         true <- (is_integer(expected) and expected in 0..(@max - 1)) || {:error, :revision},
+         true <-
+           (is_integer(expected) and expected in 0..(@uint64_max - 1)) || {:error, :revision},
          true <- revision == expected + 1 || {:error, :revision},
          true <- kind == :inserted == (expected == 0) || {:error, :revision},
          true <- V2.time?(at) || {:error, :timestamp},
@@ -339,7 +341,7 @@ defmodule Tay.Storage.V2.Codec do
   defp exact?(value, keys),
     do: is_map(value) and not is_struct(value) and Enum.sort(Map.keys(value)) == Enum.sort(keys)
 
-  defp uint?(n), do: is_integer(n) and n in 1..@max
+  defp uint?(n), do: is_integer(n) and n in 1..@uint64_max
   defp maybe_time?(nil), do: true
   defp maybe_time?(n), do: V2.time?(n)
 end

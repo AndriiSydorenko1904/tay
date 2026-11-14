@@ -6,9 +6,14 @@ defmodule Tay.Event.Value do
   detaches retained strings from their backing frame and consumes exactly once.
   """
   import Bitwise
-  @max 16_777_216
-  @defaults %{depth: 64, output_nodes: 100_000, binary_bytes: @max}
+  @max_payload_bytes Tay.Limits.max_payload_bytes()
+  @int64_min Tay.Limits.int64_min()
+  @uint32_max Tay.Limits.uint32_max()
+  @uint64_max Tay.Limits.uint64_max()
+  @defaults %{depth: 64, output_nodes: 100_000, binary_bytes: @max_payload_bytes}
   def defaults, do: @defaults
+
+  def max_bytes, do: @max_payload_bytes
 
   def limits?(x),
     do:
@@ -16,7 +21,7 @@ defmodule Tay.Event.Value do
         is_integer(x[:output_nodes]) and x.output_nodes > 0 and
         is_integer(x[:binary_bytes]) and x.binary_bytes >= 0
 
-  def measure(value, limits \\ @defaults, max_bytes \\ @max) do
+  def measure(value, limits \\ @defaults, max_bytes \\ @max_payload_bytes) do
     with :ok <- options(limits, max_bytes) do
       protect(fn ->
         state = measure_value(value, 1, state(limits, max_bytes))
@@ -25,17 +30,17 @@ defmodule Tay.Event.Value do
     end
   end
 
-  def encode(value, limits \\ @defaults, max_bytes \\ @max) do
+  def encode(value, limits \\ @defaults, max_bytes \\ @max_payload_bytes) do
     with {:ok, _} <- measure(value, limits, max_bytes),
          do: {:ok, value |> wire() |> IO.iodata_to_binary()}
   end
 
   def decode(bytes, limits \\ @defaults) do
-    with :ok <- options(limits, @max),
+    with :ok <- options(limits, @max_payload_bytes),
          true <- is_binary(bytes) || {:error, :invalid_input},
-         true <- byte_size(bytes) <= @max || {:error, :payload_hard_limit} do
+         true <- byte_size(bytes) <= @max_payload_bytes || {:error, :payload_hard_limit} do
       protect(fn ->
-        {value, rest, _} = read(bytes, 1, state(limits, @max))
+        {value, rest, _} = read(bytes, 1, state(limits, @max_payload_bytes))
         if rest != <<>>, do: invalid(:trailing_bytes)
         value
       end)
@@ -43,7 +48,7 @@ defmodule Tay.Event.Value do
   end
 
   defp options(limits, max_bytes) do
-    if limits?(limits) and is_integer(max_bytes) and max_bytes in 0..@max,
+    if limits?(limits) and is_integer(max_bytes) and max_bytes in 0..@max_payload_bytes,
       do: :ok,
       else: {:error, :invalid_value_limits}
   end
@@ -81,7 +86,7 @@ defmodule Tay.Event.Value do
   end
 
   defp binary_charge(state, n) do
-    if n > 4_294_967_295, do: invalid(:length)
+    if n > @uint32_max, do: invalid(:length)
     n = state.binary_bytes + n
     if n > state.limits.binary_bytes, do: budget(:binary_bytes)
     %{state | binary_bytes: n}
@@ -99,8 +104,7 @@ defmodule Tay.Event.Value do
       value in [nil, false, true] ->
         encoded(state, 1)
 
-      is_integer(value) and value >= -9_223_372_036_854_775_808 and
-          value <= 18_446_744_073_709_551_615 ->
+      is_integer(value) and value >= @int64_min and value <= @uint64_max ->
         encoded(state, 9)
 
       is_float(value) ->
@@ -120,7 +124,7 @@ defmodule Tay.Event.Value do
 
       is_map(value) and not is_struct(value) ->
         n = map_size(value)
-        if n > 4_294_967_295, do: invalid(:count)
+        if n > @uint32_max, do: invalid(:count)
         state = state |> encoded(5) |> children(2 * n)
         measure_map(:maps.iterator(value), depth + 1, state)
 
@@ -146,7 +150,7 @@ defmodule Tay.Event.Value do
 
   defp measure_list([], _, state, _), do: state
 
-  defp measure_list([head | tail], depth, state, n) when n < 4_294_967_295,
+  defp measure_list([head | tail], depth, state, n) when n < @uint32_max,
     do: measure_list(tail, depth, measure_value(head, depth, state), n + 1)
 
   defp measure_list(_, _, _, _), do: invalid(:list)

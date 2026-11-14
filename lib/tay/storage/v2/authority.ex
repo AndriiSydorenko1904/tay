@@ -9,7 +9,8 @@ defmodule Tay.Storage.V2.Authority do
   alias Tay.Storage.CRC32C
   alias Tay.Storage.V2.{Retention, RecoveryIndex}
 
-  @max 18_446_744_073_709_551_615
+  @uint64_max Tay.Limits.uint64_max()
+  @max_payload_bytes Tay.Limits.max_payload_bytes()
   @legacy_manifest_keys ~w(store_id epoch_id source_epoch_id source_frontier captured_at terminal_retention source_segments base_segments tail_segment_id tail_first_sequence)
   @manifest_keys @legacy_manifest_keys ++ ~w(availability_frontier)
   @source_keys ~w(id digest)
@@ -57,12 +58,12 @@ defmodule Tay.Storage.V2.Authority do
   def encode_manifest(manifest) do
     with :ok <- manifest?(manifest),
          {:ok, body} <- Value.encode(manifest_body(manifest)),
-         true <- byte_size(body) <= 16_777_216 - 16 || {:error, :manifest_too_large} do
+         true <- byte_size(body) <= @max_payload_bytes - 16 || {:error, :manifest_too_large} do
       {:ok, checked(<<"TAYM", 1, 0::24, byte_size(body)::32, body::binary>>)}
     end
   end
 
-  def decode_manifest(bytes) when is_binary(bytes) and byte_size(bytes) <= 16_777_216 do
+  def decode_manifest(bytes) when is_binary(bytes) and byte_size(bytes) <= @max_payload_bytes do
     with {:ok, <<"TAYM", 1, 0::24, length::32, body::binary>>} <-
            checked_body(bytes, :variable),
          true <- length == byte_size(body) || {:error, :manifest_length},
@@ -124,7 +125,7 @@ defmodule Tay.Storage.V2.Authority do
       not (is_nil(source_epoch_id) or V2.id?(source_epoch_id)) ->
         {:error, :source_epoch}
 
-      not is_integer(frontier) or frontier not in 0..@max ->
+      not is_integer(frontier) or frontier not in 0..@uint64_max ->
         {:error, :source_frontier}
 
       not valid_availability_frontier?(Map.get(manifest, :availability_frontier)) ->
@@ -178,7 +179,7 @@ defmodule Tay.Storage.V2.Authority do
       end)
 
     valid and tail_id == length(base) + 1 and tail_first == next_sequence and
-      tail_first in 1..@max
+      tail_first in 1..@uint64_max
   end
 
   defp valid_base?(_, _, _), do: false
@@ -276,7 +277,7 @@ defmodule Tay.Storage.V2.Authority do
   defp valid_availability_frontier?(nil), do: true
 
   defp valid_availability_frontier?(frontier),
-    do: is_integer(frontier) and frontier in 0..@max
+    do: is_integer(frontier) and frontier in 0..@uint64_max
 
   defp entries(list, string_keys, atom_keys) when is_list(list) do
     Enum.reduce_while(list, {:ok, []}, fn entry, {:ok, acc} ->
@@ -321,7 +322,7 @@ defmodule Tay.Storage.V2.Authority do
 
   defp checked_body(_, _), do: {:error, :metadata_length}
   defp digest?(bytes), do: is_binary(bytes) and byte_size(bytes) == 32
-  defp uint?(value), do: is_integer(value) and value in 1..@max
+  defp uint?(value), do: is_integer(value) and value in 1..@uint64_max
 
   defp exact?(map, keys),
     do: is_map(map) and not is_struct(map) and Enum.sort(Map.keys(map)) == Enum.sort(keys)

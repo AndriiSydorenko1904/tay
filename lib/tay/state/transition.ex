@@ -9,6 +9,8 @@ defmodule Tay.State.Transition do
   alias Tay.Event
   alias Tay.Event.{V2, Value}
 
+  @max_uint64 Tay.Limits.uint64_max()
+
   def prepare(previous, %Event{} = event, limits \\ Value.defaults()) do
     with {:ok, _} <- Event.encode(event, limits),
          true <- valid_previous?(previous, event) || {:error, :invalid_transition},
@@ -124,18 +126,18 @@ defmodule Tay.State.Transition do
       state: :retryable,
       attempt: 65_535,
       next_attempt: 65_535,
-      cycle: 18_446_744_073_709_551_615,
-      execution: 18_446_744_073_709_551_615,
+      cycle: @max_uint64,
+      execution: @max_uint64,
       eligible_at: V2.max_time(),
-      available_sequence: 18_446_744_073_709_551_615,
+      available_sequence: @max_uint64,
       inserted_at: V2.max_time(),
       attempted_at: V2.max_time(),
       completed_at: V2.max_time(),
       diagnostic: %{"code" => 7, "version" => 1},
-      revision: 18_446_744_073_709_551_615,
+      revision: @max_uint64,
       terminal_at: V2.max_time(),
-      availability_order: 18_446_744_073_709_551_615,
-      charge: %{bytes: 18_446_744_073_709_551_615}
+      availability_order: @max_uint64,
+      charge: %{bytes: @max_uint64}
     }
 
     flat_heap_bytes =

@@ -8,6 +8,7 @@ defmodule Tay.Schedule.Coordinator do
 
   @call_timeout 5_000
   @retry_ms 1_000
+  @max_timer_ms Tay.Limits.uint32_max()
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options)
 
@@ -150,7 +151,7 @@ defmodule Tay.Schedule.Coordinator do
     delay = max(schedule.next_at - System.system_time(:millisecond), 0)
 
     timer =
-      Process.send_after(self(), {:due, schedule.id, schedule.next_at}, min(delay, 4_294_967_295))
+      Process.send_after(self(), {:due, schedule.id, schedule.next_at}, min(delay, @max_timer_ms))
 
     %{schedule: schedule, options: options, timer: timer}
   end

@@ -11,7 +11,7 @@ defmodule Tay.Storage.Native do
   defstruct [:port, :owner, :facts, :generation, :deadline, :cold?, :delegate, timeout: 10_000]
   @type t :: %__MODULE__{}
 
-  @max_copy_entries 4_294_967_295
+  @max_copy_entries Tay.Limits.uint32_max()
 
   @doc "Acquires only existing ownership objects; no creation or sync is allowed."
   def open_existing(path, options \\ []) do

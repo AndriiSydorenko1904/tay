@@ -1,5 +1,6 @@
 defmodule Tay.Storage.Recovery.Error do
   @moduledoc "Bounded recovery diagnostics. No error authorizes repair or prefix publication."
+  @max_native_integer Tay.Limits.uint64_max()
   defstruct [
     :stage,
     :kind,
@@ -94,8 +95,7 @@ defmodule Tay.Storage.Recovery.Error do
   defp bound(term, _) when is_atom(term), do: term
 
   defp bound(term, _)
-       when is_integer(term) and term >= -18_446_744_073_709_551_615 and
-              term <= 18_446_744_073_709_551_615,
+       when is_integer(term) and term >= -@max_native_integer and term <= @max_native_integer,
        do: term
 
   defp bound(term, _) when is_binary(term) and byte_size(term) <= 128, do: :binary.copy(term)

@@ -3,6 +3,8 @@ defmodule Tay.Protocol.JobOptions do
 
   alias Tay.Protocol.V1, as: Protocol
 
+  @max_time Tay.Limits.int64_max()
+
   def parse(options) when is_map(options) and not is_struct(options) do
     allowed =
       ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue durability)
@@ -64,7 +66,7 @@ defmodule Tay.Protocol.JobOptions do
       {value, nil} when is_number(value) and value >= 0 ->
         milliseconds(value, 0, Tay.Event.V2.max_time(), :invalid_delay)
 
-      {nil, value} when is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807 ->
+      {nil, value} when is_integer(value) and value >= 0 and value <= @max_time ->
         {:ok, value}
 
       _ ->
@@ -81,7 +83,7 @@ defmodule Tay.Protocol.JobOptions do
         {:error, :ambiguous_schedule}
 
       {value, _, _}
-      when is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807 ->
+      when is_integer(value) and value >= 0 and value <= @max_time ->
         {:ok, value}
 
       _ ->

@@ -2,6 +2,7 @@ defmodule Tay.Storage.V2.RecoveryIndex do
   @moduledoc "Authenticated checkpoint job locations, persisted through the native owner."
   alias Tay.Storage.{DiskIndex, Native, Record, Segment}
   alias Tay.Storage.V2.{Codec, Reducer}
+  @max_byte_offset Tay.Limits.int64_max()
 
   def location(segment, offset, record) do
     %{
@@ -70,7 +71,7 @@ defmodule Tay.Storage.V2.RecoveryIndex do
 
   def valid?(%{bytes: bytes, root: encoded} = descriptor) when map_size(descriptor) in [2, 3] do
     with true <- Enum.sort(Map.keys(descriptor)) in [[:bytes, :root], [:auxiliary, :bytes, :root]],
-         true <- is_integer(bytes) and bytes > 0 and bytes <= 9_223_372_036_854_775_807,
+         true <- is_integer(bytes) and bytes > 0 and bytes <= @max_byte_offset,
          {:ok, root} <- DiskIndex.decode_root(encoded),
          {:ok, auxiliary} <- DiskIndex.decode_root(Map.get(descriptor, :auxiliary, empty_root())),
          true <- not is_nil(root) or not is_nil(auxiliary),

@@ -7,7 +7,7 @@ defmodule Tay.Storage.Segment do
   """
   alias Tay.Storage.CRC32C
 
-  @max_id 18_446_744_073_709_551_615
+  @max_id Tay.Limits.uint64_max()
   @max_bytes 1_073_741_824
   @rotation_bytes 67_108_864
   @max_count 38_347_918

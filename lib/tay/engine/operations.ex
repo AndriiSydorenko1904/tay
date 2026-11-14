@@ -2,6 +2,7 @@ defmodule Tay.Engine.Operations do
   @moduledoc false
   alias Tay.Engine.Admission
   alias Tay.{Error, Execution.LocalFence}
+  @max_timeout_ms Tay.Limits.uint32_max()
 
   # One fixed metadata-only permit is independent of saturated client/drain
   # permits. No unbounded public operational waiting queue is created.
@@ -12,7 +13,7 @@ defmodule Tay.Engine.Operations do
              operation in [:stop, :restart, :compact] and is_boolean(force) do
     with {:ok, meta} <- Admission.metadata(name),
          timeout = timeout || if(operation == :compact, do: 900_000, else: meta.timeout),
-         true <- is_integer(timeout) and timeout in 1..4_294_967_295,
+         true <- is_integer(timeout) and timeout in 1..@max_timeout_ms,
          token = make_ref(),
          deadline = System.monotonic_time(:millisecond) + timeout,
          true <-

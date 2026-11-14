@@ -1,7 +1,7 @@
 defmodule Tay.Engine.CompactionConfig do
   @moduledoc "Validated retention and checkpoint policy; maintenance mechanics are internal."
   alias Tay.Storage.V2.Retention
-  @max_timer 4_294_967_295
+  @max_timer Tay.Limits.uint32_max()
   @defaults %{automatic: true, terminal_retention: {:hours, 24}, checkpoint_interval: 0}
 
   def defaults, do: @defaults

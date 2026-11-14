@@ -429,7 +429,8 @@ defmodule Tay.Executor.Server do
          true <- options.socket_mode in [0o600, 0o660] || {:error, :invalid_socket_mode},
          true <- is_boolean(options.private_directory) || {:error, :invalid_socket_directory_mode},
          true <-
-           valid_positive?(options.max_frame_bytes, 16_777_216) || {:error, :invalid_frame_limit},
+           valid_positive?(options.max_frame_bytes, Tay.Limits.max_payload_bytes()) ||
+             {:error, :invalid_frame_limit},
          true <-
            valid_positive?(options.max_connections, 4_096) || {:error, :invalid_connection_limit},
          true <-

@@ -8,7 +8,7 @@ defmodule Tay.Engine.Config do
   @default_client_bytes 64 * @bytes_per_mebibyte
   @default_max_state_bytes 256 * @bytes_per_mebibyte
   # Admission deadlines are carried as unsigned 32-bit millisecond values.
-  @max_caller_timeout_ms 4_294_967_295
+  @max_caller_timeout_ms Tay.Limits.uint32_max()
   @max_client_slots 65_536
   @defaults Map.merge(
               %{

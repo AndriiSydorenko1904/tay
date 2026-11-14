@@ -9,7 +9,7 @@ import type {
   JSONValue,
 } from "./types.js";
 
-export const MAX_I64 = 9_223_372_036_854_775_807;
+const MAX_SAFE_JSON_INTEGER = Number.MAX_SAFE_INTEGER;
 export const MAX_SOCKET_PATH_BYTES = 100;
 const encoder = new TextEncoder();
 const optionNames = new Set([
@@ -115,7 +115,7 @@ export function validateEnqueueOptions(raw: EnqueueOptions = {}): EnqueueOptions
     identifier(options.submission_id, "submission_id");
     if (options.id !== undefined) throw new ValidationError("id and submission_id cannot be combined");
   }
-  if (options.delay !== undefined) milliseconds(options.delay, MAX_I64, 0, "delay");
+  if (options.delay !== undefined) milliseconds(options.delay, MAX_SAFE_JSON_INTEGER, 0, "delay");
   if (options.delay_ms !== undefined && (typeof options.delay_ms !== "number" || !Number.isSafeInteger(options.delay_ms) || options.delay_ms < 0)) {
     throw new ValidationError("invalid delay_ms");
   }
@@ -151,7 +151,7 @@ export function validateEvery(options: EveryScheduleOptions): Record<string, num
   const unit = present[0]!;
   const amount = options[unit]!;
   const multiplier = { seconds: 1_000, minutes: 60_000, hours: 3_600_000, days: 86_400_000 }[unit];
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0 || amount * multiplier < 0.5 || amount * multiplier > MAX_I64) {
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0 || amount * multiplier < 0.5 || amount * multiplier > MAX_SAFE_JSON_INTEGER) {
     throw new ValidationError(`every.${unit} must be a positive finite number`);
   }
   return { [unit]: amount };

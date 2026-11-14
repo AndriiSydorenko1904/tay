@@ -248,6 +248,7 @@ defmodule Tay.Protocol.V1 do
 
   defp encode_json_value(value), do: value
 
-  defp valid_frame_limit(limit) when is_integer(limit) and limit in 1..16_777_216, do: :ok
+  @max_frame_bytes Tay.Limits.max_payload_bytes()
+  defp valid_frame_limit(limit) when is_integer(limit) and limit in 1..@max_frame_bytes, do: :ok
   defp valid_frame_limit(_), do: {:error, :invalid_frame_limit}
 end

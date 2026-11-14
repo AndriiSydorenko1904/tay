@@ -153,8 +153,8 @@ defmodule Tay.Event.V2 do
     "version" => 1
   }
   # Fixed-width storage limits and the product's one-day timeout policy.
-  @max_time 9_223_372_036_854_775_807
-  @max_sequence 18_446_744_073_709_551_615
+  @max_time Tay.Limits.int64_max()
+  @max_sequence Tay.Limits.uint64_max()
   @max_attempt 65_535
   @max_timeout_ms 24 * 60 * 60 * 1_000
 

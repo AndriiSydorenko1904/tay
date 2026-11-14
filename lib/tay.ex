@@ -33,6 +33,8 @@ defmodule Tay do
   `:sync` requires an explicitly validated Linux filesystem; explicit `:write`
   is a development mode and is never described as durable.
   """
+
+  @max_timeout_ms Tay.Limits.uint32_max()
   alias Tay.{Error, Inspection, Job, JobID, Schedule}
   alias Tay.Engine.{Admission, Config}
   alias Tay.Event.{Value, V2}
@@ -549,7 +551,7 @@ defmodule Tay do
       timeout = Keyword.get(options, :timeout)
 
       if is_atom(name) and name not in [nil, false, true] and
-           (is_nil(timeout) or (is_integer(timeout) and timeout in 1..4_294_967_295)),
+           (is_nil(timeout) or (is_integer(timeout) and timeout in 1..@max_timeout_ms)),
          do: {:ok, name, timeout},
          else: {:error, :invalid_options}
     else

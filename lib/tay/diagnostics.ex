@@ -10,6 +10,7 @@ defmodule Tay.Diagnostics do
   alias Tay.Storage.Recovery.Error
   alias Tay.Storage.V2.Reader, as: V2Reader
   alias Tay.Storage.V2.Reducer, as: V2Reducer
+  @max_timer_ms Tay.Limits.uint32_max()
   @states [:available, :scheduled, :executing, :retryable, :completed, :discarded, :cancelled]
 
   def inspect(options) do
@@ -72,7 +73,7 @@ defmodule Tay.Diagnostics do
   # field. A BEAM receive timer has a narrower bound: keep the absolute deadline
   # intact and split only the local wait, rather than rejecting/shortening it.
   defp await_isolated(worker, monitor, ticket, deadline, failed) do
-    wait = min(max(deadline - System.monotonic_time(:millisecond), 0), 4_294_967_295)
+    wait = min(max(deadline - System.monotonic_time(:millisecond), 0), @max_timer_ms)
 
     receive do
       {^ticket, result} ->

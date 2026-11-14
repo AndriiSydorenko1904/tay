@@ -25,7 +25,7 @@ defmodule Tay.Event do
   @impl true
   def supported_schema?(type, schema), do: V2.supported_schema?(type, schema)
 
-  def encode(event, limits \\ Value.defaults(), max_bytes \\ 16_777_216)
+  def encode(event, limits \\ Value.defaults(), max_bytes \\ Tay.Limits.max_payload_bytes())
 
   def encode(
         %__MODULE__{record_type: type, payload_schema_version: schema, data: data},

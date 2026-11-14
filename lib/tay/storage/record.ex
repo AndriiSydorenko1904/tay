@@ -17,11 +17,11 @@ defmodule Tay.Storage.Record do
   No payload interpretation, I/O, processes, or sequence allocation occurs.
   """
 
-  alias Tay.Storage.CRC32C
+  alias Tay.{Limits, Storage.CRC32C}
 
   @magic "TAY\x00"
-  @hard_payload_max 16_777_216
-  @uint64_max 18_446_744_073_709_551_615
+  @max_payload_bytes Limits.max_payload_bytes()
+  @uint64_max Limits.uint64_max()
   @enforce_keys [:record_type, :payload_schema_version, :sequence, :payload]
   defstruct [
     :record_type,
@@ -37,7 +37,7 @@ defmodule Tay.Storage.Record do
           record_type: 1..254,
           flags: 0,
           payload_schema_version: 1..255,
-          sequence: 1..18_446_744_073_709_551_615,
+          sequence: Tay.Limits.positive_uint64(),
           payload: binary()
         }
   @type domain_reason ::
@@ -45,7 +45,7 @@ defmodule Tay.Storage.Record do
           | {:reserved_type, 0 | 255}
           | {:invalid_schema, 0}
           | {:invalid_sequence, 0}
-          | {:payload_length_exceeds_format, non_neg_integer(), 16_777_216}
+          | {:payload_length_exceeds_format, non_neg_integer(), Tay.Limits.max_payload_bytes()}
   @type corrupt_reason ::
           domain_reason() | :invalid_magic | :header_checksum | :record_checksum
   @type primitive_field ::
@@ -56,9 +56,9 @@ defmodule Tay.Storage.Record do
           record_type: 1..254,
           flags: 0,
           payload_schema_version: 1..255,
-          sequence: 1..18_446_744_073_709_551_615,
-          payload_length: 0..16_777_216,
-          record_bytes: 28..16_777_244,
+          sequence: Tay.Limits.positive_uint64(),
+          payload_length: Tay.Limits.payload_size(),
+          record_bytes: pos_integer(),
           available_bytes: non_neg_integer(),
           missing_bytes: pos_integer()
         }
@@ -74,6 +74,12 @@ defmodule Tay.Storage.Record do
           | {:error, {:invalid_argument, :record}}
           | {:error, {:invalid_record, domain_reason() | {:field, primitive_field()}}}
           | {:error, {:unsupported, unsupported_reason()}}
+
+  @spec max_payload_bytes() :: Tay.Limits.max_payload_bytes()
+  def max_payload_bytes, do: @max_payload_bytes
+
+  @spec max_sequence() :: Tay.Limits.positive_uint64()
+  def max_sequence, do: @uint64_max
 
   @doc "Encodes a physical record; all primitive fields are checked before domain rules."
   @spec encode(term()) :: encode_result()
@@ -167,8 +173,8 @@ defmodule Tay.Storage.Record do
       sequence == 0 ->
         {:error, {:corrupt, {:invalid_sequence, 0}}}
 
-      n > @hard_payload_max ->
-        {:error, {:corrupt, {:payload_length_exceeds_format, n, @hard_payload_max}}}
+      n > @max_payload_bytes ->
+        {:error, {:corrupt, {:payload_length_exceeds_format, n, @max_payload_bytes}}}
 
       true ->
         :ok

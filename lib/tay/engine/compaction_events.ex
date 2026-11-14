@@ -2,6 +2,8 @@ defmodule Tay.Engine.CompactionEvents do
   @moduledoc "Bounded, payload-free structured compaction events emitted through Logger."
   require Logger
 
+  @max_measurement Tay.Limits.uint64_max()
+
   @events [
     :evaluation_performed,
     :evaluation_skipped,
@@ -75,7 +77,7 @@ defmodule Tay.Engine.CompactionEvents do
 
     measurements =
       Map.filter(measurements, fn {_, v} ->
-        is_number(v) and v >= 0 and v <= 18_446_744_073_709_551_615
+        is_number(v) and v >= 0 and v <= @max_measurement
       end)
 
     Map.merge(measurements, %{

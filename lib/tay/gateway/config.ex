@@ -5,7 +5,7 @@ defmodule Tay.Gateway.Config do
 
   @kib 1_024
   @mib 1_048_576
-  @max_payload 16 * @mib
+  @max_payload Tay.Limits.max_payload_bytes()
 
   @defaults %{
     executor_socket: :auto,

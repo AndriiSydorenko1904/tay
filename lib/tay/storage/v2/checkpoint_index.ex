@@ -7,6 +7,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   @roles @v2_roles ++ [:history, :stats]
   @header_v2 <<"TAYI", 2, 0::size(59 * 8)>>
   @header_v3 <<"TAYI", 3, 0::size(59 * 8)>>
+  @max_time Tay.Limits.int64_max()
   def roles, do: @roles
 
   def roles(2), do: @v2_roles
@@ -453,7 +454,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
             -1
 
           {_unit, 0} ->
-            9_223_372_036_854_775_807
+            @max_time
 
           finite ->
             {:ok, duration} = Tay.Storage.V2.Retention.duration(finite)
@@ -615,7 +616,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
 
   defp history_key(job) do
     inverse_id = :crypto.exor(job.id, :binary.copy(<<255>>, 16))
-    <<9_223_372_036_854_775_807 - job.inserted_at::64, inverse_id::binary-size(16)>>
+    <<@max_time - job.inserted_at::64, inverse_id::binary-size(16)>>
   end
 
   defp update_archive_summary(state, previous, puts) do

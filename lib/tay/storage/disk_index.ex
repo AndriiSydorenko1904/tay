@@ -16,8 +16,8 @@ defmodule Tay.Storage.DiskIndex do
   alias Tay.Event.Value
 
   @fanout 64
-  @max_page 16_777_216
-  @max_offset 9_223_372_036_854_775_807
+  @max_page Tay.Limits.max_payload_bytes()
+  @max_offset Tay.Limits.int64_max()
 
   @doc "Encodes a root to embed in authenticated checkpoint metadata."
   def encode_root(root) do

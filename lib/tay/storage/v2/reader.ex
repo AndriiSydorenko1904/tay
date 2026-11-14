@@ -10,7 +10,7 @@ defmodule Tay.Storage.V2.Reader do
   alias Tay.Storage.{BufferedRead, Native, Reader, Segment}
   alias Tay.Storage.V2.{Authority, Codec, Reducer, RecoveryIndex, CheckpointIndex}
 
-  @max_metadata 16_777_216
+  @max_metadata Tay.Limits.max_payload_bytes()
 
   def recover(native, candidate, options \\ []) do
     with :ok <- Native.check(native),

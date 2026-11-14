@@ -4,6 +4,9 @@ defmodule Tay.State.Memory do
   payloads share the counter; this is an operational budget, not a VM RSS cap.
   """
 
+  @max_time Tay.Limits.int64_max()
+  @max_revision Tay.Limits.uint64_max()
+
   def new(limit), do: %{counter: :atomics.new(1, signed: true), limit: limit}
   def used(memory), do: :atomics.get(memory.counter, 1)
 
@@ -100,11 +103,11 @@ defmodule Tay.State.Memory do
     # advancing an accepted declaration must work even at full capacity.
     schedule =
       Map.merge(schedule, %{
-        revision: 18_446_744_073_709_551_615,
-        registered_at: 9_223_372_036_854_775_807,
-        next_at: 9_223_372_036_854_775_807,
-        last_at: 9_223_372_036_854_775_807,
-        cancelled_at: 9_223_372_036_854_775_807,
+        revision: @max_revision,
+        registered_at: @max_time,
+        next_at: @max_time,
+        last_at: @max_time,
+        cancelled_at: @max_time,
         active_job_id: String.duplicate("f", 32)
       })
 

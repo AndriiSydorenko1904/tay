@@ -29,7 +29,7 @@ defmodule Tay.Storage.V2.Publisher do
 
   alias Tay.Storage.V2.Reader, as: V2Reader
 
-  @max 18_446_744_073_709_551_615
+  @uint64_max Tay.Limits.uint64_max()
   @minimum_headroom 67_108_864
   @catch_up_target_events CompactionLimits.catch_up_target_events()
   @catch_up_target_bytes CompactionLimits.catch_up_target_bytes()
@@ -252,7 +252,7 @@ defmodule Tay.Storage.V2.Publisher do
         byte_size(context.manifest_bytes) + 76 + authority_bytes(context.source)
 
     cond do
-      bytes > Map.get(context.source, :max_candidate_bytes, @max) ->
+      bytes > Map.get(context.source, :max_candidate_bytes, @uint64_max) ->
         {:error, :candidate_limit}
 
       bytes <= context.admitted_candidate_bytes ->
@@ -837,7 +837,7 @@ defmodule Tay.Storage.V2.Publisher do
     with {:ok, free} <- Native.v2_space(native) do
       metadata_allowance = (estimate.base_segments + source_segments) * 256 + 1_048_576
       required = estimate.bytes + metadata_allowance + @minimum_headroom
-      limit = Map.get(source, :max_candidate_bytes, @max)
+      limit = Map.get(source, :max_candidate_bytes, @uint64_max)
 
       cond do
         not is_integer(limit) or limit <= 0 -> {:error, :candidate_limit}
@@ -1332,7 +1332,7 @@ defmodule Tay.Storage.V2.Publisher do
   end
 
   defp catch_up_candidate(candidate, %{next_availability_order: next})
-       when is_integer(next) and next in 1..(@max + 1)//1 and
+       when is_integer(next) and next in 1..(@uint64_max + 1)//1 and
               next >= candidate.next_availability_order,
        do: {:ok, %{candidate | next_availability_order: next}}
 

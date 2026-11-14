@@ -10,7 +10,7 @@ defmodule Tay.Storage.Writer.RecoveryLifecycle do
 
   @test Mix.env() == :test
   @session_lifetime_ms 30_000
-  @max_timer_ms 4_294_967_295
+  @max_timer_ms Tay.Limits.uint32_max()
 
   defmodule Session do
     @moduledoc false

@@ -9,7 +9,7 @@ defmodule Tay.Storage.V2.Reducer do
   alias Tay.State.Transition
   alias Tay.Storage.V2.Codec
 
-  @max 18_446_744_073_709_551_615
+  @uint64_max Tay.Limits.uint64_max()
 
   def candidate(limits \\ %{}, value_limits \\ Tay.Event.Value.defaults()) do
     Transition.candidate(limits, value_limits)
@@ -89,7 +89,7 @@ defmodule Tay.Storage.V2.Reducer do
   defp revision_gate(nil, _), do: {:error, :missing_job}
   defp revision_gate(_, %{kind: :inserted}), do: {:error, :duplicate_insert}
 
-  defp revision_gate(%{revision: @max}, _), do: {:error, :logical_revision_exhausted}
+  defp revision_gate(%{revision: @uint64_max}, _), do: {:error, :logical_revision_exhausted}
 
   defp revision_gate(%{revision: revision}, %{expected_revision: revision, new_revision: next})
        when next == revision + 1,
@@ -119,7 +119,7 @@ defmodule Tay.Storage.V2.Reducer do
   defp availability_gate(candidate, mutation) do
     case mutation.body["availability_order"] do
       nil -> :ok
-      order when order == candidate.next_availability_order and order <= @max -> :ok
+      order when order == candidate.next_availability_order and order <= @uint64_max -> :ok
       _ -> {:error, :availability_order_conflict}
     end
   end

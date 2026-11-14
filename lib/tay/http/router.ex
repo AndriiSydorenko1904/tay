@@ -368,7 +368,7 @@ defmodule Tay.HTTP.Router do
   end
 
   defp json(conn, status, value) do
-    {:ok, body} = Protocol.json_bytes(value, 16_777_216)
+    {:ok, body} = Protocol.json_bytes(value, Tay.Limits.max_payload_bytes())
 
     conn
     |> Plug.Conn.put_resp_content_type("application/json")

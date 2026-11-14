@@ -4,6 +4,7 @@ defmodule Tay.Storage.Native.Codec do
   Correlation errors remain distinct from native I/O errors; only the Port
   owner decides when to poison a connection. No retry or process state lives here.
   """
+  @unknown_bytes_written Tay.Limits.uint64_max()
   @ops %{
     acquire: 1,
     list: 2,
@@ -68,7 +69,7 @@ defmodule Tay.Storage.Native.Codec do
            operation: operation,
            errno: errno,
            reason: reason,
-           bytes_written: if(written == 18_446_744_073_709_551_615, do: :unknown, else: written)
+           bytes_written: if(written == @unknown_bytes_written, do: :unknown, else: written)
          }}
 
       _ ->

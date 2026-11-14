@@ -9,7 +9,7 @@ defmodule Tay.Schedule do
 
   @overlap ~w(allow skip queue)
   @catch_up ~w(latest all)
-  @max_time 9_223_372_036_854_775_807
+  @max_time Tay.Limits.int64_max()
 
   @enforce_keys [:id, :task, :args, :kind, :expression, :overlap, :catch_up, :next_at]
   defstruct [
