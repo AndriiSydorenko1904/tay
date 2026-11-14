@@ -16,6 +16,7 @@ for installation, configuration, API reference, and operations.
 | Run Tay with Docker | [Docker quick start](#quick-start-with-docker) |
 | Embed Tay in Elixir | [Elixir integration](#elixir-integration) |
 | Execute Python tasks | [Python integration](#python-integration) |
+| Execute Node.js tasks | [Node.js integration](#nodejs-integration) |
 | Add the dashboard | [Dashboard guide](https://hexdocs.pm/tay/2.0.0/dashboard.html) |
 | Configure, back up, or upgrade a store | [Operations guide](https://hexdocs.pm/tay/2.0.0/operations.html) |
 
@@ -44,8 +45,8 @@ Tay can be used in three ways:
   supervision tree.
 - **Standalone container** — run Tay as infrastructure beside your application,
   without installing Elixir or Erlang on the host.
-- **Python client** — execute Python tasks through the supported `tay-client`
-  SDK while Tay owns scheduling, retries, persistence, and recovery.
+- **Python or Node.js client** — execute application tasks through a supported
+  `tay-client` SDK while Tay owns scheduling, retries, persistence, and recovery.
 
 The optional **Tay Dashboard** adds a Phoenix LiveView operational UI and is
 also published as a ready-to-run container image.
@@ -502,6 +503,43 @@ the engine into a distributed Store.
 
 See the [protocol contract](https://hexdocs.pm/tay/2.0.0/protocol.html) for discovery, security, request
 types, and durable result retention.
+
+## Node.js integration
+
+The typed `tay-client` package provides the same Protocol v1 producer and
+worker roles for Node.js applications. It has no runtime dependencies and
+supports maintained Node.js LTS releases from Node 22 onward.
+
+Install from this checkout:
+
+```sh
+npm install ./clients/node
+```
+
+Define and submit a local socket task:
+
+```ts
+import { Tay } from "tay-client";
+
+const tay = new Tay({ capacity: 4 });
+
+const capture = tay.task("billing.capture.v1", async ({ invoice_id }) => ({
+  invoice_id,
+  captured: true,
+}));
+
+await tay.start();
+const job = await capture.enqueue(
+  { invoice_id: "inv-42" },
+  { submission_id: "capture:inv-42" },
+);
+console.log(await job.waitResult({ timeout: 30 }));
+```
+
+The SDK also includes `TayHTTP` for HTTP producers and `TayHTTPWorker` for
+remote workers, including PEM or PKCS#12 mTLS credentials, durable schedules,
+cancellation and bounded result waiting. See the
+[Node.js client guide](clients/node/README.md) for the complete surface.
 
 ## Standalone container
 

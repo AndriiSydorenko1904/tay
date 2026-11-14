@@ -15,6 +15,9 @@ clients/python/dist/
 clients/python/*.egg-info/
 clients/python/**/__pycache__/
 /clients/python/uv.lock
+/clients/node/node_modules/
+/clients/node/dist/
+/clients/node/dist-test/
 /result.txt
 deploy-helper.sh
 

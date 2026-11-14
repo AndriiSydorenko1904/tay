@@ -1,0 +1,53 @@
+{
+  "name": "tay-client",
+  "version": "1.0.0",
+  "description": "Typed Node.js SDK for producing and executing Tay jobs",
+  "license": "MIT",
+  "author": "Andrii Sydorenko",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-marker.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js && node test/cjs-smoke.cjs",
+    "prepack": "npm run build",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "background-jobs",
+    "job-queue",
+    "scheduler",
+    "unix-socket",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndriiSydorenko1904/tay.git",
+    "directory": "clients/node"
+  },
+  "bugs": {
+    "url": "https://github.com/AndriiSydorenko1904/tay/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.0"
+  }
+}
