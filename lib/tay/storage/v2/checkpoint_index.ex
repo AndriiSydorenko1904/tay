@@ -812,20 +812,27 @@ defmodule Tay.Storage.V2.CheckpointIndex do
   def fetch(native, descriptor, epoch, id, scope \\ :epoch) do
     with {:ok, roots} <- roots(descriptor),
          {:ok, pointer} <- DiskIndex.fetch(reader(native, epoch, scope), roots.root, id),
-         {:ok, record} <- read_record(native, epoch, scope, pointer),
+         do: fetch_pointer(native, epoch, id, scope, pointer)
+  end
+
+  defp fetch_pointer(native, epoch, id, scope, pointer) do
+    with {:ok, record} <- read_record(native, epoch, scope, pointer),
          true <-
            (record.record_type == 7 and record.payload_schema_version == 1) ||
              {:error, :checkpoint_record_type},
          {:ok, job} <- Codec.decode_snapshot(record.payload),
          true <- job.id == id || {:error, :checkpoint_job_id},
+         {:ok, job, _} <-
+           Tay.State.Transition.account(
+             Tay.State.Transition.accounting(Reducer.candidate()),
+             nil,
+             job
+           ),
          true <-
            pointer["summary"] ==
              RecoveryIndex.location(pointer["segment"], pointer["offset"], record, job)["summary"] ||
              {:error, :checkpoint_summary_mismatch} do
-      case summary(pointer) do
-        {:ok, archived} -> {:ok, Map.put(job, :charge, archived.charge)}
-        _ -> {:ok, job}
-      end
+      {:ok, job}
     end
   end
 
@@ -923,8 +930,6 @@ defmodule Tay.Storage.V2.CheckpointIndex do
          true <-
            count(descriptor) == count(descriptor, :work) + count(descriptor, :expiry) ||
              {:error, :checkpoint_partition},
-         :ok <-
-           if(mode == :scrub, do: verify_partitions(native, descriptor, epoch, scope), else: :ok),
          {:ok, candidate} <-
            reduce(
              native,
@@ -936,7 +941,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
                value =
                  if Map.has_key?(pointer, "summary") and mode != :scrub,
                    do: summary(pointer),
-                   else: fetch(native, descriptor, epoch, id, scope)
+                   else: fetch_pointer(native, epoch, id, scope, pointer)
 
                with {:ok, job} <- value,
                     true <- job.id == id || {:error, :checkpoint_job_id},
@@ -954,38 +959,48 @@ defmodule Tay.Storage.V2.CheckpointIndex do
            if(mode in [:work, :runtime],
              do: {:ok, candidate},
              else: load_results(native, descriptor, epoch, candidate, scope, mode)
+           ),
+         :ok <-
+           if(mode == :scrub,
+             do: verify_partitions(native, descriptor, epoch, scope, candidate.jobs),
+             else: :ok
            ) do
       {:ok, candidate}
     end
   end
 
-  defp verify_partitions(native, descriptor, epoch, scope) do
+  defp verify_partitions(native, descriptor, epoch, scope, jobs) do
     {:ok, roots} = roots(descriptor)
     read = reader(native, epoch, scope)
 
-    with {:ok, :ok} <-
-           DiskIndex.reduce(read, roots.root, :ok, fn id, pointer, :ok ->
-             with {:ok, role, key} <- partition_entry(id, pointer),
-                  {:ok, ^pointer} <- DiskIndex.fetch(read, roots[role], key),
-                  do: {:ok, :ok}
+    # Visit each authenticated page once. Keep only pointer digests while
+    # comparing partitions, so large summary payloads are not retained twice.
+    with {:ok, expected} <-
+           DiskIndex.reduce(read, roots.root, %{}, fn id, pointer, expected ->
+             job = Map.fetch!(jobs, id)
+             {role, key} = if terminal?(job), do: {:expiry, expiry_key(job)}, else: {:work, id}
+             {:ok, Map.put(expected, {role, key}, pointer_digest(pointer))}
            end),
-         {:ok, :ok} <-
-           DiskIndex.reduce(read, roots.expiry, :ok, fn key, pointer, :ok ->
-             with {:ok, job} <- summary(pointer),
-                  true <- key == expiry_key(job) || {:error, :checkpoint_expiry},
-                  {:ok, ^pointer} <- DiskIndex.fetch(read, roots.root, job.id),
-                  do: {:ok, :ok}
+         {:ok, remaining} <-
+           Enum.reduce_while([:work, :expiry], {:ok, expected}, fn role, {:ok, expected} ->
+             case DiskIndex.reduce(read, roots[role], expected, fn key, pointer, expected ->
+                    digest = pointer_digest(pointer)
+
+                    case Map.pop(expected, {role, key}) do
+                      {^digest, remaining} -> {:ok, remaining}
+                      _ -> {:error, :checkpoint_partition}
+                    end
+                  end) do
+               {:ok, remaining} -> {:cont, {:ok, remaining}}
+               error -> {:halt, error}
+             end
            end),
+         true <- map_size(remaining) == 0 || {:error, :checkpoint_partition},
          do: :ok
   end
 
-  defp partition_entry(id, %{"summary" => _} = pointer) do
-    with {:ok, job} <- summary(pointer),
-         true <- (job.id == id and terminal?(job)) || {:error, :checkpoint_expiry},
-         do: {:ok, :expiry, expiry_key(job)}
-  end
-
-  defp partition_entry(id, _pointer), do: {:ok, :work, id}
+  defp pointer_digest(pointer),
+    do: :crypto.hash(:sha256, :erlang.term_to_binary(pointer, [:deterministic]))
 
   def load_changed(native, descriptor, epoch, limits, value_limits, ids, results, scope) do
     with :ok <- verify_new_pages(native, descriptor, epoch, scope),

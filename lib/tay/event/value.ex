@@ -114,7 +114,7 @@ defmodule Tay.Event.Value do
 
       is_binary(value) ->
         state = state |> binary_charge(byte_size(value)) |> encoded(5 + byte_size(value))
-        if not String.valid?(value), do: invalid(:utf8)
+        if not String.valid?(value, :fast_ascii), do: invalid(:utf8)
         state
 
       is_tuple(value) and tuple_size(value) == 2 and elem(value, 0) == :bytes and
@@ -199,7 +199,7 @@ defmodule Tay.Event.Value do
         if n > byte_size(rest), do: invalid(:truncated_value)
         state = binary_charge(state, n)
         <<body::binary-size(^n), rest::binary>> = rest
-        if tag == 6 and not String.valid?(body), do: invalid(:utf8)
+        if tag == 6 and not String.valid?(body, :fast_ascii), do: invalid(:utf8)
         body = :binary.copy(body)
         {if(tag == 7, do: {:bytes, body}, else: body), rest, state}
 

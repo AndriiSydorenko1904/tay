@@ -6,6 +6,30 @@ defmodule Tay.Event.CodecTest do
   alias Tay.Storage.Record
   alias Tay.Test.EventHelpers, as: H
 
+  test "long ASCII prefixes preserve UTF-8 validation at chunk boundaries" do
+    for length <- [63, 64, 65, 255, 256, 257],
+        suffix <- [
+          "",
+          "ї",
+          "🙂",
+          <<0xC0, 0xAF>>,
+          <<0xED, 0xA0, 0x80>>,
+          <<0xF4, 0x90, 0x80, 0x80>>,
+          <<0xE2, 0x82>>
+        ] do
+      value = String.duplicate("a", length) <> suffix
+      wire = <<6, byte_size(value)::32, value::binary>>
+
+      if String.valid?(value) do
+        assert {:ok, ^wire} = Value.encode(value)
+        assert {:ok, ^value} = Value.decode(wire)
+      else
+        assert {:error, :utf8} = Value.encode(value)
+        assert {:error, :utf8} = Value.decode(wire)
+      end
+    end
+  end
+
   test "every unassigned value tag and every truncated literal Event payload is rejected" do
     for tag <- 10..255 do
       assert {:error, :unknown_tag} = Value.decode(<<tag>>)

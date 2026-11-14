@@ -1,0 +1,77 @@
+{
+  "version": "2.0.1",
+  "revision": "773dd03e869753579747c2b4e7b96e601da73233",
+  "report_schema": 1,
+  "benchmark": "tay-release-v2",
+  "measured_at_utc": "2026-11-14T15:42:06.723111Z",
+  "harness_sha256": "35375190902bdbce2dd0d19c70b257d9fdce8b2a735127290090be41e65ad56f",
+  "working_tree_dirty": true,
+  "workload": {
+    "jobs": 10000,
+    "clients": 8,
+    "args_bytes": 256,
+    "trials": 4,
+    "warmup_jobs": 250,
+    "max_inflight": 8,
+    "rss_sample_interval_ms": 250,
+    "beam_sample_interval_ms": 25,
+    "durability": "sync"
+  },
+  "environment": {
+    "os": "{:unix, :linux}",
+    "otp": "29",
+    "schedulers": 2,
+    "elixir": "1.20.5",
+    "architecture": "aarch64-unknown-linux-gnu",
+    "logical_processors": 10,
+    "filesystem": "btrfs"
+  },
+  "measurements": [
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 109.57796321412987,
+      "enqueue_ack_p95_us": 31830,
+      "callback_latency_p95_us": 69930,
+      "compaction_us": 13105363,
+      "peak_rss_bytes": 315953152,
+      "peak_beam_bytes": 229854958,
+      "memory_samples": 3889,
+      "rss_samples": 390
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 108.69433248294149,
+      "enqueue_ack_p95_us": 30738,
+      "callback_latency_p95_us": 71138,
+      "compaction_us": 12894372,
+      "peak_rss_bytes": 277856256,
+      "peak_beam_bytes": 224858726,
+      "memory_samples": 3919,
+      "rss_samples": 393
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 104.74736093999611,
+      "enqueue_ack_p95_us": 31390,
+      "callback_latency_p95_us": 73656,
+      "compaction_us": 12463041,
+      "peak_rss_bytes": 304017408,
+      "peak_beam_bytes": 226671566,
+      "memory_samples": 4027,
+      "rss_samples": 404
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 100.23838391748103,
+      "enqueue_ack_p95_us": 32301,
+      "callback_latency_p95_us": 74411,
+      "compaction_us": 11940802,
+      "peak_rss_bytes": 297684992,
+      "peak_beam_bytes": 229390582,
+      "memory_samples": 4163,
+      "rss_samples": 418
+    }
+  ],
+  "notes": "Bounded public-API workload; each client waits for durable completion before submitting its next job. Warmup is excluded. Callback latency excludes durable finish. RSS sampled every 250ms and BEAM memory every 25ms, not proven peaks. Stores preserved. No production capacity or power-loss claim.",
+  "protocol": "Four fresh VMs and fresh stores, candidate only, syncfs before each trial, 120000 ms compaction timeout"
+}

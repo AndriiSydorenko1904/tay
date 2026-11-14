@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.1 — 2026-11-14
+
+### Fixed
+
+- Avoid repeated index search-path reads during full checkpoint scrubbing.
+  Verify work/expiry partitions in linear passes over authenticated pages, using
+  temporary pointer digests, and reuse decoded snapshots for metadata checks.
+- Use equivalent fast-ASCII UTF-8 validation when encoding and decoding inert
+  values, reducing repeated validation work during checkpoint construction.
+
+Repeated local 10,000-job validation reduced median full compaction from
+154.4 s to 19.1 s against 2.0.0. Four Linux/Btrfs sync checks completed in
+11.9–13.1 s. Sampled peak RSS decreased 6.5%, while BEAM memory increased 9.3%.
+The [validation report](https://github.com/AndriiSydorenko1904/tay/blob/v2.0.1/docs/evidence/compaction-2.0.1/README.md)
+retains the workload, source fingerprints, comparison and measurements.
+
 ## 2.0.0 — 2026-11-14
 
 ### Removed

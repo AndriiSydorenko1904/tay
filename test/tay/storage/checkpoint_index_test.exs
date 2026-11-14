@@ -33,6 +33,37 @@ defmodule Tay.Storage.CheckpointIndexTest do
     assert :ok = CheckpointIndex.verify_roots(native, descriptor, epoch, :candidate)
     assert {:ok, fetched} = CheckpointIndex.fetch(native, descriptor, epoch, id, :candidate)
     assert fetched.definition == original.definition
+
+    assert {:ok, scrubbed} =
+             CheckpointIndex.load(
+               native,
+               descriptor,
+               epoch,
+               %{},
+               Tay.Event.Value.defaults(),
+               :scrub,
+               :candidate
+             )
+
+    assert scrubbed.jobs[id].definition == original.definition
+
+    # Both roots remain authenticated and have equal counts, but the root tree
+    # uses job IDs rather than the expiry partition's keys. Counts alone must
+    # never establish partition equivalence.
+    wrong_partition = %{descriptor | expiry: descriptor.root}
+    assert :ok = CheckpointIndex.verify_roots(native, wrong_partition, epoch, :candidate)
+
+    assert {:error, :checkpoint_partition} =
+             CheckpointIndex.load(
+               native,
+               wrong_partition,
+               epoch,
+               %{},
+               Tay.Event.Value.defaults(),
+               :scrub,
+               :candidate
+             )
+
     assert {:ok, objects} = CheckpointIndex.objects(descriptor)
     assert DiskIndex.object(recovered.epoch_id, 1, 1) in objects
     assert DiskIndex.object(epoch, 0, 0) in objects
@@ -50,6 +81,36 @@ defmodule Tay.Storage.CheckpointIndexTest do
     assert fetched.definition == original.definition
     assert :ok = Native.v2_publish_epoch(native, next_epoch)
     assert :ok = Native.v2_abort(native)
+
+    # The partition may have valid pages, keys and counts while referring to a
+    # different record or carrying altered metadata. Compare all pointer fields.
+    for altered <- [
+          Map.update!(pointer, "offset", &(&1 + 1)),
+          put_in(pointer["summary"]["charge"], pointer["summary"]["charge"] + 1),
+          Map.put(pointer, "unexpected", true)
+        ] do
+      bad_epoch = :crypto.strong_rand_bytes(16)
+      :ok = Native.v2_begin(native, :crypto.strong_rand_bytes(16))
+      {:ok, transaction} = CheckpointIndex.begin(native, bad_epoch, compacted)
+      key = <<original.terminal_at::64, id::binary-size(16)>>
+      {:ok, transaction} = CheckpointIndex.change(transaction, :expiry, [{key, {:put, altered}}])
+      {:ok, bad} = CheckpointIndex.finish(transaction)
+      assert :ok = CheckpointIndex.verify_roots(native, bad, bad_epoch, :candidate)
+
+      assert {:error, :checkpoint_partition} =
+               CheckpointIndex.load(
+                 native,
+                 bad,
+                 bad_epoch,
+                 %{},
+                 Tay.Event.Value.defaults(),
+                 :scrub,
+                 :candidate
+               )
+
+      assert :ok = Native.v2_abort(native)
+    end
+
     # Once no root references the old metadata file, its removal cannot break
     # the newly published index. The shared snapshot segment remains untouched.
     index_path =

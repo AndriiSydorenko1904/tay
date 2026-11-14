@@ -1,0 +1,113 @@
+{
+  "comparison_schema": 1,
+  "baseline_revision": "773dd03e869753579747c2b4e7b96e601da73233",
+  "candidate_revision": "773dd03e869753579747c2b4e7b96e601da73233",
+  "baseline_version": "2.0.0",
+  "candidate_version": "2.0.0",
+  "max_regression_percent": 20.0,
+  "max_relative_mad_percent": 10.0,
+  "workload": {
+    "jobs": 10000,
+    "clients": 8,
+    "args_bytes": 256,
+    "trials": 4,
+    "warmup_jobs": 250,
+    "max_inflight": 8,
+    "rss_sample_interval_ms": 250,
+    "beam_sample_interval_ms": 25,
+    "durability": "write"
+  },
+  "environment": {
+    "os": "{:unix, :darwin}",
+    "otp": "29",
+    "schedulers": 2,
+    "elixir": "1.20.4",
+    "architecture": "aarch64-apple-darwin25.6.0",
+    "logical_processors": 10,
+    "filesystem": "macOS development filesystem"
+  },
+  "metrics": [
+    {
+      "metric": "completed_jobs_per_second",
+      "baseline": 465.4019481500778,
+      "candidate": 471.429794739811,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "higher",
+      "regression_percent": -1.278630807172465,
+      "regressed": false,
+      "baseline_relative_mad_percent": 2.9463026028120463,
+      "candidate_relative_mad_percent": 2.3082832085323592,
+      "noisy": false
+    },
+    {
+      "metric": "enqueue_ack_p95_us",
+      "baseline": 12634.0,
+      "candidate": 12540.5,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "lower",
+      "regression_percent": -0.7400664872566076,
+      "regressed": false,
+      "baseline_relative_mad_percent": 3.395599176824442,
+      "candidate_relative_mad_percent": 2.2527012479566206,
+      "noisy": false
+    },
+    {
+      "metric": "callback_latency_p95_us",
+      "baseline": 16286.5,
+      "candidate": 16018.5,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "lower",
+      "regression_percent": -1.6455346452583397,
+      "regressed": false,
+      "baseline_relative_mad_percent": 2.572682896877782,
+      "candidate_relative_mad_percent": 1.3827761650591504,
+      "noisy": false
+    },
+    {
+      "metric": "compaction_us",
+      "baseline": 154369884.0,
+      "candidate": 19085637.5,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "lower",
+      "regression_percent": -87.63642427819664,
+      "regressed": false,
+      "baseline_relative_mad_percent": 2.8556868644145643,
+      "candidate_relative_mad_percent": 2.6916025204816973,
+      "noisy": false
+    },
+    {
+      "metric": "peak_rss_bytes",
+      "baseline": 286425088.0,
+      "candidate": 267821056.0,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "lower",
+      "regression_percent": -6.495252259466877,
+      "regressed": false,
+      "baseline_relative_mad_percent": 1.5759066468367464,
+      "candidate_relative_mad_percent": 9.901202092190989,
+      "noisy": false
+    },
+    {
+      "metric": "peak_beam_bytes",
+      "baseline": 222366454.0,
+      "candidate": 243041048.0,
+      "baseline_samples": 4,
+      "candidate_samples": 4,
+      "direction": "lower",
+      "regression_percent": 9.297532801417962,
+      "regressed": false,
+      "baseline_relative_mad_percent": 0.923164201737012,
+      "candidate_relative_mad_percent": 0.39511514943763737,
+      "noisy": false
+    }
+  ],
+  "regressed": false,
+  "noisy": false,
+  "complete": true,
+  "notes": "Median of trial measurements on the same configuration. Sampling and hosted-runner noise remain; this is not production capacity certification."
+}

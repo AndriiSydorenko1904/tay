@@ -1,0 +1,88 @@
+{
+  "version": "2.0.0",
+  "revision": "773dd03e869753579747c2b4e7b96e601da73233",
+  "report_schema": 1,
+  "benchmark": "tay-release-v2",
+  "measured_at_utc": "2026-11-14T15:34:08.879606Z",
+  "harness_sha256": "404b550d36bbb430fbfb86502063774f2d3cda1839cc4d57cf9fce091d80ad31",
+  "working_tree_dirty": true,
+  "workload": {
+    "jobs": 10000,
+    "clients": 8,
+    "args_bytes": 256,
+    "trials": 4,
+    "warmup_jobs": 250,
+    "max_inflight": 8,
+    "rss_sample_interval_ms": 250,
+    "beam_sample_interval_ms": 25,
+    "durability": "write"
+  },
+  "environment": {
+    "os": "{:unix, :darwin}",
+    "otp": "29",
+    "schedulers": 2,
+    "elixir": "1.20.4",
+    "architecture": "aarch64-apple-darwin25.6.0",
+    "logical_processors": 10,
+    "filesystem": "macOS development filesystem"
+  },
+  "measurements": [
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 481.16948049767166,
+      "enqueue_ack_p95_us": 12300,
+      "callback_latency_p95_us": 15862,
+      "compaction_us": 18473146,
+      "peak_rss_bytes": 242974720,
+      "peak_beam_bytes": 243933440,
+      "memory_samples": 1485,
+      "rss_samples": 149
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 489.28248729296683,
+      "enqueue_ack_p95_us": 11658,
+      "callback_latency_p95_us": 15572,
+      "compaction_us": 18670710,
+      "peak_rss_bytes": 292667392,
+      "peak_beam_bytes": 242148656,
+      "memory_samples": 1480,
+      "rss_samples": 149
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 459.40561091367647,
+      "enqueue_ack_p95_us": 12865,
+      "callback_latency_p95_us": 16305,
+      "compaction_us": 19500565,
+      "peak_rss_bytes": 226246656,
+      "peak_beam_bytes": 242012856,
+      "memory_samples": 1561,
+      "rss_samples": 157
+    },
+    {
+      "jobs": 10000,
+      "completed_jobs_per_second": 461.69010898195023,
+      "enqueue_ack_p95_us": 12781,
+      "callback_latency_p95_us": 16175,
+      "compaction_us": 19907316,
+      "peak_rss_bytes": 296009728,
+      "peak_beam_bytes": 244960904,
+      "memory_samples": 1566,
+      "rss_samples": 158
+    }
+  ],
+  "notes": "Bounded public-API workload; each client waits for durable completion before submitting its next job. Warmup is excluded. Callback latency excludes durable finish. RSS sampled every 250ms and BEAM memory every 25ms, not proven peaks. Stores preserved. No production capacity or power-loss claim.",
+  "comparison_protocol": "balanced-abba-v2; warmed fresh VM; bounded in-flight jobs; syncfs before Linux sync trials",
+  "orchestrator_sha256": "e7549ce9c8e6f1fac13096b6ea10d88f96cbda6834305188419076c44aea3f1b",
+  "trial_order": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline"
+  ]
+}
