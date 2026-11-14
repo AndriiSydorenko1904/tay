@@ -38,7 +38,7 @@ to schema 1. The local [executor protocol](protocol.md) adds no disk schema:
 connection registrations and capacity are volatile; persistent job completion
 and successful return values are durable.
 
-Unreleased builds write `(14,2)` for successful external completion and its
+Tay 2.0 writes `(14,2)` for successful external completion and its
 result as one atomic record. They continue reading older completion/result
 records. Released binaries through Tay 1.8.1 refuse the new pair; restore a
 pre-upgrade backup to downgrade. No existing schema-1 fields are changed.
@@ -49,7 +49,7 @@ history and aggregate roots allow startup without scanning retained terminal
 IDs. Older Tay binaries do not understand format 3; downgrade requires the
 pre-upgrade cold backup.
 
-Unreleased builds reject the removed Engine options `max_jobs`,
+Tay 2.0 rejects the removed Engine options `max_jobs`,
 `max_state_nodes`, `executor_max_results`, `group_commit_interval_ms`, and
 `compaction.max_terminal_jobs`, along with inspection's `--max-state-nodes`.
 Remove these options from configuration. Journal batching is automatic; the
@@ -152,7 +152,7 @@ their frozen payloads. Older binaries refuse type 13; downgrade requires a cold
 backup made before writing new events. Historical allow checkpoints whose full
 membership was already lost remain readable but cannot be tightened in place.
 
-Unreleased builds also remove `recovery.max_decode_payload_bytes`,
+Tay 2.0 also removes `recovery.max_decode_payload_bytes`,
 `recovery.event_limits`, `max_insert_args_bytes`, `insert_value_depth`,
 `insert_value_nodes`, and `max_segments`. These options now fail configuration
 validation. Record payloads retain the fixed 16 MiB format ceiling and common
@@ -170,8 +170,9 @@ Batching, wakeups and recovery session expiry remain internal mechanisms.
 
 ## Tay 2.0 startup and maintenance
 
-Extended checkpoint indexes enable lazy terminal-argument reads during Engine
-startup; metadata and result bodies are still loaded. Cold body corruption is
+Format-3 checkpoint indexes let Engine startup load active work without
+traversing retained terminal IDs or loading terminal argument/result bodies.
+History and aggregate metadata remain on disk. Cold body corruption is
 reported when the job is addressed. Full storage inspection and cold backup
 scrub the reachable archive; incremental publication checks new pages/records
 and retains authenticated immutable references. Previous checkpoint/index shapes remain readable;

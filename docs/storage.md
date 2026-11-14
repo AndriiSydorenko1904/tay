@@ -152,7 +152,7 @@ successful-result recording. Tay 1.8.0-rc3 adds `(11,2)` for delivery/skip advan
 with a persisted `active_job_id`, `(12,2)` for historical schedule checkpoints,
 and `(13,2)` for new registration/state/checkpoints with the complete
 `active_job_ids` set and `membership_complete` flag.
-Unreleased builds add `(14,2)` for atomic successful external completion. Its
+Tay 2.0 adds `(14,2)` for atomic successful external completion. Its
 exact fields are `at`, `execution_token`, `expected_revision`, `job_id` (bytes),
 and `result`. It requires the matching executing job and token, advances the
 logical job revision once, and stores the result at that new revision in the
