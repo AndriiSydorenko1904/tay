@@ -105,4 +105,42 @@ defmodule Tay.Engine.GenerationTest do
     assert R.snapshot(path) == before
     H.stop(root)
   end
+
+  test "secondary component exits preserve the first generation failure", %{path: path} do
+    {:ok, root} = H.start(path, @name)
+    Process.unlink(root)
+    on_exit(fn -> H.stop(root) end)
+    state = :sys.get_state(@name)
+
+    send(@name, {Writer, state.writer, :poisoned})
+    assert H.eventually(fn -> not Process.alive?(state.engine) end)
+
+    for {ref, component} <- state.monitors, component in [:engine, :writer] do
+      send(@name, {:DOWN, ref, :process, Map.fetch!(state, component), :killed})
+    end
+
+    assert %{state: :failed, reason: :writer_unavailable, failure_component: :writer} =
+             Tay.status(name: @name)
+
+    assert :ok = Tay.restart(name: @name)
+    status = Tay.status(name: @name)
+    assert status.state == :ready
+    refute Map.has_key?(status, :failure_component)
+    refute Map.has_key?(status, :failure_exit)
+  end
+
+  test "component death records its identity and bounded exit classification", %{path: path} do
+    {:ok, root} = H.start(path, @name)
+    Process.unlink(root)
+    on_exit(fn -> H.stop(root) end)
+    engine = H.engine(root)
+    Process.exit(engine, :kill)
+
+    assert H.eventually(fn ->
+             match?(
+               %{state: :failed, failure_component: :engine, failure_exit: :killed},
+               Tay.status(name: @name)
+             )
+           end)
+  end
 end

@@ -161,6 +161,16 @@ health-check grace period, matching the default bounded recovery deadline;
 steady-state failures still use the ordinary 12 attempts at five-second
 intervals.
 
+Standalone also checks the Engine state every second. If a generation enters
+`failed`, it shuts down the application and exits the release. Configure the
+container or service manager to restart the process, for example with Docker's
+`restart: unless-stopped`. Startup performs full locked recovery and replaces
+the execution runtime and worker connections. Persistent jobs recover from disk;
+volatile jobs and their history are lost with the failed generation. A standalone
+process in `recovering`, `compacting`, `draining`, or `stopped` continues running.
+Generation failure logs preserve the first failing component and a bounded exit
+classification. Storage poisoning logs include a bounded physical failure reason.
+
 ## Persistence and operations
 
 `/var/lib/tay` is persistent state. Back it up using Tay's documented storage

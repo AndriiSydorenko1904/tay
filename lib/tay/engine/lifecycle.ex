@@ -1,6 +1,7 @@
 defmodule Tay.Engine.Lifecycle do
   @moduledoc false
   use GenServer
+  require Logger
   alias Tay.Engine.Lifecycle.{CommandDelivery, State, Operation, Status}
   alias Tay.Engine.Lifecycle.Operations, as: OperationControl
   alias Tay.Engine.Admission
@@ -376,9 +377,9 @@ defmodule Tay.Engine.Lifecycle do
 
   def handle_info({Writer, writer, event}, %{writer: writer} = s)
       when event in [:poisoned, :closed],
-      do: {:noreply, revoke(s, :writer_unavailable)}
+      do: {:noreply, revoke(s, :writer_unavailable, %{failure_component: :writer})}
 
-  def handle_info({:DOWN, ref, :process, _, _}, s) do
+  def handle_info({:DOWN, ref, :process, _, reason}, s) do
     case Map.get(s.monitors, ref) do
       component
       when component in [:engine, :writer, :runtime, :fence] and
@@ -389,12 +390,12 @@ defmodule Tay.Engine.Lifecycle do
             {:error, Operation.failure(s.operation, {:generation_lost, component})}
           )
 
-        {:noreply, revoke(next, :generation_lost)}
+        {:noreply, revoke(next, :generation_lost, failure(component, reason))}
 
       component when component in [:engine, :writer, :runtime, :fence] ->
         if match?(%{phase: :closing}, s.operation),
           do: {:noreply, s},
-          else: {:noreply, revoke(s, :generation_lost)}
+          else: {:noreply, revoke(s, :generation_lost, failure(component, reason))}
 
       :operation_driver ->
         next = revoke(s, :lifecycle_driver_lost)
@@ -583,10 +584,24 @@ defmodule Tay.Engine.Lifecycle do
   defp finish_command_delivery(s, permit),
     do: %{s | delivery: CommandDelivery.complete(s.delivery, permit)}
 
-  def revoke(s, reason) do
+  def revoke(s, reason, details \\ %{})
+
+  def revoke(%{meta: %{status: %{state: :failed}}} = s, _reason, _details), do: s
+
+  def revoke(s, reason, details) do
     if s.policy, do: send(s.policy, {:policy_generation, self()})
-    already_failed = s.meta.status.state == :failed
-    s = publish(s, Map.put(Status.transition(s.meta.status, :failed), :reason, reason))
+
+    status =
+      s.meta.status
+      |> Status.transition(:failed)
+      |> Map.merge(details)
+      |> Map.put(:reason, reason)
+
+    s = publish(s, status)
+
+    Logger.error(
+      "Tay generation failed reason=#{reason} component=#{Map.get(details, :failure_component, :unknown)} exit=#{Map.get(details, :failure_exit, :unknown)}"
+    )
 
     s =
       if match?(%{phase: :draining}, s.operation) do
@@ -603,7 +618,7 @@ defmodule Tay.Engine.Lifecycle do
     # removes all private ETS and tears down its linked temporary Writer.
     if is_pid(s.engine) and Process.alive?(s.engine), do: Process.exit(s.engine, :kill)
 
-    if not already_failed and is_pid(s.runtime) and Process.alive?(s.runtime) do
+    if is_pid(s.runtime) and Process.alive?(s.runtime) do
       # Relays synchronously acknowledge task death through this guardian. Do
       # not block their recipient while waiting for the runtime to stop. The
       # independent local fence already denies a replacement generation.
@@ -616,6 +631,14 @@ defmodule Tay.Engine.Lifecycle do
       | delivery: CommandDelivery.new()
     }
   end
+
+  defp failure(component, reason),
+    do: %{failure_component: component, failure_exit: exit_kind(reason)}
+
+  defp exit_kind(reason) when reason in [:normal, :shutdown, :killed, :noproc], do: reason
+  defp exit_kind({:shutdown, _}), do: :shutdown
+  defp exit_kind({%{__exception__: true}, _}), do: :exception
+  defp exit_kind(_), do: :other
 
   def format_status(status),
     do:

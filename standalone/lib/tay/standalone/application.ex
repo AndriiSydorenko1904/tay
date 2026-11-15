@@ -33,7 +33,8 @@ defmodule Tay.Standalone.Application do
               http_tls_keyfile: config.http_tls_keyfile,
               http_tls_cacertfile: config.http_tls_cacertfile
             )
-            |> Map.put(:significant, true)
+            |> Map.put(:significant, true),
+            {Tay.Standalone.RuntimeMonitor, []}
           ]
         else
           []

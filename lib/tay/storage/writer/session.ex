@@ -1,5 +1,6 @@
 defmodule Tay.Storage.Writer.Session do
   @moduledoc false
+  require Logger
   alias Tay.Storage.Native
   alias Tay.Storage.Writer.State
   @test Mix.env() == :test
@@ -15,6 +16,8 @@ defmodule Tay.Storage.Writer.Session do
 
   def poison(%{poisoned: nil} = state, reason) do
     # Revoke the embedding generation before potentially slow native cleanup.
+    diagnostic = Tay.Storage.Recovery.Error.bounded(reason)
+    Logger.error("Tay storage session poisoned reason=#{inspect(diagnostic, limit: 20)}")
     notify_lifecycle(state, :poisoned)
     Native.shutdown(state.native)
     _ = hook(state, {:poisoned, reason})

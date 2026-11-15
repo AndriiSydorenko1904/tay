@@ -366,9 +366,11 @@ schedule lag; see [metrics and alerts](observability.md).
 The scheduler coordinator, executor server and HTTP listener retain generation-local
 PID references. An unexpected gateway child exit now fails the execution generation
 closed instead of restarting that child with stale references. Status becomes
-`failed`; use the existing explicit `Tay.restart(name: engine, force: true)` recovery
-path (or restart the host) to recover current durable schedules and replace all
-connections together. In-flight external work remains at-least-once.
+`failed`. Embedded Engines recover through the explicit
+`Tay.restart(name: engine, force: true)` path (or a host restart), restoring
+current durable schedules and replacing all connections together. Standalone
+exits on `failed` so its container or service manager can start full recovery.
+In-flight external work remains at-least-once.
 
 External execution also reserves journal headroom for the maximum configured
 successful result before START. If that headroom is unavailable, the job remains
