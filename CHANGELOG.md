@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.1 — 2026-11-15
+
+### Fixed
+
+- Exit the standalone release when its execution generation enters `failed`,
+  allowing the container or service manager to restart Tay through full locked
+  recovery and replace worker connections.
+- Preserve the first generation failure reason and component when subsequent
+  component exits arrive. Clear failure diagnostics after generation recovery.
+- Log bounded generation exit classifications and physical storage failure
+  reasons to support diagnosis of failed generations.
+
 ## 2.0.0 — 2026-11-14
 
 ### Removed
