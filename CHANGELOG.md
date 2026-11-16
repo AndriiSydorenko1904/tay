@@ -1,5 +1,13 @@
 # Changelog
 
+## Node.js SDK 1.0.2 — 2026-11-16
+
+### Fixed
+
+- Close established sockets gracefully so final worker acknowledgements do not
+  cause Linux peers to receive `ECONNRESET`. Force closure after one second if a
+  peer never finishes, while still interrupting handshake and reconnect waits.
+
 ## Python SDK 1.4.6 and Node.js SDK 1.0.1 — 2026-11-16
 
 ### Changed

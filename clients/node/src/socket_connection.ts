@@ -36,6 +36,7 @@ interface Session {
 }
 
 const MAX_EXPIRED_REQUESTS = 1024;
+const SOCKET_CLOSE_TIMEOUT_MS = 1000;
 
 /** Internal socket lifecycle and request/reply transport. Never replays requests. */
 export class SocketConnection {
@@ -76,19 +77,29 @@ export class SocketConnection {
   }
 
   private async stop(): Promise<void> {
+    const wasConnected = this.#connected;
     this.#running = false;
     this.#connected = false;
     const error = new ConnectionLost("Tay client was closed");
     for (const waiter of this.#connectWaiters.splice(0)) waiter.reject(error);
     const session = this.#session;
+    let closeTimer: NodeJS.Timeout | undefined;
     if (session) {
       session.error = error;
       this.retire(session);
-      session.socket.destroy();
+      if (wasConnected) {
+        // Send FIN and keep draining final acknowledgements. Destroying a Unix
+        // socket with unread data can reset the peer on Linux.
+        closeTimer = setTimeout(() => session.socket.destroy(), SOCKET_CLOSE_TIMEOUT_MS);
+        session.socket.end();
+      } else session.socket.destroy();
     }
     this.#wakeDelay?.();
-    await this.#supervisor?.catch(() => undefined);
-    this.#supervisor = undefined;
+    try { await this.#supervisor?.catch(() => undefined); }
+    finally {
+      clearTimeout(closeTimer);
+      this.#supervisor = undefined;
+    }
   }
 
   private async supervise(): Promise<void> {

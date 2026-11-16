@@ -24,12 +24,12 @@ afterEach(async () => {
 
 interface PeerSession { socket: net.Socket; messages: Envelope[] }
 
-async function listen(onMessage: (message: Envelope, session: PeerSession, index: number) => void | Promise<void>) {
+async function listen(onMessage: (message: Envelope, session: PeerSession, index: number) => void | Promise<void>, options: net.ServerOpts = {}) {
   const directory = await mkdtemp(join(tmpdir(), "tay-transport-"));
   const socketPath = join(directory, "tay.sock");
   const sessions: PeerSession[] = [];
   const errors: unknown[] = [];
-  const server = net.createServer((socket) => {
+  const server = net.createServer(options, (socket) => {
     const session = { socket, messages: [] as Envelope[] };
     const index = sessions.push(session) - 1;
     const decoder = new FrameDecoder();
@@ -288,6 +288,50 @@ test("close interrupts handshake, releases pending callers, and permits restart"
   await pending.promise;
   await connection.close();
   await waiting;
+  assert.equal(connection.connected, false);
+});
+
+test("close drains final acknowledgements and ends the peer without resetting it", { timeout: 3000 }, async () => {
+  const acknowledged = deferred();
+  const ended = deferred();
+  const errors: Error[] = [];
+  const peer = await listen((message, { socket }) => {
+    if (message.type === "hello") {
+      socket.on("error", (error) => errors.push(error));
+      socket.once("end", () => ended.resolve());
+      reply(socket, message, "hello_ok");
+    } else {
+      reply(socket, message, "accepted");
+      acknowledged.resolve();
+    }
+  });
+  const connection = transport(peer.socketPath);
+  await connection.start();
+  const sent = connection.sendEvent("succeeded", { execution_id: "finished" });
+  // Close immediately after the peer writes its acknowledgement, before the
+  // client's next read event can consume it.
+  await acknowledged.promise;
+  await sent;
+  await connection.close();
+  await ended.promise;
+  assert.deepEqual(errors, []);
+  assert.equal(connection.connected, false);
+});
+
+test("close is bounded when a half-open peer never ends its writable stream", { timeout: 3000 }, async () => {
+  const ended = deferred();
+  const peer = await listen((message, { socket }) => {
+    socket.once("end", () => ended.resolve());
+    reply(socket, message, "hello_ok");
+  }, { allowHalfOpen: true });
+  const connection = transport(peer.socketPath);
+  await connection.start();
+  const socket = connection.socket!;
+  const closing = connection.close();
+  await ended.promise;
+  assert.equal(socket.destroyed, false);
+  await closing;
+  assert.equal(socket.destroyed, true);
   assert.equal(connection.connected, false);
 });
 
