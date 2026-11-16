@@ -135,7 +135,7 @@
 Repeated local 10,000-job validation reduced median full compaction from
 154.4 s to 19.1 s against the pre-optimization candidate at `773dd03`. Four Linux/Btrfs sync checks completed in
 11.9–13.1 s. Sampled peak RSS decreased 6.5%, while BEAM memory increased 9.3%.
-The [validation report](https://github.com/AndriiSydorenko1904/tay/blob/v2.0.0/docs/evidence/compaction-2.0/README.md)
+The [validation report](https://github.com/abstraction-systems/tay/blob/v2.0.0/docs/evidence/compaction-2.0/README.md)
 retains the workload, source fingerprints, comparison and measurements.
 
 ### Added
@@ -357,7 +357,7 @@ retains the workload, source fingerprints, comparison and measurements.
 - Compute Record header and full-record CRC32C in one NIF call during encoding,
   continuing the payload checksum from the header register without concatenation.
 - Generate native editor metadata with
-  [`mix tay.native.editor`](https://github.com/AndriiSydorenko1904/tay/blob/v1.8.0/mix_helpers/tay_native_editor.exs), independently
+  [`mix tay.native.editor`](https://github.com/abstraction-systems/tay/blob/v1.8.0/mix_helpers/tay_native_editor.exs), independently
   from native compilation and production builds.
 
 ## 1.7.0 — 2026-10-20

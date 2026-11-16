@@ -62,7 +62,7 @@ controls.
 
 ## Dashboard-enabled container
 
-The `ghcr.io/andriisydorenko1904/tay:<version>` image enables its bundled UI
+The `ghcr.io/abstraction-systems/tay:<version>` image enables its bundled UI
 with `TAY_ENABLE_DASHBOARD=true`. From the repository root, start the complete
 example with:
 

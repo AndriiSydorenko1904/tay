@@ -133,7 +133,7 @@ and PyPI Trusted Publishing. For the first release, configure a pending GitHub
 publisher in the PyPI account with these exact values:
 
 - PyPI project name: `tay-client`
-- GitHub owner: `AndriiSydorenko1904`
+- GitHub owner: `abstraction-systems`
 - GitHub repository: `tay`
 - Workflow filename: `publish-python.yml`
 - Environment name: `pypi`

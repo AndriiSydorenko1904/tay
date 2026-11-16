@@ -41,11 +41,11 @@ jobs:
           set -euo pipefail
           version=$(sed -n 's/^[[:space:]]*@version "\([^"]*\)"/\1/p' mix.exs)
           test -n "$version"
-          test "$(grep -Fc 'docker pull ghcr.io/andriisydorenko1904/tay:latest' README.md)" -eq 3
-          test "$(grep -Ec '^docker pull ghcr.io/andriisydorenko1904/tay:' README.md)" -eq 3
-          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" compose.yml
-          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/standalone.md
-          grep -Fq "ghcr.io/andriisydorenko1904/tay:$version" docs/dashboard-container.md
+          test "$(grep -Fc 'docker pull ghcr.io/abstraction-systems/tay:latest' README.md)" -eq 3
+          test "$(grep -Ec '^docker pull ghcr.io/abstraction-systems/tay:' README.md)" -eq 3
+          grep -Fq "ghcr.io/abstraction-systems/tay:$version" compose.yml
+          grep -Fq "ghcr.io/abstraction-systems/tay:$version" docs/standalone.md
+          grep -Fq "ghcr.io/abstraction-systems/tay:$version" docs/dashboard-container.md
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "29.1.2"

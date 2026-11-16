@@ -10,6 +10,7 @@ Tay owns its durable job state without a separate database, Redis, or RabbitMQ.
 
 Read the [formatted documentation](https://hexdocs.pm/tay/2.0.1/readme.html)
 for installation, configuration, API reference, and operations.
+Source code and issue tracking are on [GitHub](https://github.com/abstraction-systems/tay).
 
 | What you want to do | Start here |
 | --- | --- |
@@ -63,7 +64,7 @@ The easiest way to try Tay does not require Elixir or Erlang on the host.
 Pull the standalone image:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:latest
+docker pull ghcr.io/abstraction-systems/tay:latest
 ```
 
 Download the versioned Compose example into a new directory:
@@ -71,7 +72,7 @@ Download the versioned Compose example into a new directory:
 ```sh
 mkdir tay-example
 cd tay-example
-curl -fsSL https://raw.githubusercontent.com/AndriiSydorenko1904/tay/v2.0.1/compose.yml -o compose.yml
+curl -fsSL https://raw.githubusercontent.com/abstraction-systems/tay/v2.0.1/compose.yml -o compose.yml
 ```
 
 Start Tay with that file:
@@ -109,7 +110,7 @@ The same image contains the optional dashboard. Enable it with
 `TAY_ENABLE_DASHBOARD=true`:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:latest
+docker pull ghcr.io/abstraction-systems/tay:latest
 ```
 
 ## Why Tay?
@@ -547,8 +548,8 @@ The release workflow publishes a self-contained Linux image for `amd64` and
 `arm64`:
 
 ```text
-ghcr.io/andriisydorenko1904/tay:2.0.1
-ghcr.io/andriisydorenko1904/tay:latest
+ghcr.io/abstraction-systems/tay:2.0.1
+ghcr.io/abstraction-systems/tay:latest
 ```
 
 It includes the Erlang VM and Tay runtime.
@@ -558,7 +559,7 @@ The host therefore needs Docker or another OCI runtime, not Elixir or Erlang.
 Pull it directly:
 
 ```sh
-docker pull ghcr.io/andriisydorenko1904/tay:latest
+docker pull ghcr.io/abstraction-systems/tay:latest
 ```
 
 A typical non-Elixir deployment runs the image beside an application worker:

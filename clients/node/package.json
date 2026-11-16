@@ -40,11 +40,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AndriiSydorenko1904/tay.git",
+    "url": "git+https://github.com/abstraction-systems/tay.git",
     "directory": "clients/node"
   },
   "bugs": {
-    "url": "https://github.com/AndriiSydorenko1904/tay/issues"
+    "url": "https://github.com/abstraction-systems/tay/issues"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
