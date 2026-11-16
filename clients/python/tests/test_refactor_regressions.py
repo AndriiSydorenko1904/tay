@@ -108,10 +108,12 @@ class RefactorRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             task = owner.task(fail, name="failure")
             if isinstance(owner, Tay):
-                owner._send_event = AsyncMock()
+                owner._connection.send_event = AsyncMock()
                 await owner._run_execution("r", "e", "j", task, {}, True)
-                self.assertEqual(owner._send_event.await_args.args[0], "failed")
-                json_bytes(owner._send_event.await_args.args[1])
+                self.assertEqual(
+                    owner._connection.send_event.await_args.args[0], "failed"
+                )
+                json_bytes(owner._connection.send_event.await_args.args[1])
             else:
                 owner._worker_request = AsyncMock(return_value={})
                 await owner._execute(

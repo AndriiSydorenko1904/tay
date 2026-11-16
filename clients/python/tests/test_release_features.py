@@ -150,22 +150,22 @@ class WaitResultTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         client = Tay(socket_path="/tmp/tay-wait-rpc.sock")
-        client._writer = MagicMock()
+        client._connection._writer = MagicMock()
         client.start = AsyncMock(return_value=client)
         handle = JobHandle("job", client)
 
         async def blocked_write(*args, **kwargs):
             await asyncio.Event().wait()
 
-        client._send_envelope = AsyncMock(side_effect=blocked_write)
+        client._connection._send_envelope = AsyncMock(side_effect=blocked_write)
         with self.assertRaises(TimeoutError):
             await handle.wait_result(timeout=0.02)
-        self.assertEqual(client._pending, {})
-        client._send_envelope = AsyncMock()
+        self.assertEqual(client._connection._pending, {})
+        client._connection._send_envelope = AsyncMock()
         with self.assertRaises(TimeoutError):
             await handle.wait_result(timeout=0.02)
-        self.assertEqual(client._pending, {})
-        client._writer = None
+        self.assertEqual(client._connection._pending, {})
+        client._connection._writer = None
         await client.close()
 
 
@@ -304,7 +304,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         new = MagicMock()
         new.is_closing.return_value = False
         new.drain = AsyncMock()
-        client._writer = old
+        client._connection._writer = old
         entered = threading.Event()
         release = threading.Event()
         effects = []
@@ -326,7 +326,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await client._accept_execution(message)
         try:
             self.assertTrue(await asyncio.to_thread(entered.wait, 1))
-            client._writer = new
+            client._connection._writer = new
             with patch.object(
                 client, "_execution_failure", new_callable=AsyncMock
             ) as refused:
@@ -346,14 +346,14 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_socket_rechecks_session_after_started_ack_before_user_effect(self):
         client = Tay(mode="worker", socket_path="/tmp/tay-started-race.sock")
         old, new = MagicMock(), MagicMock()
-        client._writer = old
+        client._connection._writer = old
         effect = MagicMock()
         task = client.task(effect, name="effect")
 
         async def started(*args, **kwargs):
-            client._writer = new
+            client._connection._writer = new
 
-        client._send_event = AsyncMock(side_effect=started)
+        client._connection.send_event = AsyncMock(side_effect=started)
         await client._run_execution("r", "e", "j", task, {}, True, connection=old)
         effect.assert_not_called()
         await client.close()

@@ -26,20 +26,16 @@ from .execution import bounded_error, cancel_async_execution, run_task
 from .job_options import enqueue_payload
 from .protocol import (
     DEFAULT_MAX_FRAME_BYTES,
-    PROTOCOL_VERSION,
-    encode_frame,
-    normalize_json,
-    read_frame,
     validate_task_name,
 )
 from .responses import (
     _extract_identifier,
     _extract_job_durability,
-    _server_error_from_payload,
     extract_result,
 )
 from .results import wait_result
 from .schedules import ScheduleHandle, Scheduling, validate_every
+from .socket_connection import SocketConnection
 from .socket_path import resolve_socket_path
 from .task import Durability, Task, TaskConfig, register_task
 from .validation import identifier, positive_finite
@@ -94,7 +90,7 @@ class Tay(Scheduling):
     advertises task capacity but deliberately cannot submit jobs.
 
     A client reconnects after a local Tay restart and reconciles its task
-    registrations and desired durable schedules. It never automatically replays an RPC:
+    registrations and desired durable schedules. It never automatically replays a request:
     a lost enqueue reply is an intentionally visible unknown outcome.
     """
 
@@ -163,27 +159,16 @@ class Tay(Scheduling):
         # reconcile startup schedules before advertising the connection as ready.
         self._schedule_declarations: dict[str, dict[str, Any]] = {}
         self._withdrawn_schedules: set[str] = set()
-        self._running = False
-        self._closing = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._reader_task: asyncio.Task[None] | None = None
-        self._reconnect_task: asyncio.Task[None] | None = None
-        self._connected = asyncio.Event()
-        self._connection_lost = asyncio.Event()
-        self._connection_lost.set()
-        self._start_lock = asyncio.Lock()
-        self._pending_lock = asyncio.Lock()
-        self._write_lock = asyncio.Lock()
         self._execution_lock = asyncio.Lock()
-        self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._expired_requests: dict[str, None] = {}
-        self._event_request_ids: set[str] = set()
         self._executions: dict[str, asyncio.Task[None]] = {}
         self._execution_is_sync: dict[str, bool] = {}
         self._execution_connections: dict[str, asyncio.StreamWriter | None] = {}
-        self._last_connection_error: BaseException | None = None
+        self._connection = SocketConnection(
+            self,
+            bootstrap=self._bootstrap,
+            on_execution=self._handle_execution_message,
+            on_disconnect=self._connection_detached,
+        )
         Tay._instances.add(self)
 
     @classmethod
@@ -194,7 +179,7 @@ class Tay(Scheduling):
 
     @property
     def connected(self) -> bool:
-        return self._connected.is_set() and self._writer is not None
+        return self._connection.connected
 
     @property
     def tasks(self) -> Mapping[str, Task]:
@@ -267,145 +252,29 @@ class Tay(Scheduling):
 
     async def start(self) -> Tay:
         """Start connection management and wait for the first successful handshake."""
-
-        self._ensure_event_loop()
-        async with self._start_lock:
-            if not self._running:
-                self._running = True
-                self._closing = False
-                self._reconnect_task = asyncio.create_task(
-                    self._connection_supervisor(), name="tay-reconnect"
-                )
-        await self._wait_until_connected()
+        await self._connection.start()
         return self
 
     async def close(self) -> None:
         """Stop reconnecting, close the socket, and release pending callers."""
-
-        if self._loop is not None:
-            self._ensure_event_loop()
-        async with self._start_lock:
-            self._running = False
-            self._closing = True
-            reconnect_task = self._reconnect_task
-            self._reconnect_task = None
-            reader_task = self._reader_task
-            writer = self._writer
-            self._connected.clear()
-            self._connection_lost.set()
-
-        if reconnect_task is not None:
-            reconnect_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reconnect_task
-        if reader_task is not None and reader_task is not asyncio.current_task():
-            reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reader_task
-        await self._fail_pending(ConnectionLost("Tay client was closed"))
-
-        # Async functions are cooperatively cancelled.  A running synchronous
-        # function may continue in its worker thread; Python offers no safe hard
-        # cancellation for it, so its eventual outcome is intentionally ignored.
+        await self._connection.close()
+        # Async functions are cooperatively cancelled. A running synchronous
+        # function may continue in its worker thread; its outcome is ignored.
         for execution in tuple(self._executions.values()):
             execution.cancel()
         self._executions.clear()
         self._execution_is_sync.clear()
         self._execution_connections.clear()
-        self._event_request_ids.clear()
-        await self._close_writer(writer)
-        self._reader = None
-        self._writer = None
-        self._reader_task = None
 
-    def _ensure_event_loop(self) -> None:
-        loop = asyncio.get_running_loop()
-        if self._loop is None:
-            self._loop = loop
-        elif self._loop is not loop:
-            raise RuntimeError(
-                "a Tay instance must be used from one asyncio event loop"
-            )
-
-    async def _wait_until_connected(self) -> None:
-        if self.connected:
-            return
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout=self.connect_timeout)
-        except TimeoutError as exc:
-            detail = (
-                f": {self._last_connection_error}"
-                if self._last_connection_error
-                else ""
-            )
-            if isinstance(self._last_connection_error, PermissionError):
-                detail += "; check socket permissions and the shared UID/GID or group"
-            raise ConnectionLost(
-                f"could not connect to Tay at {self.socket_path!r} within "
-                f"{self.connect_timeout:g}s{detail}"
-            ) from exc
-
-    async def _connection_supervisor(self) -> None:
-        delay = self.reconnect_initial_delay
-        while self._running:
-            writer: asyncio.StreamWriter | None = None
-            try:
-                self._connection_lost.clear()
-                reader, writer = await asyncio.open_unix_connection(self.socket_path)
-                if not self._running:
-                    await self._close_writer(writer)
-                    return
-                self._reader = reader
-                self._writer = writer
-                self._reader_task = asyncio.create_task(
-                    self._read_loop(reader, writer), name="tay-reader"
-                )
-                await self._bootstrap()
-                self._connected.set()
-                delay = self.reconnect_initial_delay
-                await self._connection_lost.wait()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:  # noqa: BLE001 - reconnect supervision boundary
-                self._last_connection_error = exc
-                self._connected.clear()
-            finally:
-                self._connected.clear()
-                await self._detach_connection(writer)
-
-            if self._running:
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, self.reconnect_max_delay)
-
-    async def _detach_connection(self, writer: asyncio.StreamWriter | None) -> None:
-        if writer is None:
-            return
-        reader_task = self._reader_task
+    def _connection_detached(self, writer: asyncio.StreamWriter) -> None:
         for key, connection in tuple(self._execution_connections.items()):
             if connection is writer:
                 cancel_async_execution(
                     self._executions.get(key), self._execution_is_sync.get(key, False)
                 )
-        if self._writer is writer:
-            self._writer = None
-            self._reader = None
-            self._reader_task = None
-        if reader_task is not None and reader_task is not asyncio.current_task():
-            reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reader_task
-        await self._close_writer(writer)
-
-    @staticmethod
-    async def _close_writer(writer: asyncio.StreamWriter | None) -> None:
-        if writer is None:
-            return
-        writer.close()
-        with contextlib.suppress(Exception):
-            await writer.wait_closed()
 
     async def _bootstrap(self) -> None:
-        await self._exchange(
+        await self._connection.exchange(
             "hello",
             {
                 "mode": self.mode,
@@ -422,167 +291,26 @@ class Tay(Scheduling):
             ):
                 declarations[declaration["declaration_id"]] = declaration
         for declaration_id in sorted(declarations):
-            await self._exchange("schedule", declarations[declaration_id])
+            await self._connection.exchange("schedule", declarations[declaration_id])
         # Advertise execution capacity only after the control-plane state is
         # restored. Otherwise a large recovered backlog can begin dispatching
         # and starve schedule reconciliation on the shared socket.
         if self.mode != "client" and self._registered_task_names:
-            await self._exchange(
+            await self._connection.exchange(
                 "register_tasks", {"tasks": sorted(self._registered_task_names)}
             )
 
-    async def _read_loop(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        try:
-            while self._running and self._writer is writer:
-                message = await read_frame(reader, max_frame_bytes=self.max_frame_bytes)
-                await self._handle_message(message)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            self._last_connection_error = exc
-        finally:
-            if self._writer is writer:
-                self._event_request_ids.clear()
-                self._expired_requests.clear()
-                self._connected.clear()
-                self._connection_lost.set()
-                await self._fail_pending(ConnectionLost("connection to Tay was lost"))
-
-    async def _handle_message(self, message: dict[str, Any]) -> None:
-        message_type = message["type"]
-        if message_type == "execute":
+    async def _handle_execution_message(self, message: dict[str, Any]) -> None:
+        if message["type"] == "execute":
             await self._accept_execution(message)
-            return
-        if message_type == "cancel_execution":
+        else:
             await self._cancel_execution(message)
-            return
-        if message_type == "ping":
-            await self._send_event("pong", {"ping_id": message.get("ping_id")})
-            return
-
-        request_id = message.get("request_id")
-        if request_id is not None:
-            if request_id in self._expired_requests:
-                del self._expired_requests[request_id]
-                return
-            if (
-                message_type in {"accepted", "heartbeat_ok"}
-                and request_id in self._event_request_ids
-            ):
-                self._event_request_ids.discard(request_id)
-                return
-            future = self._pending.pop(request_id, None)
-            if future is not None and not future.done():
-                if message_type in {"error", "protocol_error"}:
-                    future.set_exception(
-                        _server_error_from_payload(message.get("error", message))
-                    )
-                else:
-                    future.set_result(message)
-                return
-        # A server should not emit arbitrary unsolicited messages.  Treat one as
-        # a protocol violation instead of retaining unbounded unknown state.
-        raise ProtocolError(f"unexpected protocol message type {message_type!r}")
-
-    async def _fail_pending(self, error: BaseException) -> None:
-        async with self._pending_lock:
-            pending = tuple(self._pending.values())
-            self._pending.clear()
-        for future in pending:
-            if not future.done():
-                future.set_exception(error)
-
-    async def _send_envelope(
-        self,
-        envelope: Mapping[str, Any],
-        *,
-        connection: asyncio.StreamWriter | None = None,
-    ) -> None:
-        writer = self._writer if connection is None else connection
-        if writer is None or writer.is_closing():
-            raise ConnectionLost("Tay socket is not connected")
-        frame = encode_frame(envelope, max_frame_bytes=self.max_frame_bytes)
-        async with self._write_lock:
-            if self._writer is not writer or writer.is_closing():
-                raise ConnectionLost(
-                    "Tay socket disconnected before request could be sent"
-                )
-            try:
-                writer.write(frame)
-                await writer.drain()
-            except (ConnectionError, OSError) as exc:
-                self._connection_lost.set()
-                raise ConnectionLost("failed to write to Tay") from exc
-
-    async def _send_event(
-        self,
-        message_type: str,
-        fields: Mapping[str, Any],
-        *,
-        connection: asyncio.StreamWriter | None = None,
-    ) -> None:
-        request_id = uuid.uuid4().hex
-        envelope = {
-            "version": PROTOCOL_VERSION,
-            "type": message_type,
-            "request_id": request_id,
-            **normalize_json(fields),
-        }
-        self._event_request_ids.add(request_id)
-        try:
-            await self._send_envelope(envelope, connection=connection)
-        except Exception:
-            self._event_request_ids.discard(request_id)
-            raise
-
-    async def _exchange(
-        self, message_type: str, fields: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        """Issue exactly one request without retrying it after a disconnect."""
-
-        request_id = uuid.uuid4().hex
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        envelope = {
-            "version": PROTOCOL_VERSION,
-            "type": message_type,
-            "request_id": request_id,
-            **normalize_json(fields),
-        }
-        async with self._pending_lock:
-            if self._writer is None:
-                raise ConnectionLost("Tay socket is not connected")
-            self._pending[request_id] = future
-        try:
-            await self._send_envelope(envelope)
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(future), timeout=self.request_timeout
-                )
-            except TimeoutError as exc:
-                raise ConnectionLost(
-                    f"Tay did not reply to {message_type!r} within {self.request_timeout:g}s"
-                ) from exc
-        finally:
-            async with self._pending_lock:
-                self._pending.pop(request_id, None)
-            if not future.done():
-                # A cancelled/timed-out caller does not cancel the server's
-                # command. Keep bounded tombstones for its eventual reply.
-                self._expired_requests[request_id] = None
-                if len(self._expired_requests) > 1024:
-                    del self._expired_requests[next(iter(self._expired_requests))]
-                future.cancel()
-            elif not future.cancelled():
-                future.exception()
 
     async def _request(
         self, message_type: str, fields: Mapping[str, Any]
     ) -> dict[str, Any]:
         await self.start()
-        return await self._exchange(message_type, fields)
+        return await self._connection.exchange(message_type, fields)
 
     def _task_name(self, task: str | Task) -> str:
         if isinstance(task, Task):
@@ -632,7 +360,7 @@ class Tay(Scheduling):
             return ()
         names = tuple(dict.fromkeys(self._registered_task_name(task) for task in tasks))
         self._registered_task_names.difference_update(names)
-        # Keep the desired state withdrawn even when this RPC has an unknown
+        # Keep the desired state withdrawn even when this request has an unknown
         # transport outcome. Registrations are connection-scoped, and a later
         # bootstrap must not accidentally resurrect the capability.
         await self._request("unregister_tasks", {"tasks": list(names)})
@@ -716,7 +444,7 @@ class Tay(Scheduling):
             if existing is not None:
                 # Duplicate delivery of an active execution must not start a
                 # second local invocation.  Reaffirming STARTED is harmless.
-                await self._send_event(
+                await self._connection.send_event(
                     "started",
                     {"reservation_id": reservation_id, "execution_id": execution_id},
                 )
@@ -736,13 +464,13 @@ class Tay(Scheduling):
                     task,
                     dict(arguments),
                     synchronous,
-                    connection=self._writer,
+                    connection=self._connection.writer,
                 ),
                 name=f"tay-execution-{execution_id}",
             )
             self._executions[execution_id] = execution
             self._execution_is_sync[execution_id] = synchronous
-            self._execution_connections[execution_id] = self._writer
+            self._execution_connections[execution_id] = self._connection.writer
 
             def finished(done: asyncio.Task[None]) -> None:
                 self._execution_finished(execution_id)
@@ -785,19 +513,19 @@ class Tay(Scheduling):
         connection: asyncio.StreamWriter | None = None,
     ) -> None:
         async def send_event(kind: str, fields: Mapping[str, Any]) -> None:
-            if connection is not None and self._writer is not connection:
+            if connection is not None and self._connection.writer is not connection:
                 return
             if connection is None:
-                await self._send_event(kind, fields)
+                await self._connection.send_event(kind, fields)
             else:
-                await self._send_event(kind, fields, connection=connection)
+                await self._connection.send_event(kind, fields, connection=connection)
 
         def awaitable_started() -> None:
             self._execution_is_sync[execution_id] = False
-            if connection is not None and self._writer is not connection:
+            if connection is not None and self._connection.writer is not connection:
                 raise asyncio.CancelledError
 
-        if connection is not None and self._writer is not connection:
+        if connection is not None and self._connection.writer is not connection:
             return
         await send_event(
             "started",
@@ -807,7 +535,7 @@ class Tay(Scheduling):
                 "job_id": job_id,
             },
         )
-        if connection is not None and self._writer is not connection:
+        if connection is not None and self._connection.writer is not connection:
             return
         try:
             result = await run_task(
@@ -877,7 +605,7 @@ class Tay(Scheduling):
         if isinstance(message.get("job_id"), str):
             fields["job_id"] = message["job_id"]
         with contextlib.suppress(ConnectionLost, OSError):
-            await self._send_event("failed", fields)
+            await self._connection.send_event("failed", fields)
 
     def _bounded_error(self, exc: BaseException) -> dict[str, Any]:
         return bounded_error(

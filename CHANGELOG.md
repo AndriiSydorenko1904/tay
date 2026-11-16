@@ -1,5 +1,24 @@
 # Changelog
 
+## Python SDK 1.4.6 and Node.js SDK 1.0.1 — 2026-11-16
+
+### Changed
+
+- Separate socket lifecycle, reconnects, framing and request/reply correlation
+  from task execution in both SDKs, preserving their public APIs.
+
+### Fixed
+
+- Ignore up to 1024 known late Node.js socket replies after request timeout
+  without disconnecting unrelated active executions.
+- Isolate Node.js message queues, pending requests and task outcomes by socket
+  connection. Reconcile schedules and task registrations after reconnect without
+  replaying submissions whose outcome is unknown.
+- Retain Node.js execution capacity until handlers settle after cooperative
+  cancellation, including handlers that ignore their AbortSignal.
+- Interrupt Node.js handshake and reconnect backoff during shutdown, reject
+  pending callers promptly, and allow the client to restart after closing.
+
 ## 2.0.1 — 2026-11-15
 
 ### Fixed

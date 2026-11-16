@@ -22,8 +22,8 @@ from tay import (
     ValidationError,
     resolve_socket_path,
 )
-from tay.client import _server_error_from_payload
 from tay.protocol import decode_payload, encode_frame, normalize_json
+from tay.responses import _server_error_from_payload
 
 
 class ProtocolTests(unittest.TestCase):
@@ -139,11 +139,13 @@ class SocketPathTests(unittest.TestCase):
 class ClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_permission_failure_reports_path_and_group_hint(self) -> None:
         client = Tay(socket_path="/run/tay/tay.sock", connect_timeout=0.001)
-        client._last_connection_error = PermissionError(13, "Permission denied")
+        client._connection._last_connection_error = PermissionError(
+            13, "Permission denied"
+        )
         with self.assertRaisesRegex(
             ConnectionLost, r"/run/tay/tay.sock.*Permission denied.*UID/GID"
         ):
-            await client._wait_until_connected()
+            await client._connection._wait_until_connected()
 
     async def test_task_decorator_uses_module_function_name_and_metadata(self) -> None:
         client = Tay(mode="client")
@@ -270,7 +272,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         async def send_event(kind: str, fields: dict[str, object]) -> None:
             events.append((kind, dict(fields)))
 
-        client._send_event = send_event  # type: ignore[method-assign]
+        client._connection.send_event = send_event  # type: ignore[method-assign]
         await client._accept_execution(
             {
                 "reservation_id": "reservation-async",
@@ -418,7 +420,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             calls.append((kind, dict(fields)))
             return {"type": "hello_ok", "request_id": "request-1"}
 
-        client._exchange = exchange  # type: ignore[method-assign]
+        client._connection.exchange = exchange  # type: ignore[method-assign]
         await client._bootstrap()
         self.assertEqual(
             calls,
@@ -468,7 +470,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             bootstrap_calls.append((kind, dict(fields)))
             return {"type": "ok"}
 
-        client._exchange = exchange  # type: ignore[method-assign]
+        client._connection.exchange = exchange  # type: ignore[method-assign]
         await client._bootstrap()
         self.assertEqual(
             bootstrap_calls[-1],
@@ -504,7 +506,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             calls.append((kind, dict(fields)))
             return {"type": "ok"}
 
-        client._exchange = exchange  # type: ignore[method-assign]
+        client._connection.exchange = exchange  # type: ignore[method-assign]
         await client._bootstrap()
         self.assertEqual(calls[0][0], "hello")
         self.assertEqual(
@@ -565,7 +567,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             bootstrap_calls.append((kind, dict(fields)))
             return {"type": "ok"}
 
-        client._exchange = exchange  # type: ignore[method-assign]
+        client._connection.exchange = exchange  # type: ignore[method-assign]
         await client._bootstrap()
         self.assertIn(
             (
@@ -604,7 +606,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         async def send_event(kind: str, fields: dict[str, object]) -> None:
             events.append((kind, dict(fields)))
 
-        client._send_event = send_event  # type: ignore[method-assign]
+        client._connection.send_event = send_event  # type: ignore[method-assign]
         await client._accept_execution(
             {
                 "reservation_id": "reservation-1",

@@ -181,13 +181,13 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
         def answer():
             return 42
 
-        client._send_event = AsyncMock(
+        client._connection.send_event = AsyncMock(
             side_effect=[None, ConnectionLost("delivery lost")]
         )
         with self.assertRaises(ConnectionLost):
             await client._run_execution("r", "e", "j", answer, {}, True)
         self.assertEqual(
-            [call.args[0] for call in client._send_event.await_args_list],
+            [call.args[0] for call in client._connection.send_event.await_args_list],
             ["started", "succeeded"],
         )
 
@@ -198,11 +198,13 @@ class ExecutionRegressionTests(unittest.IsolatedAsyncioTestCase):
         def fail():
             raise ValueError("task failed")
 
-        client._send_event = AsyncMock()
+        client._connection.send_event = AsyncMock()
         await client._run_execution("r", "e", "j", fail, {}, True)
-        self.assertEqual(client._send_event.await_args_list[-1].args[0], "failed")
         self.assertEqual(
-            client._send_event.await_args_list[-1].args[1]["error"]["type"],
+            client._connection.send_event.await_args_list[-1].args[0], "failed"
+        )
+        self.assertEqual(
+            client._connection.send_event.await_args_list[-1].args[1]["error"]["type"],
             "ValueError",
         )
 
@@ -338,7 +340,7 @@ class AwaitableCancellationTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         client = Tay(socket_path="/tmp/tay-phase-test.sock")
-        client._send_event = AsyncMock()
+        client._connection.send_event = AsyncMock()
         waiting = asyncio.Event()
 
         async def continuation():
@@ -360,7 +362,7 @@ class AwaitableCancellationTests(unittest.IsolatedAsyncioTestCase):
             await client._cancel_execution({"execution_id": "e"})
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 1)
-            completion = client._send_event.await_args.args
+            completion = client._connection.send_event.await_args.args
             self.assertEqual(completion[0], "failed")
             self.assertTrue(completion[1]["error"]["cancelled"])
         finally:

@@ -1,6 +1,5 @@
-import * as net from "node:net";
+import type * as net from "node:net";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { ConnectionLost, ModeError, ProtocolError, TaskRegistrationError, ValidationError } from "./errors.js";
 import {
   errorPayload,
@@ -10,10 +9,10 @@ import {
   extractResult,
   JobHandle,
   Scheduling,
-  serverError,
   Task,
 } from "./core.js";
-import { DEFAULT_MAX_FRAME_BYTES, encodeFrame, FrameDecoder, PROTOCOL_VERSION, type Envelope } from "./protocol.js";
+import { DEFAULT_MAX_FRAME_BYTES, type Envelope } from "./protocol.js";
+import { SocketConnection } from "./socket_connection.js";
 import type { EnqueueOptions, JSONObject, JSONValue, TaskDefaults, TaskHandler } from "./types.js";
 import { identifier, jsonObject, normalizeJSON, resolveSocketPath, validateEnqueueOptions, validateTaskName } from "./validation.js";
 
@@ -33,10 +32,9 @@ export interface TayOptions {
   reconnectMaxDelay?: number;
 }
 
-interface Pending {
-  resolve(value: JSONObject): void;
-  reject(error: unknown): void;
-  timer: NodeJS.Timeout;
+interface Execution {
+  controller: AbortController;
+  connection: net.Socket;
 }
 
 function positive(value: number, name: string): number {
@@ -58,16 +56,9 @@ export class Tay extends Scheduling {
   readonly reconnectMaxDelay: number;
   readonly tasks = new Map<string, Task>();
   readonly #registered = new Set<string>();
-  readonly #pending = new Map<string, Pending>();
-  readonly #eventRequests = new Set<string>();
-  readonly #executions = new Map<string, AbortController>();
+  readonly #connection: SocketConnection;
+  readonly #executions = new Map<string, Execution>();
   readonly #scheduleDeclarations = new Map<string, JSONObject>();
-  #socket: net.Socket | undefined;
-  #running = false;
-  #connected = false;
-  #supervisor: Promise<void> | undefined;
-  #connectWaiters: Array<{ resolve(): void; reject(error: unknown): void }> = [];
-  #messageChain = Promise.resolve();
 
   constructor(options: TayOptions = {}) {
     super();
@@ -88,9 +79,14 @@ export class Tay extends Scheduling {
     this.reconnectInitialDelay = positive(options.reconnectInitialDelay ?? 0.05, "reconnectInitialDelay");
     this.reconnectMaxDelay = positive(options.reconnectMaxDelay ?? 2, "reconnectMaxDelay");
     if (this.reconnectMaxDelay < this.reconnectInitialDelay) throw new ValidationError("invalid reconnect delay configuration");
+    this.#connection = new SocketConnection(this, {
+      bootstrap: (connection) => this.bootstrap(connection),
+      onExecution: (message, connection) => this.handleExecutionMessage(message, connection),
+      onDisconnect: (connection) => this.connectionDetached(connection),
+    });
   }
 
-  get connected(): boolean { return this.#connected; }
+  get connected(): boolean { return this.#connection.connected; }
 
   task(name: string, handler: TaskHandler, defaults: TaskDefaults = {}): Task {
     if (this.mode === "client") throw new ModeError("client mode cannot register execution tasks");
@@ -102,27 +98,14 @@ export class Tay extends Scheduling {
   }
 
   async start(): Promise<this> {
-    if (!this.#running) {
-      this.#running = true;
-      this.#supervisor = this.supervise();
-    }
-    if (this.#connected) return this;
-    await new Promise<void>((resolve, reject) => this.#connectWaiters.push({ resolve, reject }));
+    await this.#connection.start();
     return this;
   }
 
   async close(): Promise<void> {
-    this.#running = false;
-    this.#connected = false;
-    for (const controller of this.#executions.values()) controller.abort(new Error("Tay client closed"));
+    for (const { controller } of this.#executions.values()) controller.abort(new Error("Tay client closed"));
     this.#executions.clear();
-    const error = new ConnectionLost("Tay client was closed");
-    this.rejectPending(error);
-    for (const waiter of this.#connectWaiters.splice(0)) waiter.reject(error);
-    this.#socket?.end();
-    this.#socket = undefined;
-    await this.#supervisor?.catch(() => undefined);
-    this.#supervisor = undefined;
+    await this.#connection.close();
   }
 
   async enqueue(task: string | Task, args: JSONObject = {}, options: EnqueueOptions = {}): Promise<JobHandle> {
@@ -188,128 +171,38 @@ export class Tay extends Scheduling {
     return name;
   }
 
-  private async supervise(): Promise<void> {
-    let delay = this.reconnectInitialDelay;
-    while (this.#running) {
-      try {
-        await this.connectOnce();
-        delay = this.reconnectInitialDelay;
-      } catch (error) {
-        if (!this.#running) return;
-        if (this.#connectWaiters.length) {
-          for (const waiter of this.#connectWaiters.splice(0)) waiter.reject(error);
-        }
-        await new Promise((resolve) => setTimeout(resolve, delay * 1000));
-        delay = Math.min(this.reconnectMaxDelay, delay * 2);
-      }
+  private async bootstrap(connection: net.Socket): Promise<void> {
+    await this.#connection.exchange("hello", { mode: this.mode, runtime_id: this.clientId, max_concurrency: this.mode === "client" ? 0 : this.capacity }, connection);
+    const declarations = new Map(this.#scheduleDeclarations);
+    for (const task of this.tasks.values()) {
+      const declaration = task.staticSchedule();
+      if (declaration && typeof declaration.declaration_id === "string") declarations.set(declaration.declaration_id, declaration);
     }
+    for (const [, declaration] of [...declarations].sort(([a], [b]) => a.localeCompare(b))) await this.#connection.exchange("schedule", declaration, connection);
+    if (this.mode !== "client" && this.#registered.size) await this.#connection.exchange("register_tasks", { tasks: [...this.#registered].sort() }, connection);
   }
 
-  private async connectOnce(): Promise<void> {
-    const socket = net.createConnection(this.socketPath);
-    const decoder = new FrameDecoder(this.maxFrameBytes);
-    this.#socket = socket;
-    socket.setNoDelay(true);
-    const connectTimer = setTimeout(() => socket.destroy(new ConnectionLost("Tay socket connection timed out")), this.connectTimeout * 1000);
-    try {
-      await once(socket, "connect");
-    } finally {
-      clearTimeout(connectTimer);
+  private connectionDetached(connection: net.Socket): void {
+    for (const execution of this.#executions.values()) {
+      if (execution.connection === connection) execution.controller.abort(new ConnectionLost("execution connection was retired"));
     }
-    if (!this.#running || this.#socket !== socket) { socket.destroy(); return; }
-    socket.on("data", (chunk: Buffer) => {
-      try {
-        for (const message of decoder.push(chunk)) {
-          this.#messageChain = this.#messageChain.then(() => this.handleMessage(message)).catch((error) => {
-            socket.destroy(error instanceof Error ? error : new ProtocolError(String(error)));
-          });
-        }
-      } catch (error) {
-        socket.destroy(error instanceof Error ? error : new ProtocolError(String(error)));
-      }
-    });
-    const closed = new Promise<void>((resolve) => socket.once("close", resolve));
-    try {
-      await this.exchange("hello", { mode: this.mode, runtime_id: this.clientId, max_concurrency: this.mode === "client" ? 0 : this.capacity }, socket);
-      const declarations = new Map(this.#scheduleDeclarations);
-      for (const task of this.tasks.values()) {
-        const declaration = task.staticSchedule();
-        if (declaration && typeof declaration.declaration_id === "string") declarations.set(declaration.declaration_id, declaration);
-      }
-      for (const [, declaration] of [...declarations].sort(([a], [b]) => a.localeCompare(b))) await this.exchange("schedule", declaration, socket);
-      if (this.mode !== "client" && this.#registered.size) await this.exchange("register_tasks", { tasks: [...this.#registered].sort() }, socket);
-      this.#connected = true;
-      for (const waiter of this.#connectWaiters.splice(0)) waiter.resolve();
-      await closed;
-    } finally {
-      if (this.#socket === socket) {
-        this.#connected = false;
-        this.#socket = undefined;
-        this.#eventRequests.clear();
-        this.rejectPending(new ConnectionLost("connection to Tay was lost"));
-        for (const controller of this.#executions.values()) controller.abort(new ConnectionLost("execution connection was retired"));
-        this.#executions.clear();
-      }
-      socket.destroy();
-    }
+    // AbortSignal is cooperative: retain capacity until the handler settles,
+    // even if it ignores cancellation after its original socket retires.
   }
 
   private async request(type: string, fields: JSONObject): Promise<JSONObject> {
     await this.start();
-    return this.exchange(type, fields);
+    return this.#connection.exchange(type, fields);
   }
 
-  private exchange(type: string, fields: JSONObject, connection = this.#socket): Promise<JSONObject> {
-    if (!connection || connection.destroyed) return Promise.reject(new ConnectionLost("Tay socket is not connected"));
-    const requestId = randomUUID().replaceAll("-", "");
-    return new Promise<JSONObject>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(requestId);
-        reject(new ConnectionLost(`Tay did not reply to ${type} within ${this.requestTimeout}s`));
-      }, this.requestTimeout * 1000);
-      this.#pending.set(requestId, { resolve, reject, timer });
-      this.write({ version: PROTOCOL_VERSION, type, request_id: requestId, ...fields }, connection).catch((error) => {
-        const pending = this.#pending.get(requestId);
-        if (pending) { clearTimeout(pending.timer); this.#pending.delete(requestId); pending.reject(error); }
-      });
-    });
+  private async handleExecutionMessage(message: Envelope, connection: net.Socket): Promise<void> {
+    if (message.type === "execute") return this.acceptExecution(message, connection);
+    if (typeof message.execution_id !== "string") throw new ProtocolError("cancel_execution requires execution_id");
+    const execution = this.#executions.get(message.execution_id);
+    if (execution?.connection === connection) execution.controller.abort(new Error("execution cancelled"));
   }
 
-  private async sendEvent(type: string, fields: JSONObject, connection = this.#socket): Promise<void> {
-    if (!connection) throw new ConnectionLost("Tay socket is not connected");
-    const requestId = randomUUID().replaceAll("-", "");
-    this.#eventRequests.add(requestId);
-    try { await this.write({ version: PROTOCOL_VERSION, type, request_id: requestId, ...fields }, connection); }
-    catch (error) { this.#eventRequests.delete(requestId); throw error; }
-  }
-
-  private async write(envelope: Envelope, connection: net.Socket): Promise<void> {
-    if (connection.destroyed || connection !== this.#socket) throw new ConnectionLost("Tay socket disconnected before request could be sent");
-    if (!connection.write(encodeFrame(envelope, this.maxFrameBytes))) await once(connection, "drain");
-  }
-
-  private async handleMessage(message: Envelope): Promise<void> {
-    if (message.type === "execute") return this.acceptExecution(message);
-    if (message.type === "cancel_execution") {
-      if (typeof message.execution_id !== "string") throw new ProtocolError("cancel_execution requires execution_id");
-      this.#executions.get(message.execution_id)?.abort(new Error("execution cancelled"));
-      return;
-    }
-    if (message.type === "ping") {
-      await this.sendEvent("pong", { ping_id: message.ping_id ?? null });
-      return;
-    }
-    const requestId = message.request_id;
-    if ((message.type === "accepted" || message.type === "heartbeat_ok") && this.#eventRequests.delete(requestId)) return;
-    const pending = this.#pending.get(requestId);
-    if (!pending) throw new ProtocolError(`unexpected protocol message type ${message.type}`);
-    this.#pending.delete(requestId);
-    clearTimeout(pending.timer);
-    if (message.type === "error" || message.type === "protocol_error") pending.reject(serverError(message.error ?? message));
-    else pending.resolve(message);
-  }
-
-  private async acceptExecution(message: Envelope): Promise<void> {
+  private async acceptExecution(message: Envelope, connection: net.Socket): Promise<void> {
     const executionId = message.execution_id;
     const reservationId = message.reservation_id;
     const jobId = message.job_id;
@@ -317,39 +210,43 @@ export class Tay extends Scheduling {
     if (typeof executionId !== "string" || typeof reservationId !== "string" || typeof jobId !== "string" || typeof taskName !== "string") {
       throw new ProtocolError("execute requires execution_id, reservation_id, job_id, and task");
     }
-    if (this.#executions.has(executionId)) {
-      await this.sendEvent("started", { reservation_id: reservationId, execution_id: executionId });
+    const existing = this.#executions.get(executionId);
+    if (existing?.connection === connection) {
+      await this.#connection.sendEvent("started", { reservation_id: reservationId, execution_id: executionId }, connection);
       return;
     }
-    if (this.#executions.size >= this.capacity) {
-      await this.sendEvent("failed", { reservation_id: reservationId, execution_id: executionId, job_id: jobId, error: { type: "ServerError", code: "over_capacity" } });
+    if (existing || this.#executions.size >= this.capacity) {
+      await this.#connection.sendEvent("failed", { reservation_id: reservationId, execution_id: executionId, job_id: jobId, error: { type: "ServerError", code: "over_capacity" } }, connection);
       return;
     }
     const task = this.tasks.get(taskName);
     if (!task) {
-      await this.sendEvent("failed", { reservation_id: reservationId, execution_id: executionId, job_id: jobId, error: { type: "TaskNotRegistered" } });
+      await this.#connection.sendEvent("failed", { reservation_id: reservationId, execution_id: executionId, job_id: jobId, error: { type: "TaskNotRegistered" } }, connection);
       return;
     }
     const controller = new AbortController();
-    this.#executions.set(executionId, controller);
-    const connection = this.#socket;
+    const execution = { controller, connection };
+    this.#executions.set(executionId, execution);
     void this.runExecution(task, message.args, { reservation_id: reservationId, execution_id: executionId, job_id: jobId }, controller, connection)
-      .finally(() => this.#executions.delete(executionId));
+      // A transport failure cannot be settled on another socket.
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#executions.get(executionId) === execution) this.#executions.delete(executionId);
+      });
   }
 
-  private async runExecution(task: Task, args: unknown, context: JSONObject, controller: AbortController, connection?: net.Socket): Promise<void> {
-    if (!connection || connection !== this.#socket) return;
-    await this.sendEvent("started", context, connection);
+  private async runExecution(task: Task, args: unknown, context: JSONObject, controller: AbortController, connection: net.Socket): Promise<void> {
+    if (connection !== this.#connection.socket || connection.destroyed) return;
+    await this.#connection.sendEvent("started", context, connection);
+    if (connection !== this.#connection.socket || connection.destroyed) return;
+    let result: JSONValue;
     try {
-      const result = await executeTask(task, args, controller.signal, this.maxResultBytes);
-      if (connection === this.#socket) await this.sendEvent("succeeded", { ...context, result }, connection);
+      controller.signal.throwIfAborted();
+      result = await executeTask(task, args, controller.signal, this.maxResultBytes);
     } catch (error) {
-      if (connection === this.#socket) await this.sendEvent("failed", { ...context, error: errorPayload(error, this.maxErrorBytes) }, connection).catch(() => undefined);
+      if (connection === this.#connection.socket) await this.#connection.sendEvent("failed", { ...context, error: errorPayload(error, this.maxErrorBytes) }, connection).catch(() => undefined);
+      return;
     }
-  }
-
-  private rejectPending(error: unknown): void {
-    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
-    this.#pending.clear();
+    if (connection === this.#connection.socket) await this.#connection.sendEvent("succeeded", { ...context, result }, connection);
   }
 }

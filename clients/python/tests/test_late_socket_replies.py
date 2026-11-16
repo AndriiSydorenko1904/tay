@@ -94,7 +94,7 @@ class LateSocketReplyTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await client.start()
                 await asyncio.wait_for(entered.wait(), 2)
-                connection = client._writer
+                connection = client._connection._writer
                 caller = asyncio.create_task(
                     client._request("status", {"job_id": "1" * 32})
                 )
@@ -106,16 +106,16 @@ class LateSocketReplyTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     with self.assertRaises(ConnectionLost):
                         await caller
-                self.assertEqual(len(client._expired_requests), 1)
+                self.assertEqual(len(client._connection._expired_requests), 1)
                 release_reply.set()
                 # An answer to a subsequent command proves the earlier reply
                 # was consumed on the same ordered socket stream.
                 reply = await client._request("status", {"job_id": "3" * 32})
                 self.assertEqual(reply["status"], "available")
-                self.assertIs(client._writer, connection)
+                self.assertIs(client._connection._writer, connection)
                 self.assertTrue(client.connected)
                 self.assertFalse(cancelled.is_set())
-                self.assertEqual(client._expired_requests, {})
+                self.assertEqual(client._connection._expired_requests, {})
             finally:
                 release_reply.set()
                 executions = tuple(client._executions.values())
@@ -135,20 +135,22 @@ class LateSocketReplyTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         client = Tay(socket_path="/tmp/tay-expired-test.sock")
-        client._writer = object()
-        client._send_envelope = AsyncMock()
+        client._connection._writer = object()
+        client._connection._send_envelope = AsyncMock()
         for _ in range(1030):
-            caller = asyncio.create_task(client._exchange("status", {}))
+            caller = asyncio.create_task(client._connection.exchange("status", {}))
             await asyncio.sleep(0)
             caller.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await caller
-        self.assertEqual(len(client._expired_requests), 1024)
-        known = next(iter(client._expired_requests))
-        await client._handle_message({"type": "status", "request_id": known})
-        self.assertEqual(len(client._expired_requests), 1023)
+        self.assertEqual(len(client._connection._expired_requests), 1024)
+        known = next(iter(client._connection._expired_requests))
+        await client._connection._handle_message(
+            {"type": "status", "request_id": known}
+        )
+        self.assertEqual(len(client._connection._expired_requests), 1023)
         with self.assertRaises(ProtocolError):
-            await client._handle_message(
+            await client._connection._handle_message(
                 {"type": "status", "request_id": "unsolicited"}
             )
-        client._writer = None
+        client._connection._writer = None
