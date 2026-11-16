@@ -25,3 +25,4 @@ deploy-helper.sh
 /performance/
 
 /.github/scripts/__pycache__/
+.aider*
