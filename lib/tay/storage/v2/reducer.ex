@@ -66,7 +66,16 @@ defmodule Tay.Storage.V2.Reducer do
          {:ok, applied} <- Transition.apply(prepared, %{sequence: mutation.new_revision}),
          job <- from_v1(applied, mutation),
          :ok <- Codec.snapshot?(job, candidate.value_limits),
-         {:ok, next} <- Transition.put_candidate(candidate, previous, job) do
+         {:ok, next} <- Transition.put_candidate(candidate, previous, job),
+         {:ok, next} <-
+           Tay.State.Availability.apply(
+             next,
+             Map.fetch!(
+               %{inserted: 1, available: 2, started: 3, finished: 4, cancelled: 5, retried: 6},
+               mutation.kind
+             ),
+             job
+           ) do
       {:ok,
        update_order(
          next,

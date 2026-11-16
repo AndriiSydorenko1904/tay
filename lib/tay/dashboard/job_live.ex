@@ -131,6 +131,7 @@ defmodule Tay.Dashboard.JobLive do
   defp diagnostic_title(%{"version" => 1, "code" => 5}), do: "Execution timed out"
   defp diagnostic_title(%{"version" => 1, "code" => 6}), do: "Unsupported worker result"
   defp diagnostic_title(%{"version" => 1, "code" => 7}), do: "Execution was interrupted"
+  defp diagnostic_title(%{"version" => 1, "code" => 8}), do: "Dependency is unavailable"
   defp diagnostic_title(_), do: "Unknown execution outcome"
 
   defp diagnostic_description(nil), do: "No failure was recorded for this job."
@@ -149,7 +150,9 @@ defmodule Tay.Dashboard.JobLive do
         5 => "The execution exceeded its configured timeout and was stopped.",
         6 => "The worker returned a value outside Tay's supported success/error contract.",
         7 =>
-          "The worker connection was lost or its runtime stopped. Interrupted executions retry without consuming another attempt number."
+          "The worker connection was lost or its runtime stopped. Interrupted executions retry without consuming another attempt number.",
+        8 =>
+          "The worker could not reach this job's dependency. Tay retains the job and probes after backoff; success or new work with the same availability key wakes deferred retries early."
       },
       code,
       "Tay does not recognize this diagnostic code. Upgrade the dashboard or inspect the producing runtime."

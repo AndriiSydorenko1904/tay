@@ -3,6 +3,7 @@
 from .client import JobHandle, ScheduleHandle, Tay
 from .errors import (
     ConnectionLost,
+    DependencyUnavailable,
     JobCancelled,
     ModeError,
     ProtocolError,
@@ -21,6 +22,7 @@ from .task import Durability, Task
 
 __all__ = [
     "ConnectionLost",
+    "DependencyUnavailable",
     "Durability",
     "HTTPJobHandle",
     "JobCancelled",

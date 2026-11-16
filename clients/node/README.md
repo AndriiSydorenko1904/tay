@@ -128,3 +128,14 @@ server errors are not converted into retries or resubmissions.
 
 The Node.js `tay-client` package is MIT licensed. The Tay Engine is distributed
 separately under the Elastic License 2.0.
+
+## Dependency outages
+
+Socket and HTTP tasks accept `availability_key: "reports-api"` and
+`retries: "infinity"`. Throw the exported `DependencyUnavailable` error when
+that service cannot be reached. Tay persists the shared gate, admits one probe
+after backoff, and wakes deferred jobs early after success or a new insertion
+with the same key. Keyed jobs require `durability: "persistent"` (the default).
+Ordinary failures keep their configured retry behavior. Worker reconnect alone
+does not establish availability of an external API. Infinite retries keep the
+existing 60-second maximum backoff; use stable external idempotency keys.

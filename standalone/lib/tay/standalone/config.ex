@@ -43,7 +43,7 @@ defmodule Tay.Standalone.Config do
           caller_timeout_ms: pos_integer(),
           checkpoint_interval_ms: non_neg_integer(),
           max_state_bytes: non_neg_integer(),
-          terminal_retention: {:minutes, pos_integer()} | {:hours, pos_integer()}
+          terminal_retention: :infinity | {:minutes, pos_integer()} | {:hours, pos_integer()}
         }
 
   def environment, do: Application.get_env(:tay_standalone, :environment, System.get_env())
@@ -336,16 +336,20 @@ defmodule Tay.Standalone.Config do
   defp terminal_retention(environment) do
     value = Map.get(environment, "TAY_TERMINAL_RETENTION", "24h")
 
-    with value when is_binary(value) <- value,
-         [_, amount, unit] <- Regex.run(~r/\A([1-9][0-9]*)(m|h|d)\z/, value),
-         {amount, ""} <- Integer.parse(amount),
-         retention <- retention(amount, unit),
-         :ok <- Tay.Storage.V2.Retention.validate(retention) do
-      {:ok, retention}
+    if value in ["infinity", "unlimited"] do
+      {:ok, :infinity}
     else
-      _ ->
-        {:error,
-         "TAY_TERMINAL_RETENTION must use a positive duration such as 30m, 1h, 24h, or 7d"}
+      with value when is_binary(value) <- value,
+           [_, amount, unit] <- Regex.run(~r/\A([1-9][0-9]*)(m|h|d)\z/, value),
+           {amount, ""} <- Integer.parse(amount),
+           retention <- retention(amount, unit),
+           :ok <- Tay.Storage.V2.Retention.validate(retention) do
+        {:ok, retention}
+      else
+        _ ->
+          {:error,
+           "TAY_TERMINAL_RETENTION must use infinity, unlimited, or a positive duration such as 30m, 1h, 24h, or 7d"}
+      end
     end
   end
 

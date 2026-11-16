@@ -24,6 +24,19 @@ defmodule Tay.State.TaskIndex do
 
   def ready(_, _, _, _, _), do: []
 
+  def ready_matching(table, queue, task, now, predicate),
+    do:
+      matching(table, :ets.next(table, {queue, task, -1, -1, <<>>}), queue, task, now, predicate)
+
+  defp matching(table, {queue, task, due, _, id} = key, queue, task, now, predicate)
+       when due <= now do
+    if predicate.(id),
+      do: [id],
+      else: matching(table, :ets.next(table, key), queue, task, now, predicate)
+  end
+
+  defp matching(_, _, _, _, _, _), do: []
+
   defp take(_, _, _, _, _, 0, acc), do: Enum.reverse(acc)
 
   defp take(table, {queue, task, due, _, id} = key, queue, task, now, n, acc) when due <= now,

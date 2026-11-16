@@ -40,7 +40,7 @@ defmodule Tay.Job do
           args: map(),
           state: atom() | nil,
           attempt: non_neg_integer(),
-          max_attempts: pos_integer(),
+          max_attempts: pos_integer() | String.t(),
           inserted_at: DateTime.t() | non_neg_integer() | nil,
           scheduled_at: DateTime.t() | non_neg_integer() | nil,
           attempted_at: DateTime.t() | non_neg_integer() | nil,
@@ -55,7 +55,17 @@ defmodule Tay.Job do
 
   alias Tay.{Error, JobID}
   alias Tay.Event.{Value, V2}
-  @options [:id, :worker_key, :queue, :max_attempts, :timeout_ms, :scheduled_at, :durability]
+
+  @options [
+    :id,
+    :worker_key,
+    :queue,
+    :max_attempts,
+    :timeout_ms,
+    :scheduled_at,
+    :durability,
+    :availability_key
+  ]
 
   def new(worker, args, options \\ []) do
     with true <-
@@ -76,6 +86,10 @@ defmodule Tay.Job do
            "scheduled_at" => scheduled,
            "retry_policy" => V2.policy()
          },
+         definition = extended_definition(definition, opts),
+         true <-
+           (is_nil(definition["availability_key"]) or Keyword.get(opts, :durability) != :volatile) ||
+             {:error, :availability_requires_persistence},
          {:ok, _} <- Value.measure(definition),
          true <- V2.definition?(definition) || {:error, :invalid_definition},
          id = Keyword.get_lazy(opts, :id, &JobID.new/0),
@@ -96,6 +110,20 @@ defmodule Tay.Job do
     else
       {:error, {:resource_limit, reason}} -> {:error, Error.new(:resource_limit, reason)}
       {:error, reason} -> {:error, Error.new(:invalid, reason)}
+    end
+  end
+
+  defp extended_definition(definition, opts) do
+    maximum =
+      if definition["max_attempts"] == :infinity, do: "infinity", else: definition["max_attempts"]
+
+    if not is_nil(Keyword.get(opts, :availability_key)) or maximum == "infinity" do
+      definition
+      |> Map.put("definition_version", 2)
+      |> Map.put("max_attempts", maximum)
+      |> Map.put("availability_key", Keyword.get(opts, :availability_key))
+    else
+      definition
     end
   end
 

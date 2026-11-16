@@ -43,9 +43,10 @@ _ENQUEUE_OPTION_NAMES = ENQUEUE_OPTION_NAMES
 class TaskConfig:
     """Declarative metadata attached to one registered task."""
 
-    retries: int | None = None
+    retries: int | str | None = None
     backoff: str | Mapping[str, Any] | None = None
     durability: Durability | None = None
+    availability_key: str | None = None
     cron: str | None = None
     every: Mapping[str, Any] | None = None
     overlap: str | None = None
@@ -71,6 +72,8 @@ class TaskConfig:
             options["backoff"] = self.backoff
         if self.durability is not None:
             options["durability"] = self.durability
+        if self.availability_key is not None:
+            options["availability_key"] = self.availability_key
         return options
 
     @property

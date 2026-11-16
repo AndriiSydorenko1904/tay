@@ -105,11 +105,11 @@ an invented successful null. HTTP maps these to 410, 409, 409, 409 and 503,
 respectively; `not_found` remains 404.
 
 Job option names are `id`, `submission_id`, `delay`, `delay_ms`, `run_at`,
-`retries`, `timeout`, `timeout_ms`, `backoff`, `queue`, and `durability`.
+`retries`, `timeout`, `timeout_ms`, `backoff`, `queue`, `durability`, and `availability_key`.
 `priority` is unsupported. Delay/timeout use seconds, their `_ms` aliases use
 integer milliseconds, and `run_at` is an absolute Unix millisecond timestamp.
 Positive halfway milliseconds round away from zero; a rounded-zero timeout is
-invalid. Timeout is at most 86,400,000 ms, retries are 0..65,534, and timestamps
+invalid. Timeout is at most 86,400,000 ms, retries are 0..65,534 or `"infinity"`, and timestamps
 fit Event-v2's nonnegative signed-64-bit range. Relative schedules are also
 validated against the server clock when the job is constructed. Do not combine
 `id`/`submission_id`, delay units, timeout units, or delay with `run_at`.
@@ -206,3 +206,16 @@ older runs when the latest one already finished. Occurrence membership is
 checkpointed. Legacy allow checkpoints without complete membership cannot safely
 be tightened and return `schedule_conflict`; cancel that declaration and use a
 new declaration ID for the stricter policy.
+
+### Dependency availability
+
+`availability_key` is a nonempty UTF-8 identifier of at most 128 bytes. Keyed
+jobs require persistent durability. An execution failure whose `error.type` is
+`"DependencyUnavailable"` explicitly closes that key's shared durable gate and
+retries without discarding for attempt exhaustion. Ordinary failures do not
+change the gate. Success or a genuinely new insertion with the same key opens
+it and wakes dependency-deferred retries early. Repeated idempotent submissions
+do not open the gate. The semantics are identical for socket FAILED messages and
+HTTP worker completion with `outcome: "failure"`. Use an error payload limit
+large enough to carry the reserved type (the default is 8 KiB). No automatic
+classification of HTTP statuses or arbitrary socket exceptions is performed.

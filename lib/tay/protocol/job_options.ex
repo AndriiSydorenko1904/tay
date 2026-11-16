@@ -7,20 +7,23 @@ defmodule Tay.Protocol.JobOptions do
 
   def parse(options) when is_map(options) and not is_struct(options) do
     allowed =
-      ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue durability)
+      ~w(submission_id id delay delay_ms run_at retries timeout timeout_ms backoff queue durability availability_key)
 
     if Enum.all?(Map.keys(options), &(&1 in allowed)) do
       with {:ok, id} <- submission_id(options),
            {:ok, delay} <- delay(options),
            {:ok, scheduled} <- run_at(options),
-           {:ok, retries} <- integer_option(options, "retries", 0, 65_534),
+           {:ok, retries} <- retries(options),
+           {:ok, availability_key} <- availability_key(options),
            {:ok, timeout} <- timeout(options),
            :ok <- backoff(options),
            {:ok, queue} <- queue(options),
-           {:ok, durability} <- durability(options) do
+           {:ok, durability} <- durability(options),
+           true <- is_nil(availability_key) or durability != :volatile do
         values = [
           id: id,
           retries: retries,
+          availability_key: availability_key,
           timeout_ms: timeout,
           queue: queue,
           delay_ms: delay,
@@ -29,6 +32,9 @@ defmodule Tay.Protocol.JobOptions do
         ]
 
         {:ok, Enum.reject(values, fn {_key, value} -> is_nil(value) end)}
+      else
+        false -> {:error, :availability_requires_persistence}
+        error -> error
       end
     else
       {:error, :invalid_options}
@@ -36,6 +42,19 @@ defmodule Tay.Protocol.JobOptions do
   end
 
   def parse(_), do: {:error, :invalid_options}
+
+  defp retries(%{"retries" => "infinity"}), do: {:ok, "infinity"}
+  defp retries(options), do: integer_option(options, "retries", 0, 65_534)
+
+  defp availability_key(options) do
+    case Map.get(options, "availability_key") do
+      nil ->
+        {:ok, nil}
+
+      key ->
+        if Protocol.identifier?(key), do: {:ok, key}, else: {:error, :invalid_availability_key}
+    end
+  end
 
   defp submission_id(options) do
     case {Map.get(options, "id"), Map.get(options, "submission_id")} do

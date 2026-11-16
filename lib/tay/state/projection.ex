@@ -17,6 +17,7 @@ defmodule Tay.State.Projection do
 
     %{
       jobs: jobs,
+      dependency: :ets.new(:dependency_waiters, [:ordered_set, :private]),
       queue: queue,
       task: task,
       ready: QueueIndex.new(),
@@ -46,6 +47,8 @@ defmodule Tay.State.Projection do
     hook(p, :task_removed)
     if previous && scheduled?(previous), do: SchedulerIndex.delete(p.schedule, previous)
     hook(p, :schedule_removed)
+    if previous, do: dependency_delete(p, previous)
+    dependency_put(p, job)
     JobIndex.put(p.jobs, job)
     :ok = InspectionIndex.replace(p.inspection, previous, job)
     hook(p, :job_written)
@@ -72,9 +75,21 @@ defmodule Tay.State.Projection do
     end
 
     if scheduled?(job), do: SchedulerIndex.delete(p.schedule, job)
+    dependency_delete(p, job)
     JobIndex.delete(p.jobs, job.id)
     :ok = InspectionIndex.delete(p.inspection, job)
     :ok
+  end
+
+  defp dependency_key(job),
+    do: {job.definition["availability_key"], job.eligible_at, job.inserted_at, job.id}
+
+  defp dependency_delete(p, job), do: :ets.delete(p.dependency, dependency_key(job))
+
+  defp dependency_put(p, job) do
+    if is_binary(job.definition["availability_key"]) and job.state in [:retryable, :available] and
+         job.diagnostic in [%{"code" => 8, "version" => 1}, %{"code" => 7, "version" => 1}],
+       do: :ets.insert(p.dependency, {dependency_key(job), job.id})
   end
 
   def available?(p, job),

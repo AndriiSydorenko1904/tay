@@ -63,3 +63,7 @@ class JobCancelled(ServerError):
 
 class ResultMissing(ServerError):
     """The completed job has no retained result value."""
+
+
+class DependencyUnavailable(TayError):
+    """The task could not reach its availability_key dependency. Retry durably."""

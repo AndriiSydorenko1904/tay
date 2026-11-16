@@ -56,3 +56,7 @@ export class JobCancelled extends ServerError {
 export class ResultMissing extends ServerError {
   override name = "ResultMissing";
 }
+
+export class DependencyUnavailable extends TayError {
+  override name = "DependencyUnavailable";
+}

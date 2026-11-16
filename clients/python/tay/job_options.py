@@ -27,6 +27,7 @@ ENQUEUE_OPTION_NAMES = frozenset(
         "backoff",
         "queue",
         "durability",
+        "availability_key",
     }
 )
 _MAX_TIME = 9_223_372_036_854_775_807
@@ -101,6 +102,10 @@ def validate_submission_options(options: Mapping[str, Any]) -> None:
                 raise ValidationError("queue exceeds 255 UTF-8 bytes")
         except UnicodeEncodeError as exc:
             raise ValidationError("queue must be valid UTF-8") from exc
+    if "availability_key" in options:
+        identifier(options["availability_key"], "availability_key")
+        if options.get("durability") == "volatile":
+            raise ValidationError("availability_key requires persistent durability")
     if "retries" in options and options["retries"] is None:
         raise ValidationError("retries cannot be null")
 
@@ -114,14 +119,23 @@ def validate_durability(value: Any) -> None:
 
 def validate_execution_options(options: Mapping[str, Any]) -> None:
     retries = options.get("retries")
-    if retries is not None and (type(retries) is not int or not 0 <= retries <= 65_534):
-        raise ValidationError("retries must be an integer in 0..65534")
+    if (
+        retries is not None
+        and retries != "infinity"
+        and (type(retries) is not int or not 0 <= retries <= 65_534)
+    ):
+        raise ValidationError("retries must be an integer in 0..65534 or 'infinity'")
     backoff = options.get("backoff")
     if backoff is not None and (
         not isinstance(backoff, str) or backoff != "exponential"
     ):
         raise ValidationError("Protocol v1 supports only backoff='exponential'")
     validate_durability(options.get("durability"))
+    key = options.get("availability_key")
+    if key is not None:
+        identifier(key, "availability_key")
+        if options.get("durability") == "volatile":
+            raise ValidationError("availability_key requires persistent durability")
 
 
 def job_arguments(args: Mapping[str, Any] | None, *, operation: str) -> dict[str, Any]:

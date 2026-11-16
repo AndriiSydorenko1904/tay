@@ -64,6 +64,7 @@ defmodule Tay.Engine.Persistence do
         bytes: state.budget.bytes + state.auxiliary_bytes,
         auxiliary_bytes: state.auxiliary_bytes,
         results: state.results,
+        availability: state.availability,
         next_availability_order: state.next_availability_order
     }
   end
@@ -116,6 +117,7 @@ defmodule Tay.Engine.Persistence do
             next = %{
               state
               | results: candidate.results,
+                availability: candidate.availability,
                 auxiliary_bytes: candidate.auxiliary_bytes
             }
 
@@ -260,6 +262,7 @@ defmodule Tay.Engine.Persistence do
       | jobs: jobs,
         schedules: state.schedules,
         results: state.results,
+        availability: state.availability,
         bytes: state.budget.bytes + state.auxiliary_bytes,
         auxiliary_bytes: state.auxiliary_bytes
     }
@@ -294,36 +297,41 @@ defmodule Tay.Engine.Persistence do
          reserve = reservation_after(state, previous, event.record_type),
          :ok <- headroom(state, byte_size(payload), reserve),
          {:ok, job, budget} <- ProjectionState.account_active(state, previous, predicted) do
-      Tay.State.Memory.transaction(state.memory, budget.bytes - state.budget.bytes, fn ->
-        hook(state.config, {:execution, event.record_type, :pre_append})
-        hook(state.config, :pre_append)
-        {writer_result, state} = append_record(state, 8, 1, payload)
+      Tay.State.Memory.transaction(
+        state.memory,
+        budget.bytes - state.budget.bytes +
+          Tay.State.Availability.added_bytes(state.availability, job),
+        fn ->
+          hook(state.config, {:execution, event.record_type, :pre_append})
+          hook(state.config, :pre_append)
+          {writer_result, state} = append_record(state, 8, 1, payload)
 
-        case writer_result do
-          {:ok, receipt} ->
-            validate_receipt!(state, receipt, byte_size(payload))
-            hook(state.config, :post_append)
-            hook(state.config, {:execution, event.record_type, :post_append})
+          case writer_result do
+            {:ok, receipt} ->
+              validate_receipt!(state, receipt, byte_size(payload))
+              hook(state.config, :post_append)
+              hook(state.config, {:execution, event.record_type, :post_append})
 
-            finish_commit(
-              state,
-              previous,
-              job,
-              budget,
-              receipt,
-              payload,
-              reserve,
-              event.record_type,
-              next_order
-            )
+              finish_commit(
+                state,
+                previous,
+                job,
+                budget,
+                receipt,
+                payload,
+                reserve,
+                event.record_type,
+                next_order
+              )
 
-          {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
-            {:error, reason}
+            {:error, reason} when reason in [:sequence_exhausted, :segment_id_exhausted] ->
+              {:error, reason}
 
-          _ ->
-            exit(:writer_commit_unknown)
+            _ ->
+              exit(:writer_commit_unknown)
+          end
         end
-      end)
+      )
     end
   end
 
@@ -343,46 +351,54 @@ defmodule Tay.Engine.Persistence do
            ),
          {:ok, job, budget} <-
            ProjectionState.account_active(state, previous, predicted, :volatile) do
-      Tay.State.Memory.transaction(state.memory, budget.bytes - state.budget.bytes, fn ->
-        job = Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
-        :ok = ProjectionState.publish(state, previous, job, :volatile)
-        reserve = reservation_after(state, previous, event.record_type, :volatile)
+      Tay.State.Memory.transaction(
+        state.memory,
+        budget.bytes - state.budget.bytes +
+          Tay.State.Availability.added_bytes(state.availability, job),
+        fn ->
+          job =
+            Map.put(job, :terminal_at, CompactionEstimate.terminal_time(job, event.data["at"]))
 
-        next = %{
-          state
-          | volatile_ids: MapSet.put(state.volatile_ids, job.id),
-            volatile_next_availability_order: next_order,
-            budget: budget,
-            active_budget:
-              ProjectionState.replace_partition(
-                state.active_budget,
-                previous,
-                job,
-                :active,
-                :volatile
-              ),
-            volatile_terminal_budget:
-              ProjectionState.replace_partition(
-                state.volatile_terminal_budget,
-                previous,
-                job,
-                :terminal
-              ),
-            blocked: state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
-            settlement_reserve: reserve
-        }
+          :ok = ProjectionState.publish(state, previous, job, :volatile)
+          reserve = reservation_after(state, previous, event.record_type, :volatile)
 
-        next =
-          next
-          |> record_start(event.record_type, job)
-          |> record_transition(telemetry_operation(event.record_type), previous, job)
-          |> maybe_schedule_memory_reclaim(previous, job)
-          |> ProjectionState.ensure_active_accounting!()
+          next = %{
+            state
+            | volatile_ids: MapSet.put(state.volatile_ids, job.id),
+              volatile_next_availability_order: next_order,
+              budget: budget,
+              active_budget:
+                ProjectionState.replace_partition(
+                  state.active_budget,
+                  previous,
+                  job,
+                  :active,
+                  :volatile
+                ),
+              volatile_terminal_budget:
+                ProjectionState.replace_partition(
+                  state.volatile_terminal_budget,
+                  previous,
+                  job,
+                  :terminal
+                ),
+              blocked:
+                state.blocked - blocked_charge(state, previous) + blocked_charge(state, job),
+              settlement_reserve: reserve
+          }
 
-        hook(state.config, :post_projection)
-        hook(state.config, {:execution, event.record_type, :post_projection})
-        {:ok, job, next}
-      end)
+          next =
+            next
+            |> record_start(event.record_type, job)
+            |> record_transition(telemetry_operation(event.record_type), previous, job)
+            |> maybe_schedule_memory_reclaim(previous, job)
+            |> ProjectionState.ensure_active_accounting!()
+
+          hook(state.config, :post_projection)
+          hook(state.config, {:execution, event.record_type, :post_projection})
+          {:ok, job, next}
+        end
+      )
     end
   end
 
@@ -421,9 +437,14 @@ defmodule Tay.Engine.Persistence do
     {:ok, job, budget} = ProjectionState.account_active(state, previous, job)
     :ok = ProjectionState.publish(state, previous, job)
 
+    availability = Tay.State.Availability.update(state.availability, operation, job)
+    delta = Tay.State.Availability.added_bytes(state.availability, job)
+
     next = %{
       state
-      | budget: budget,
+      | availability: availability,
+        auxiliary_bytes: state.auxiliary_bytes + delta,
+        budget: budget,
         active_budget:
           ProjectionState.replace_partition(state.active_budget, previous, job, :active),
         terminal_budget:

@@ -16,8 +16,8 @@ defmodule Tay.Execution.Retry do
   def due_at(%{attempt: attempt, definition: definition}, at, random_bytes)
       when is_map(definition) and is_function(random_bytes, 1) do
     if V2.time?(at) and V2.attempt?(attempt) and
-         V2.attempt?(definition["max_attempts"]) and
-         attempt <= definition["max_attempts"] and definition["retry_policy"] === V2.policy() do
+         (V2.attempt?(definition["max_attempts"]) or definition["max_attempts"] == "infinity") and
+         attempt <= V2.attempt_limit(definition) and definition["retry_policy"] === V2.policy() do
       delay = V2.retry_delay(attempt)
       jitter_max = V2.retry_jitter_max(delay)
 

@@ -9,9 +9,11 @@ defmodule Tay.Execution.Outcome do
   alias Tay.Event.V2
   alias Tay.Execution.Retry
 
-  @type normalized :: :success | {:failure, 1 | 2 | 3 | 4 | 6} | :timeout | :interrupted
+  @type normalized ::
+          :unavailable | :success | {:failure, 1 | 2 | 3 | 4 | 6} | :timeout | :interrupted
 
-  @spec returned(term()) :: :success | {:failure, 1 | 6}
+  @spec returned(term()) :: :unavailable | :success | {:failure, 1 | 6}
+  def returned({:unavailable, _reason}), do: :unavailable
   def returned(:ok), do: :success
   def returned({:ok, _}), do: :success
   def returned({:error, _}), do: {:failure, 1}
@@ -40,10 +42,13 @@ defmodule Tay.Execution.Outcome do
       when is_map(definition) and is_function(random_bytes, 1) do
     with true <-
            V2.id?(id) and V2.sequence?(revision) and V2.sequence?(execution) and V2.time?(at) and
-             V2.attempt?(attempt) and V2.attempt?(definition["max_attempts"]) and
-             attempt <= definition["max_attempts"] and definition["retry_policy"] === V2.policy(),
+             V2.attempt?(attempt) and
+             (V2.attempt?(definition["max_attempts"]) or definition["max_attempts"] == "infinity") and
+             attempt <= V2.attempt_limit(definition) and
+             definition["retry_policy"] === V2.policy(),
          {:ok, wire_outcome, diagnostic} <- classify(outcome),
-         {disposition, next_attempt} = disposition(outcome, attempt, definition["max_attempts"]),
+         true <- outcome != :unavailable or is_binary(definition["availability_key"]),
+         {disposition, next_attempt} = disposition(outcome, attempt, definition),
          {:ok, due_at} <- due_at(disposition, job, at, random_bytes) do
       {:ok,
        %Event{
@@ -68,6 +73,7 @@ defmodule Tay.Execution.Outcome do
 
   def event(_, _, _, _), do: {:error, :invalid_outcome_context}
 
+  defp classify(:unavailable), do: {:ok, 4, diagnostic(8)}
   defp classify(:success), do: {:ok, 0, nil}
   defp classify({:failure, code}) when code in [1, 2, 3, 4, 6], do: {:ok, 1, diagnostic(code)}
   defp classify(:timeout), do: {:ok, 2, diagnostic(5)}
@@ -77,8 +83,13 @@ defmodule Tay.Execution.Outcome do
 
   defp disposition(:success, _, _), do: {0, nil}
   defp disposition(:interrupted, attempt, _), do: {1, attempt}
-  defp disposition(_, attempt, maximum) when attempt < maximum, do: {1, attempt + 1}
-  defp disposition(_, _, _), do: {2, nil}
+
+  defp disposition(outcome, attempt, definition) do
+    if outcome == :unavailable or definition["max_attempts"] == "infinity" or
+         attempt < V2.attempt_limit(definition),
+       do: {1, V2.next_attempt(definition, attempt)},
+       else: {2, nil}
+  end
 
   defp due_at(1, job, at, random_bytes), do: Retry.due_at(job, at, random_bytes)
   defp due_at(_, _, _, _), do: {:ok, nil}

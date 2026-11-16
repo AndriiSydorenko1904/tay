@@ -246,3 +246,24 @@ test("HTTP worker claims and completes an execution", async () => {
     result: 42,
   });
 });
+
+
+test("dependency defaults and unavailable errors preserve their wire contract", async () => {
+  const { Task, DependencyUnavailable } = await import("../src/index.js");
+  const { errorPayload } = await import("../src/core.js");
+  const { validateEnqueueOptions } = await import("../src/validation.js");
+  const received: unknown[] = [];
+  const producer = { enqueue: async (...args: unknown[]) => {
+    received.push(args);
+    return {} as JobHandle;
+  }};
+  const task = new Task(producer, "send", () => null, {
+    retries: "infinity", availability_key: "reports-api", durability: "persistent",
+  });
+  await task.enqueue({ value: 1 });
+  assert.deepEqual(received, [["send", { value: 1 }, {
+    retries: "infinity", availability_key: "reports-api", durability: "persistent",
+  }]]);
+  assert.equal(errorPayload(new DependencyUnavailable("offline")).type, "DependencyUnavailable");
+  assert.throws(() => validateEnqueueOptions({ availability_key: "api", durability: "volatile" }), ValidationError);
+});

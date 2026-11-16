@@ -1,5 +1,15 @@
 # Changelog
 
+## Tay 2.1.0, Python SDK 1.5.0 and Node.js SDK 1.1.0 — 2026-11-16
+
+- Add persistent dependency availability gates shared across queues. Explicit
+  unavailable outcomes defer work; successful executions and new submissions
+  wake deferred retries early. Gates survive restart and compaction.
+- Support infinite retries in Elixir, Python and Node.js, and expose explicit
+  dependency-unavailable results on socket and HTTP workers.
+- Accept infinite terminal retention for automatic maintenance and standalone
+  configuration (`infinity` or `unlimited`).
+
 ## Node.js SDK 1.0.2 — 2026-11-16
 
 ### Fixed

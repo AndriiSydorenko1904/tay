@@ -24,6 +24,7 @@ const optionNames = new Set([
   "backoff",
   "queue",
   "durability",
+  "availability_key",
 ]);
 
 export function normalizeJSON(
@@ -131,8 +132,8 @@ export function validateEnqueueOptions(raw: EnqueueOptions = {}): EnqueueOptions
     throw new ValidationError("invalid timeout_ms");
   }
   if (options.timeout !== undefined && options.timeout_ms !== undefined) throw new ValidationError("timeout and timeout_ms cannot be combined");
-  if (options.retries !== undefined && (typeof options.retries !== "number" || !Number.isInteger(options.retries) || options.retries < 0 || options.retries > 65_534)) {
-    throw new ValidationError("retries must be an integer in 0..65534");
+  if (options.retries !== undefined && options.retries !== "infinity" && (typeof options.retries !== "number" || !Number.isInteger(options.retries) || options.retries < 0 || options.retries > 65_534)) {
+    throw new ValidationError("retries must be an integer in 0..65534 or infinity");
   }
   if (options.backoff !== undefined && options.backoff !== "exponential") {
     throw new ValidationError("Protocol v1 supports only backoff='exponential'");
@@ -141,6 +142,10 @@ export function validateEnqueueOptions(raw: EnqueueOptions = {}): EnqueueOptions
     throw new ValidationError("invalid queue");
   }
   validateDurability(options.durability);
+  if (options.availability_key !== undefined) {
+    identifier(options.availability_key, "availability_key");
+    if (options.durability === "volatile") throw new ValidationError("availability_key requires persistent durability");
+  }
   return options as EnqueueOptions;
 }
 

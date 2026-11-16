@@ -189,7 +189,7 @@ export class Task {
     this.name = validateTaskName(name);
     if (typeof handler !== "function") throw new ValidationError("task handler must be a function");
     this.handler = handler;
-    validateEnqueueOptions(Object.fromEntries(Object.entries(defaults).filter(([key]) => ["retries", "backoff", "durability"].includes(key))) as EnqueueOptions);
+    validateEnqueueOptions(Object.fromEntries(Object.entries(defaults).filter(([key]) => ["retries", "backoff", "durability", "availability_key"].includes(key))) as EnqueueOptions);
     this.defaults = Object.freeze({ ...defaults });
   }
 
@@ -198,6 +198,7 @@ export class Task {
       ...(this.defaults.retries === undefined ? {} : { retries: this.defaults.retries }),
       ...(this.defaults.backoff === undefined ? {} : { backoff: this.defaults.backoff }),
       ...(this.defaults.durability === undefined ? {} : { durability: this.defaults.durability }),
+      ...(this.defaults.availability_key === undefined ? {} : { availability_key: this.defaults.availability_key }),
       ...options,
     };
     return this.#producer.enqueue(this.name, args, merged);
@@ -216,6 +217,7 @@ export class Task {
         ...(this.defaults.retries === undefined ? {} : { retries: this.defaults.retries }),
         ...(this.defaults.backoff === undefined ? {} : { backoff: this.defaults.backoff }),
         ...(this.defaults.durability === undefined ? {} : { durability: this.defaults.durability }),
+        ...(this.defaults.availability_key === undefined ? {} : { availability_key: this.defaults.availability_key }),
       }) as JSONObject,
     };
     if (this.defaults.cron !== undefined) { base.cron = this.defaults.cron; base.timezone = "+00"; }

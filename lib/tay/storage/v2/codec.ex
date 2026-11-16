@@ -231,11 +231,11 @@ defmodule Tay.Storage.V2.Codec do
          true <- (is_atom(state) and Atom.to_string(state) in @states) || {:error, :state},
          true <- (uint?(revision) and uint?(cycle) and cycle <= revision) || {:error, :revision},
          true <-
-           (is_integer(attempt) and attempt in 0..definition["max_attempts"]) ||
+           (is_integer(attempt) and attempt in 0..V2.attempt_limit(definition)) ||
              {:error, :attempt},
          true <-
            (is_nil(next_attempt) or
-              (is_integer(next_attempt) and next_attempt in 1..definition["max_attempts"])) ||
+              (is_integer(next_attempt) and next_attempt in 1..V2.attempt_limit(definition))) ||
              {:error, :next_attempt},
          true <-
            (V2.time?(inserted) and maybe_time?(eligible) and maybe_time?(attempted) and
@@ -245,7 +245,10 @@ defmodule Tay.Storage.V2.Codec do
          true <-
            (is_nil(execution) or (uint?(execution) and execution <= revision)) ||
              {:error, :execution_token},
-         true <- valid_diagnostic?(diagnostic) || {:error, :diagnostic},
+         true <-
+           (valid_diagnostic?(diagnostic) and
+              (diagnostic != %{"code" => 8, "version" => 1} or
+                 is_binary(definition["availability_key"]))) || {:error, :diagnostic},
          true <- terminal_fields?(state, terminal, completed) || {:error, :terminal_at},
          true <-
            state_fields?(state, next_attempt, eligible, available, execution, completed) ||
@@ -323,7 +326,7 @@ defmodule Tay.Storage.V2.Codec do
   defp valid_diagnostic?(nil), do: true
 
   defp valid_diagnostic?(%{"version" => 1, "code" => code} = d),
-    do: map_size(d) == 2 and code in 1..7
+    do: map_size(d) == 2 and code in 1..8
 
   defp valid_diagnostic?(_), do: false
 

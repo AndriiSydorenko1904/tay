@@ -101,7 +101,7 @@ protect its router scope with the host application's administrator pipeline.
 
 ## Store-v2 automatic compaction
 
-The per-Engine policy is enabled when `compaction:` is omitted. It uses finite
+The per-Engine policy is enabled when `compaction:` is omitted. It defaults to finite
 terminal retention and conservative sealed-history estimates. Optional periodic
 semantic checkpoints use the same crash-safe Store-v2 epoch publication; they
 never serialize private ETS implementation details. Store-v2 candidate
@@ -186,7 +186,7 @@ Checkpoint intervals fit unsigned 32 bits. Bounded hours use the shared manifest
 `1..2_562_047_788_015`, not a separate configuration duration syntax. A manual
 zero-retention request is a one-shot full terminal-history purge: it preserves
 every non-terminal job and persists the minimum future retention of one hour.
-Automatic retention configuration rejects infinity.
+Automatic retention also accepts `:infinity`, preserving all terminal history without disabling checkpoints or structural compaction. This does not retry terminal jobs.
 
 Terminal jobs are removed from the hot ETS job projection as soon as they
 finish and remain queryable through a disposable disk-backed inspection index.
@@ -423,3 +423,68 @@ Production Engines always use sync storage durability; omit the Engine `durabili
 option. Development/test builds and low-level storage commands retain explicit
 modes for fixtures and measurements. Global `:persistent`/`:volatile` job policy
 is configured separately and remains supported.
+
+## Dependency availability and unlimited retries
+
+Jobs can opt into a shared, durable `availability_key`, such as `reports-api` or
+`smtp`. Use a stable, low-cardinality service identifier, not a unique key per
+request. Keyed jobs must use persistent durability. A key may span several queues.
+
+```elixir
+Tay.insert(MyApp.SendReport, %{"report_id" => "123"},
+  availability_key: "reports-api",
+  max_attempts: :infinity,
+  durability: :persistent
+)
+```
+
+A worker returns `{:unavailable, reason}` when that dependency cannot be reached.
+This outcome never discards a keyed job due to exhausted attempts. It atomically
+closes the shared gate and records the next retry deadline. At that deadline Tay
+allows one probe execution for the key across its queues; another unavailable
+outcome moves the deadline forward. Executions already started are allowed to
+settle. Ordinary errors and timeouts do not declare a service unavailable.
+
+A successful execution or a newly accepted job with the same key opens the gate.
+A new job is a producer hint, not proof of connectivity: a subsequent unavailable
+outcome closes the gate again. Repeating an idempotent enqueue of an existing job
+does not count as a new insertion. Opening a gate makes its dependency-deferred
+jobs ready early, in journalled batches of 32. Other keys, explicit scheduled
+jobs and retries caused by ordinary errors keep their deadlines. Normal queue
+capacity, rate limits, cancellation and execution fences still apply; opening a
+gate does not impose strict FIFO completion order across concurrent queues.
+
+Inspect gates through `Tay.status().availability`; each value contains `status`
+(`"available"` or `"unavailable"`) and `retry_at` (UTC epoch milliseconds, zero
+when available). Status snapshots have the API's usual bounded freshness. Gates
+are charged to the Engine memory budget and survive checkpoints, compaction,
+terminal-history expiry and restart. Their snapshots occupy semantic type 15,
+schema 2, in the checkpoint's coordination index (historically `schedules`).
+Existing definitions stay at version 1; keyed or infinite-retry definitions use
+version 2. Older Engines cannot read these new definitions/records: retain a
+backup and do not downgrade a store after using them.
+
+Socket disconnects and expired HTTP worker sessions are infrastructure
+interruptions, not evidence that the external dependency is down. Existing
+session fencing still applies. For keyed work whose dependency is available,
+interrupted retries become ready without their backoff delay and dispatch when
+a compatible worker returns. A socket reconnect or HTTP registration alone does
+not mark an external API available. HTTP handlers must explicitly distinguish
+connection failures from business errors; HTTP status codes are not classified
+as dependency outages automatically.
+
+`max_attempts: :infinity` (`retries: "infinity"` in SDKs) also retries ordinary
+failures indefinitely. The persisted attempt ordinal saturates at 65,535 instead
+of overflowing; execution tokens and logical revisions continue advancing.
+The existing exponential retry curve remains 1, 2, 4, 8, 16, 32, then 60 seconds,
+with its existing jitter. With a finite attempt limit, dependency-unavailable
+outcomes saturate at that limit and keep retrying, while ordinary errors retain
+their configured discard behavior. No retry mode guarantees exactly-once external
+effects: use the same business idempotency key on every attempt.
+
+To retain terminal history forever while keeping maintenance enabled, configure
+`compaction: [terminal_retention: :infinity]`, or set
+`TAY_TERMINAL_RETENTION=infinity` (alias `unlimited`) in standalone/Docker. On an
+existing checkpointed store, apply `Tay.compact(terminal_retention: :infinity)`
+to change the persisted policy; a saved policy overrides the startup setting.
+Active persistent jobs are protected regardless of terminal retention.

@@ -84,6 +84,7 @@ defmodule Tay.Engine.Execution do
     do: {s, Queue.wake_interval()}
 
   def control(:scheduler, s) do
+    {s, availability_pending} = Tay.Engine.Availability.wake(s)
     at = Clock.wall(s.config.clock)
     ids = SchedulerIndex.due(s.projection.schedule, at, @batch_size)
 
@@ -109,7 +110,7 @@ defmodule Tay.Engine.Execution do
         do: Clock.delay_until(due, Clock.wall(s.config.clock), Queue.wake_interval()),
         else: Queue.wake_interval()
 
-    {wake_queues(s), delay}
+    {wake_queues(s), if(availability_pending, do: 0, else: delay)}
   end
 
   def control({:queue, queue}, s) do
@@ -150,7 +151,9 @@ defmodule Tay.Engine.Execution do
         )
       )
       |> Enum.flat_map(fn task ->
-        case TaskIndex.ready(s.projection.task, queue, task, now, 1) do
+        case TaskIndex.ready_matching(s.projection.task, queue, task, now, fn id ->
+               Tay.Engine.Availability.allowed?(s, JobIndex.get(s.projection.jobs, id))
+             end) do
           [id] ->
             case JobIndex.get(s.projection.jobs, id) do
               nil -> []
@@ -345,6 +348,11 @@ defmodule Tay.Engine.Execution do
 
     if not entry.settled and entry.released and job.state == :executing and
          job.execution == entry.execution and job.revision == entry.execution do
+      outcome =
+        if outcome == :unavailable and is_nil(job.definition["availability_key"]),
+          do: {:failure, 1},
+          else: outcome
+
       {:ok, finished} = Outcome.event(job, outcome, Clock.wall(s.config.clock))
 
       case Persistence.commit(s, job, finished) do

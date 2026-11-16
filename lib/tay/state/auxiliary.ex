@@ -25,6 +25,21 @@ defmodule Tay.State.Auxiliary do
 
   def reduce(_, _, _), do: {:error, :invalid_auxiliary_event}
 
+  defp apply_event(15, data, _sequence, candidate) do
+    key = data["availability_key"]
+
+    if Map.has_key?(candidate.availability, key) do
+      {:error, :duplicate_availability_checkpoint}
+    else
+      {:ok,
+       %{
+         candidate
+         | availability:
+             Map.put(candidate.availability, key, Map.take(data, ["status", "retry_at"]))
+       }}
+    end
+  end
+
   defp apply_event(7, data, sequence, candidate) do
     previous = Map.get(candidate.schedules, data["schedule_id"])
 
@@ -199,6 +214,13 @@ defmodule Tay.State.Auxiliary do
         do: {raw, id}
   end
 
+  defp entry_bytes(candidate, 15, data),
+    do:
+      if(Map.has_key?(candidate.availability, data["availability_key"]),
+        do: Tay.State.Availability.bytes(data["availability_key"]),
+        else: 0
+      )
+
   defp entry_bytes(candidate, 10, data),
     do: Tay.State.Memory.result_bytes(Map.get(candidate.results, data["job_id"]))
 
@@ -249,6 +271,23 @@ defmodule Tay.State.Auxiliary do
         }
       end)
 
-    {schedule_events ++ result_events, next}
+    availability_events =
+      candidate.availability
+      |> Enum.sort()
+      |> Enum.map(fn {key, gate} ->
+        %Event{
+          record_type: 15,
+          payload_schema_version: 2,
+          data: %{
+            "at" => 0,
+            "expected_revision" => 0,
+            "availability_key" => key,
+            "status" => gate["status"],
+            "retry_at" => gate["retry_at"]
+          }
+        }
+      end)
+
+    {schedule_events ++ availability_events ++ result_events, next + length(availability_events)}
   end
 end

@@ -1,6 +1,6 @@
 {
   "name": "tay-client",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Typed Node.js SDK for producing and executing Tay jobs",
   "license": "MIT",
   "author": "Andrii Sydorenko",

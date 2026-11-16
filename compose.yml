@@ -3,7 +3,7 @@
 # Durability is fixed to :sync in the standalone runtime; it has no env override.
 services:
   tay:
-    image: ${TAY_IMAGE:-ghcr.io/abstraction-systems/tay:2.0.1}
+    image: ${TAY_IMAGE:-ghcr.io/abstraction-systems/tay:2.1.0}
     build: .
     environment:
       TAY_DATA_DIR: /var/lib/tay/store

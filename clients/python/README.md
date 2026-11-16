@@ -322,3 +322,48 @@ Schedule listing keeps the `await client.schedules()` list API and automatically
 follows bounded server pages for both HTTP and Unix transports. All retained Tay
 data shares the server's `max_state_bytes`; admission may return `capacity` when
 the common budget is full. No schedule/result memory split is required.
+
+## Recovering from a dependency outage
+
+Use a stable `availability_key` to coordinate tasks that reach the same service,
+including tasks in different queues. Raise `DependencyUnavailable` only when that
+service is unreachable. Both socket and HTTP workers report this outcome to Tay.
+
+```python
+from tay import DependencyUnavailable
+
+
+@tay.task(
+    name="reports.send.v1",
+    availability_key="reports-api",
+    retries="infinity",
+    durability="persistent",
+)
+def send_report(report_id: str, operation_id: str):
+    try:
+        return send_to_api(report_id, idempotency_key=operation_id)
+    except (ConnectionError, TimeoutError) as exc:
+        raise DependencyUnavailable("reports-api is unreachable") from exc
+
+
+await send_report.enqueue(
+    "123", "send-report:123:v1", submission_id="send-report:123:v1"
+)
+```
+
+`send_to_api` represents your service integration; catch the connection exceptions
+raised by that specific HTTP/network library. Business errors should remain
+ordinary failures. The `availability_key` and `retries="infinity"` options are
+also accepted by `Tay.enqueue` and `TayHTTP.enqueue`.
+
+Tay durably closes the key's gate after an unavailable outcome, allows one probe
+after backoff and reopens it after a successful execution or a newly accepted
+job with that key. Reopening wakes dependency-deferred tasks early instead of
+waiting out their timers. A new job is only a connectivity hint; another outage
+closes the gate again. Other dependencies and explicit schedules are unaffected.
+Keyed jobs require persistent durability and remain protected from compaction.
+A worker reconnect does not prove that an external service has recovered.
+
+Infinite retries use the normal exponential backoff capped at 60 seconds; the
+attempt ordinal saturates at 65,535. They do not provide exactly-once effects:
+the receiving service must deduplicate `operation_id` for the full retry horizon.

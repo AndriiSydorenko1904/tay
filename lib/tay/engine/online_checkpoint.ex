@@ -123,6 +123,7 @@ defmodule Tay.Engine.OnlineCheckpoint do
                     compaction_estimate: estimate,
                     results: results,
                     schedules: schedules,
+                    availability: recovered.candidate.availability,
                     auxiliary_bytes: auxiliary_bytes,
                     schedule_owners: Tay.State.Auxiliary.owners(schedules),
                     config: put_retention(state.config, stats.terminal_retention),
@@ -185,7 +186,11 @@ defmodule Tay.Engine.OnlineCheckpoint do
       |> Map.merge(volatile_results)
 
     schedules = retain_volatile_memberships(recovered.candidate.schedules, state)
-    auxiliary_bytes = Tay.State.Memory.auxiliary_bytes(schedules, results)
+
+    auxiliary_bytes =
+      Tay.State.Memory.auxiliary_bytes(schedules, results) +
+        Tay.State.Availability.total(recovered.candidate.availability)
+
     next_bytes = state.budget.bytes + auxiliary_bytes
 
     {:ok, next} =
@@ -199,6 +204,7 @@ defmodule Tay.Engine.OnlineCheckpoint do
              next_sequence: recovered.next_sequence,
              next_availability_order: recovered.candidate.next_availability_order,
              schedules: schedules,
+             availability: recovered.candidate.availability,
              results: results,
              auxiliary_bytes: auxiliary_bytes,
              schedule_owners: Tay.State.Auxiliary.owners(schedules),

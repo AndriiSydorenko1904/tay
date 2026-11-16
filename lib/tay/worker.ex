@@ -13,14 +13,15 @@ defmodule Tay.Worker do
   bounded outcome diagnostic and final retry/discard decision are logged.
   """
 
-  @callback perform(Tay.Job.t()) :: :ok | {:ok, term()} | {:error, term()}
+  @callback perform(Tay.Job.t()) ::
+              :ok | {:ok, term()} | {:error, term()} | {:unavailable, term()}
 
   defmacro __using__(options) do
     unless Keyword.keyword?(options) and Keyword.has_key?(options, :key) and
              length(options) == length(Enum.uniq(Keyword.keys(options))) and
              Enum.all?(
                Keyword.keys(options),
-               &(&1 in [:key, :queue, :max_attempts, :timeout_ms, :durability])
+               &(&1 in [:key, :queue, :max_attempts, :timeout_ms, :durability, :availability_key])
              ) and Keyword.get(options, :durability, :persistent) in [:persistent, :volatile] do
       raise ArgumentError, "Tay.Worker requires an explicit key and recognized builder options"
     end

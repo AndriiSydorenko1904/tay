@@ -76,6 +76,7 @@ defmodule Tay.Engine.ProjectionState do
     %{
       state: state.mode,
       last_checkpoint_at: state.last_checkpoint_at,
+      availability: state.availability,
       paused_queues: state.paused |> MapSet.to_list() |> Enum.sort(),
       jobs: state.active_budget.count + state.terminal_budget.count,
       active_jobs: state.active_budget.count - volatile_terminal.count,

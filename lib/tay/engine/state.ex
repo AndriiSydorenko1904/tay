@@ -17,6 +17,7 @@ defmodule Tay.Engine.State do
     :schedule_owners,
     :schedule_index,
     :schedules,
+    :availability,
     :results,
     :terminal_stats,
     :budget,

@@ -194,6 +194,7 @@ defmodule Tay.Engine do
             schedule_owners: Tay.State.Auxiliary.owners(candidate.schedules),
             schedule_index: Tay.State.ScheduleIndex.new(candidate.schedules),
             schedules: candidate.schedules,
+            availability: candidate.availability,
             results: candidate.results,
             terminal_stats: terminal_stats,
             budget: budget,
@@ -809,6 +810,9 @@ defmodule Tay.Engine do
 
     with {:ok, definition} <- Value.decode(bytes, c.value_limits),
          true <- V2.definition?(definition) || {:error, :invalid_definition},
+         true <-
+           (is_nil(definition["availability_key"]) or durability == :persistent) ||
+             {:error, :availability_requires_persistence},
          true <-
            valid_worker_mapping?(c, definition["worker_key"], worker) ||
              {:error, :worker_mapping},

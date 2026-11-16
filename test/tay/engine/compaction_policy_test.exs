@@ -50,8 +50,12 @@ defmodule Tay.Engine.CompactionPolicyTest do
     end
   end
 
-  test "strict finite config, shared duration bound, disabled opt-out" do
+  test "strict bounded or infinite config, shared duration bound, disabled opt-out" do
     assert {:ok, defaults} = CompactionConfig.new([])
+
+    assert {:ok, %{terminal_retention: :infinity}} =
+             CompactionConfig.new(terminal_retention: :infinity)
+
     assert defaults.automatic
     assert defaults.checkpoint_interval == 0
     assert {:ok, %{automatic: false}} = CompactionConfig.new(false)
@@ -62,7 +66,6 @@ defmodule Tay.Engine.CompactionPolicyTest do
           true,
           %{},
           [unknown: 1],
-          [terminal_retention: :infinity],
           [terminal_retention: {:hours, 0}],
           [terminal_retention: {:hours, Retention.max_hours() + 1}],
           [max_terminal_jobs: 5_000],

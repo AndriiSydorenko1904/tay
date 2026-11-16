@@ -35,6 +35,7 @@ defmodule Tay.Storage.Writer.Compaction do
           current: current,
           jobs: candidate.jobs,
           schedules: candidate.schedules,
+          availability: candidate.availability,
           results: candidate.results,
           frontier: state.next_sequence - 1,
           candidate_limits: state.candidate_limits,

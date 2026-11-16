@@ -14,7 +14,6 @@ defmodule Tay.Engine.CompactionConfig do
            Enum.all?(Keyword.keys(options), &(&1 in [:terminal_retention, :checkpoint_interval])),
          config <- Map.merge(@defaults, Map.new(options)),
          :ok <- Retention.validate(config.terminal_retention),
-         true <- config.terminal_retention != :infinity,
          true <- Retention.persisted(config.terminal_retention) == config.terminal_retention,
          true <-
            is_integer(config.checkpoint_interval) and config.checkpoint_interval in 0..@max_timer do

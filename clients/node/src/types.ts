@@ -12,12 +12,13 @@ export interface EnqueueOptions {
   delay?: number;
   delay_ms?: number;
   run_at?: number;
-  retries?: number;
+  retries?: number | "infinity";
   timeout?: number;
   timeout_ms?: number;
   backoff?: Backoff;
   queue?: string;
   durability?: Durability;
+  availability_key?: string;
 }
 
 export interface ScheduleOptions extends EnqueueOptions {
@@ -42,9 +43,10 @@ export interface EveryScheduleOptions extends ScheduleOptions {
 }
 
 export interface TaskDefaults {
-  retries?: number;
+  retries?: number | "infinity";
   backoff?: Backoff;
   durability?: Durability;
+  availability_key?: string;
   cron?: string;
   every?: Omit<EveryScheduleOptions, keyof ScheduleOptions>;
   overlap?: Overlap;

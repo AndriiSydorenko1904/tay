@@ -115,6 +115,14 @@ defmodule Tay.Event.V2 do
       revision: :existing,
       fields: ~w(at execution_token expected_revision job_id result)
     },
+    availability_checkpoint: %{
+      code: 15,
+      schema: 2,
+      identity: "availability_key",
+      encoding: :string,
+      revision: :insert,
+      fields: ~w(at availability_key expected_revision status retry_at)
+    },
     result_recorded: %{
       code: 10,
       schema: 2,
@@ -194,12 +202,27 @@ defmodule Tay.Event.V2 do
   # Called only after bounded Value validation. This walk does not create atoms
   # or treat arbitrary map/tuple/struct values as serialized runtime terms.
   def definition?(d) do
-    exact?(d, @definition) and is_map(d["args"]) and args?(d["args"]) and
-      d["definition_version"] === 1 and attempt?(d["max_attempts"]) and
+    definition_shape?(d) and is_map(d["args"]) and args?(d["args"]) and
+      (attempt?(d["max_attempts"]) or
+         (d["definition_version"] === 2 and d["max_attempts"] === "infinity")) and
       key?(d["worker_key"]) and key?(d["queue_key"]) and d["retry_policy"] === @policy and
       (d["scheduled_at"] == nil or time?(d["scheduled_at"])) and
       is_integer(d["timeout_ms"]) and d["timeout_ms"] in 1..@max_timeout_ms
   end
+
+  defp definition_shape?(%{"definition_version" => 1} = d), do: exact?(d, @definition)
+
+  defp definition_shape?(%{"definition_version" => 2} = d),
+    do:
+      exact?(d, @definition ++ ["availability_key"]) and
+        (is_nil(d["availability_key"]) or identifier?(d["availability_key"]))
+
+  defp definition_shape?(_), do: false
+
+  def attempt_limit(d),
+    do: if(d["max_attempts"] == "infinity", do: @max_attempt, else: d["max_attempts"])
+
+  def next_attempt(d, attempt), do: min(attempt + 1, attempt_limit(d))
 
   def identity_field(type) do
     case Map.get(@types_by_code, type) do
@@ -260,6 +283,8 @@ defmodule Tay.Event.V2 do
         else: d["next_attempt"] == nil and d["next_due_at"] == nil
       )
   end
+
+  defp fields?(15, d), do: d["status"] in ["available", "unavailable"] and time?(d["retry_at"])
 
   defp fields?(@job_cancelled, d),
     do: d["execution_token"] == nil or sequence?(d["execution_token"])
@@ -335,6 +360,8 @@ defmodule Tay.Event.V2 do
   defp finish?(2, disposition, %{"code" => 5, "version" => 1} = d)
        when disposition in [1, 2],
        do: map_size(d) == 2 and is_integer(disposition)
+
+  defp finish?(4, 1, %{"code" => 8, "version" => 1} = d), do: map_size(d) == 2
 
   defp finish?(3, 1, %{"code" => 7, "version" => 1} = d), do: map_size(d) == 2
   defp finish?(_, _, _), do: false

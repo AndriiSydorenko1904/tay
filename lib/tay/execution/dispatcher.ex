@@ -46,6 +46,7 @@ defmodule Tay.Execution.Dispatcher do
   def outcome({:success, _result}), do: :success
   def outcome(:timeout), do: :timeout
   def outcome(:lost), do: :interrupted
+  def outcome({:failure, %{"type" => "DependencyUnavailable"}}), do: :unavailable
   def outcome({:failure, _}), do: {:failure, 1}
   def outcome(_), do: {:failure, 1}
 
@@ -137,7 +138,14 @@ defmodule Tay.Execution.Dispatcher do
 
   defp settle_job(state, job, result) do
     Tay.State.Memory.settling(state.memory, fn ->
-      case Outcome.event(job, outcome(result), Clock.wall(state.config.clock)) do
+      normalized = outcome(result)
+
+      normalized =
+        if normalized == :unavailable and is_nil(job.definition["availability_key"]),
+          do: {:failure, 1},
+          else: normalized
+
+      case Outcome.event(job, normalized, Clock.wall(state.config.clock)) do
         {:ok, finished} ->
           case commit_result(state, job, finished, result) do
             {:ok, _completed, next} -> next

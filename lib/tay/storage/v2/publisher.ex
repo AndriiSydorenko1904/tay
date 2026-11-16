@@ -365,6 +365,7 @@ defmodule Tay.Storage.V2.Publisher do
        |> Map.put(:reuse_base, reusable?(source, recovered))
        |> Map.put(:jobs, recovered.candidate.jobs)
        |> Map.put(:schedules, recovered.candidate.schedules)
+       |> Map.put(:availability, recovered.candidate.availability)
        |> Map.put(:results, recovered.candidate.results)
        |> Map.put(:next_availability_order, recovered.candidate.next_availability_order)}
       |> incremental_source(native)
@@ -473,6 +474,13 @@ defmodule Tay.Storage.V2.Publisher do
     schedules =
       for {{_, pointer}, %{record_type: 13, data: data}} <- auxiliary,
           do: {data["schedule_id"], {:put, decorate.(pointer)}}
+
+    schedules =
+      schedules ++
+        for {{_, pointer}, %{record_type: 15, data: data}} <- auxiliary,
+            do:
+              {Tay.State.Availability.index_key(data["availability_key"]),
+               {:put, decorate.(pointer)}}
 
     results =
       for {{_, pointer}, %{record_type: 10, data: data}} <- auxiliary,
@@ -1113,13 +1121,15 @@ defmodule Tay.Storage.V2.Publisher do
       Reducer.candidate(Map.fetch!(source, :candidate_limits), Map.fetch!(source, :value_limits))
       | jobs: retained_jobs,
         schedules: Map.get(source, :schedules, %{}),
+        availability: Map.get(source, :availability, %{}),
         results: Map.take(Map.get(source, :results, %{}), Map.keys(retained_jobs))
     }
   end
 
   defp candidate_equivalent?(source, before, after_candidate) do
     equivalent?(source, before.jobs, after_candidate.jobs) and
-      before.schedules == after_candidate.schedules and before.results == after_candidate.results
+      before.schedules == after_candidate.schedules and before.results == after_candidate.results and
+      before.availability == after_candidate.availability
   end
 
   defp catch_up(_native, source, candidate, tail, started)

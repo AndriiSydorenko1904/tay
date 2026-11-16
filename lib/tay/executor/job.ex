@@ -4,7 +4,16 @@ defmodule Tay.Executor.Job do
   alias Tay.{Error, Job, JobID}
   alias Tay.Event.V2
 
-  @options [:id, :queue, :retries, :timeout_ms, :delay_ms, :scheduled_at, :durability]
+  @options [
+    :id,
+    :queue,
+    :retries,
+    :timeout_ms,
+    :delay_ms,
+    :scheduled_at,
+    :durability,
+    :availability_key
+  ]
 
   # Builds the existing immutable Event-v1 definition.  The remote marker is
   # checked again by the Engine; this helper merely keeps all producer paths
@@ -22,6 +31,7 @@ defmodule Tay.Executor.Job do
              worker_key: task,
              queue: Keyword.get(options, :queue, :default),
              max_attempts: max_attempts,
+             availability_key: Keyword.get(options, :availability_key),
              timeout_ms: Keyword.get(options, :timeout_ms, 30_000),
              scheduled_at: scheduled_at,
              durability: Keyword.get(options, :durability)
@@ -41,6 +51,8 @@ defmodule Tay.Executor.Job do
 
   # Tay's Event-v1 maximum is the number of executions, whereas the public
   # protocol calls this number retries after the initial execution.
+  defp attempts("infinity"), do: {:ok, :infinity}
+
   defp attempts(retries) when is_integer(retries) and retries in 0..65_534,
     do: {:ok, retries + 1}
 

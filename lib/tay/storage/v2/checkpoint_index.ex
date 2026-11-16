@@ -56,6 +56,11 @@ defmodule Tay.Storage.V2.CheckpointIndex do
       for {{_, pointer}, %{record_type: 13, data: data}} <- auxiliary,
           do: {data["schedule_id"], decorate.(pointer)}
 
+    schedules =
+      schedules ++
+        for {{_, pointer}, %{record_type: 15, data: data}} <- auxiliary,
+            do: {Tay.State.Availability.index_key(data["availability_key"]), decorate.(pointer)}
+
     results =
       for {{_, pointer}, %{record_type: 10, data: data}} <- auxiliary,
           do: {data["job_id"], decorate.(pointer)}
@@ -1149,7 +1154,7 @@ defmodule Tay.Storage.V2.CheckpointIndex do
       fn key, pointer, candidate ->
         with {:ok, record} <- read_record(native, epoch, scope, pointer),
              true <-
-               (role == :schedules and record.record_type == 13 and
+               (role == :schedules and record.record_type in [13, 15] and
                   record.payload_schema_version == 2) or
                  (role == :results and record.record_type == 10 and
                     record.payload_schema_version == 2) or {:error, :auxiliary_type},
@@ -1161,7 +1166,11 @@ defmodule Tay.Storage.V2.CheckpointIndex do
                  candidate.value_limits
                ),
              true <-
-               key == event.data[if(role == :schedules, do: "schedule_id", else: "job_id")] or
+               key ==
+                 if(record.record_type == 15,
+                   do: Tay.State.Availability.index_key(event.data["availability_key"]),
+                   else: event.data[if(role == :schedules, do: "schedule_id", else: "job_id")]
+                 ) or
                  {:error, :auxiliary_key},
              do: Reducer.apply_event(candidate, event, %{sequence: record.sequence})
       end,

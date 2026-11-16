@@ -72,7 +72,7 @@ docker run --name tay \
   -e TAY_DASHBOARD_SECRET_KEY_BASE='replace-with-at-least-64-random-bytes------------------------' \
   -v taydata:/var/lib/tay \
   -v taysocket:/run/tay \
-  ghcr.io/abstraction-systems/tay:2.0.1
+  ghcr.io/abstraction-systems/tay:2.1.0
 ```
 
 On subsequent starts, set `TAY_INITIALIZE_IF_MISSING=false`. Initialization is
@@ -92,7 +92,7 @@ The image accepts the runtime and dashboard settings below. The Bandit API's
 | `TAY_DEFAULT_QUEUE_CONCURRENCY` | `10` | no | Maximum concurrently executing jobs in the standalone `default` queue (`1..65536`). |
 | `TAY_CALLER_TIMEOUT_MS` | `5000` | no | Engine call timeout in milliseconds; submitted timeouts have an unknown outcome and require same-ID reconciliation. |
 | `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | no | Crash-safe Store-v2 semantic checkpoint interval (`0..4294967295` ms); `0` disables it. |
-| `TAY_TERMINAL_RETENTION` | `24h` | no | Initial terminal retention such as `30m`, `1h`, `24h`, or `7d`. Dashboard/API zero is a one-shot full terminal-history purge and persists `1h` afterward. A retention saved by successful Dashboard compaction takes priority on restart. |
+| `TAY_TERMINAL_RETENTION` | `24h` | no | Initial terminal retention (`infinity` or `unlimited` keeps history indefinitely), or durations such as `30m`, `1h`, `24h`, or `7d`. Dashboard/API zero is a one-shot full terminal-history purge and persists `1h` afterward. A retention saved by successful Dashboard compaction takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | no | Enable the bundled HTTP dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | no | Public hostname accepted for LiveView origin checks; no scheme, port, or path. |
 | `TAY_DASHBOARD_PORT` | `4000` | no | Container HTTP listen port. |

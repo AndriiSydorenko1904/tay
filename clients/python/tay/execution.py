@@ -77,8 +77,14 @@ def error_details(
     message = _safe_text(message)
     if fallback_message and not message:
         message = _safe_text(type(exc).__name__)
+    from .errors import DependencyUnavailable
+
     return {
-        "type": _safe_text(type(exc).__name__)[:max_type_characters],
+        "type": (
+            "DependencyUnavailable"
+            if isinstance(exc, DependencyUnavailable)
+            else _safe_text(type(exc).__name__)
+        )[:max_type_characters],
         "message": message[:max_message_characters],
     }
 

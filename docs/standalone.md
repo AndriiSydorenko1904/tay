@@ -28,7 +28,7 @@ The image runs as UID/GID `10001:10001` and accepts:
 | `TAY_RATE_LIMITS` | `{}` | JSON queue/task execution limits; see [operations](operations.md#execution-rate-limits). Monotonic fixed windows reset on Engine restart. |
 | `TAY_CHECKPOINT_INTERVAL_MS` | `60000` | Periodic crash-safe Store-v2 semantic checkpoint interval in milliseconds (`0..4294967295`). `0` disables it. Checkpoints reconstruct a candidate from sealed on-disk history at a durable frontier while execution continues, then catch up concurrent mutations. They do not copy Engine ETS state. Recovery replays the resulting snapshot plus its tail. |
 | `TAY_MAX_STATE_BYTES` | `268435456` | Shared operational memory budget for active jobs, schedules, retained results and admitted payloads, including reserved headroom. It is not a process/container RSS ceiling. Accepts bytes or an integer with `KB`, `MB`, or `GB`, for example `5GB`; suffixes use binary multiples. |
-| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. Manual compaction may use zero as a one-shot terminal-history purge, after which the persisted retention is `1h`. After any successful compaction, its persisted retention takes priority on restart. |
+| `TAY_TERMINAL_RETENTION` | `24h` | Initial retention for terminal jobs; `infinity` (alias `unlimited`) keeps terminal history indefinitely. Positive durations use `m`, `h`, or `d`, for example `30m`, `1h`, `24h`, or `7d`. Manual compaction may use zero as a one-shot terminal-history purge, after which the persisted retention is `1h`. After any successful compaction, its persisted retention takes priority on restart. |
 | `TAY_ENABLE_DASHBOARD` | `false` | Set to `true`, `TRUE`, or `1` to serve the bundled dashboard. |
 | `TAY_DASHBOARD_HOST` | `localhost` | Public hostname for dashboard URL and LiveView origin checks. |
 | `TAY_DASHBOARD_PORT` | `4000` | Dashboard listener port. |
@@ -87,7 +87,7 @@ Tay deliberately does not interpret a pre-existing empty directory as a
 missing Store. Docker creates a named-volume mount root before the process
 starts, so mount the volume at `/var/lib/tay` and set
 `TAY_DATA_DIR=/var/lib/tay/store`, as in
-[`compose.yml`](https://github.com/abstraction-systems/tay/blob/v2.0.1/compose.yml).
+[`compose.yml`](https://github.com/abstraction-systems/tay/blob/v2.1.0/compose.yml).
 The image creates both directory targets with ownership `10001:10001`; an empty
 Docker named volume inherits that ownership and does not need a root init
 container. Bind mounts and volume drivers that preserve different ownership
@@ -142,7 +142,7 @@ docker run -d --name tay \
   -e TAY_HTTP_TLS_CACERTFILE=/etc/tay/tls/client-ca.pem \
   --mount type=volume,src=taydata,dst=/var/lib/tay \
   --mount type=bind,src=/absolute/path/to/tls,dst=/etc/tay/tls,readonly \
-  ghcr.io/abstraction-systems/tay:2.0.1
+  ghcr.io/abstraction-systems/tay:2.1.0
 ```
 
 Create the volume with `docker volume create taydata`. Replace the TLS source
@@ -150,7 +150,7 @@ path, ensure UID `10001` can read the mounted files, and provision client
 certificates separately for workers. On later starts, set
 `TAY_INITIALIZE_IF_MISSING=false`. Restrict the published port to the intended
 worker network. The Python connection example is in the
-[Python client guide](https://github.com/abstraction-systems/tay/tree/v2.0.1/clients/python).
+[Python client guide](https://github.com/abstraction-systems/tay/tree/v2.1.0/clients/python).
 
 The health check succeeds when the Engine reports `ready` or is performing a
 normal online checkpoint in `compacting/preparing` or `compacting/switching`,

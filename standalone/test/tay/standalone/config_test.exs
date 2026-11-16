@@ -3,6 +3,13 @@ defmodule Tay.Standalone.ConfigTest do
 
   alias Tay.Standalone.Config
 
+  test "accepts infinite automatic terminal retention" do
+    for value <- ["infinity", "unlimited"] do
+      assert {:ok, %{terminal_retention: :infinity}} =
+               Config.load(%{"TAY_TERMINAL_RETENTION" => value})
+    end
+  end
+
   test "uses standalone container defaults" do
     assert {:ok, config} = Config.load(%{})
     assert config.data_dir == "/var/lib/tay"

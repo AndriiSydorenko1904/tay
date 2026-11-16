@@ -3,7 +3,7 @@ Code.require_file("mix_helpers/tay_native_editor.exs", __DIR__)
 
 defmodule Tay.MixProject do
   use Mix.Project
-  @version "2.0.1"
+  @version "2.1.0"
   @source_url "https://github.com/abstraction-systems/tay"
 
   def project do

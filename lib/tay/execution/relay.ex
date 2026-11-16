@@ -237,6 +237,7 @@ defmodule Tay.Execution.Relay do
   defp count_shape?(_), do: false
 
   defp expired?(s), do: s.options.clock.monotonic_ms() >= s.deadline
+  defp valid_outcome?(:unavailable), do: true
   defp valid_outcome?(:success), do: true
   defp valid_outcome?({:failure, code}) when code in [1, 2, 3, 4, 6], do: true
   defp valid_outcome?(_), do: false

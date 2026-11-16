@@ -39,6 +39,7 @@ defmodule Tay.State.Transition do
     %{
       jobs: %{},
       schedules: %{},
+      availability: %{},
       results: %{},
       count: 0,
       bytes: 0,
@@ -176,7 +177,7 @@ defmodule Tay.State.Transition do
   defp valid_transition?(3, p, d),
     do:
       p.state == :available and p.next_attempt == d["attempt"] and
-        d["attempt"] <= p.definition["max_attempts"] and p.cycle == d["cycle_token"] and
+        d["attempt"] <= V2.attempt_limit(p.definition) and p.cycle == d["cycle_token"] and
         d["at"] >= p.eligible_at
 
   defp valid_transition?(4, p, d) do
@@ -193,13 +194,27 @@ defmodule Tay.State.Transition do
   defp finish_transition?(p, d) do
     {disposition, ordinal} =
       cond do
-        d["outcome"] == 0 -> {0, nil}
-        d["outcome"] == 3 -> {1, p.attempt}
-        p.attempt < p.definition["max_attempts"] -> {1, p.attempt + 1}
-        true -> {2, nil}
+        d["outcome"] == 0 ->
+          {0, nil}
+
+        d["outcome"] == 3 ->
+          {1, p.attempt}
+
+        d["outcome"] == 4 and is_binary(p.definition["availability_key"]) ->
+          {1, V2.next_attempt(p.definition, p.attempt)}
+
+        p.definition["max_attempts"] == "infinity" ->
+          {1, V2.next_attempt(p.definition, p.attempt)}
+
+        p.attempt < V2.attempt_limit(p.definition) ->
+          {1, p.attempt + 1}
+
+        true ->
+          {2, nil}
       end
 
-    d["disposition"] == disposition and d["next_attempt"] == ordinal and
+    (d["outcome"] != 4 or is_binary(p.definition["availability_key"])) and
+      d["disposition"] == disposition and d["next_attempt"] == ordinal and
       if(disposition == 1, do: valid_due?(d["at"], p.attempt, d["next_due_at"]), else: true)
   end
 
